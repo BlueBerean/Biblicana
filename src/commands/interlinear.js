@@ -32,6 +32,8 @@ module.exports = {
                 )),
 
     async execute(interaction, database) {
+        await interaction.deferReply();
+        
         const defaultTranslation = (await database.getUserValue(interaction.user.id))?.translation || 'BSB';
         const translation = interaction.options.getString('translation') || defaultTranslation;
 
@@ -44,8 +46,6 @@ module.exports = {
         if (!bookid) {
             return interaction.reply({ content: 'I couldn\'t find that book!', ephemeral: true });
         }
-
-        await interaction.deferReply();
 
         const verse = await bibleWrapper.getInterlinearVerse(bookid, chapter, verseNumber);
         if (!verse) return interaction.editReply({ content: `I couldn't find any verses related to ${book} ${chapter}:${verseNumber}!` });
