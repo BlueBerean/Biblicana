@@ -53,6 +53,8 @@ module.exports = {
 
         let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
 
+        if (!verses.length > 0) return interaction.reply({ content: `I couldn't find any verses related to ${book} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}!`, ephemeral: true });
+        
         verses.sort((a, b) => a.verse - b.verse);
         
         // Empty string for response
