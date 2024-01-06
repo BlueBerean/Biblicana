@@ -67,96 +67,67 @@ module.exports = {
             return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
         }
 
-
         if (parsedVerses.length == 0) {
             return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
         }
 
-        for (const verseNumber in parsedVerses) {
-            const currentVerse = parsedVerses[verseNumber];
-
-            const book = currentVerse.book.toLowerCase();
+        for (const verse of parsedVerses) {
+            const book = verse.book.toLowerCase();
             const bookId = books.get(book);
-            const chapter = currentVerse.chapter;
-            const startVerse = parseInt(currentVerse.startVerse);
-            const endVerse = parseInt(currentVerse.endVerse) || startVerse; 
+            const chapter = verse.chapter;
+            const startVerse = parseInt(verse.startVerse);
+            const endVerse = parseInt(verse.endVerse) || startVerse; 
 
-            if (!bookId) {
-                currentVerse.text = "Book not found";
+            if (!bookId || !chapter || !startVerse) { // There MUST be a book, chapter, and startVerse
                 continue;
             }
 
             let versesFromAPI = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse);
-        
+
             if (versesFromAPI.length == 0) {
-                currentVerse.text = "No verse found";
                 continue;
             }
 
-            // Empty string for response
-            let response = "";
-            for (let i = 0; i < versesFromAPI.length; i++) {
-                // i starts at 0, so add to get the actual verse number
-                const number = i + startVerse;
-                // Add a number to the response if there is more than one verse
-                if (response.length > 1) {
-                    response += " <**" + number + "**> " + versesFromAPI[i][translation];
+            let response = versesFromAPI.map((verse, index) => {
+                const number = index + startVerse;
+                return (index > 0 ? ` <**${number}**> ` : "") + verse[translation];
+            }).join("");
 
-                    continue;
-                } 
-
-                // just add the verse if there is only one
-                response += versesFromAPI[i][translation];
-            }
-
-            currentVerse.text = response;
+            verse.text = response;
         }
 
-
         let description = [];
-
-        // Response length is limited to 2000 characters!
-        let responseLength = 0;
         for (const verse of parsedVerses) {
-            responseLength += verse.text.length;
-
-            if (responseLength > 1900) {
-                break;
-            }
-
-            // convert the book to a number then back to a string to get the pretty name
-            description.push(`**${numbersToBook.get(books.get(verse.book.toLowerCase()))} ${verse.chapter}:${verse.startVerse}${verse.endVerse && verse.startVerse != verse.endVerse ? "-" + verse.endVerse :  ""}**: ${verse.text ?? "No verse found"}\n`);
+            const prettyBookName = numbersToBook.get(books.get(verse.book.toLowerCase()));
+            const verseRange = verse.endVerse && verse.startVerse != verse.endVerse ? `-${verse.endVerse}` : "";
+            description.push(`**${prettyBookName} ${verse.chapter}:${verse.startVerse}${verseRange}**: ${verse.text ?? "No verse found"}\n`);
         }
 
         const embed = new EmbedBuilder()
             .setTitle(`Verses regarding "${requestedTopic}"`)
-            .setColor(eval(process.env.EMBEDCOLOR)) //This must be a hex number WHY
-            .setURL(process.env.WEBSITE)
-
+            .setColor(eval(process.env.EMBEDCOLOR))
+            .setURL(process.env.WEBSITE);
 
         if (description.length == 0) {
             return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
         }
 
         const maxVerses = 3;
-        
+        const maxChars = 1900;
         if (description.length > maxVerses) {
             const paginationButtons = [
                 new ButtonBuilder().setStyle(ButtonStyle.Primary).setEmoji("⬅️").setCustomId("page_back"),
                 new ButtonBuilder().setStyle(ButtonStyle.Primary).setEmoji("➡️").setCustomId("page_next"),
-
-
                 new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Disclaimer").setCustomId("bias_alert")
             ];
 
-            const row = new ActionRowBuilder()
-                .addComponents(...paginationButtons);
-
+            const row = new ActionRowBuilder().addComponents(...paginationButtons);
             let currentPage = 0;
 
-            //const footer = generateFooter(translation, currentPage, Math.floor(description.length / maxVerses) + 1);
             const response = await interaction.editReply({
-                embeds: [embed.setFooter(generateFooter(translation, currentPage, Math.floor(description.length / maxVerses) + 1)).setDescription(description.slice(0, maxVerses).join(" "))],
+                embeds: [embed
+                    .setFooter(generateFooter(translation, currentPage, Math.floor(description.length / maxVerses) + 1))
+                    .setDescription(description.slice(0, maxVerses).join(" ").slice(0, maxChars))], // Slice to maxVerses then join and slice to maxChars in case the first verse is too long
                 components: [row],
             });
 
@@ -172,36 +143,33 @@ module.exports = {
                     currentPage--;
                     if (currentPage < 0) currentPage = Math.floor(description.length / maxVerses);
                 }
-                
+
                 const start = currentPage * maxVerses;
                 const end = Math.min(start + maxVerses, description.length);
                 const slice = description.slice(start, end);
-                
 
-                // If the slice is empty, wrap around to the beginning
                 if (slice.length === 0 && description.length > 0) {
                     const remaining = maxVerses - (start % maxVerses);
                     slice.push(...description.slice(0, remaining));
                 }
-            
+
                 if (slice.length == 0) {
                     return;
                 }
-                await i.update({ embeds: [embed.setFooter(generateFooter(translation, currentPage, Math.floor(description.length / maxVerses) + 1)).setDescription(slice.join(" "))], components: [row] });
+
+                await i.update({ embeds: [embed
+                    .setFooter(generateFooter(translation, currentPage, Math.floor(description.length / maxVerses) + 1))
+                    .setDescription(slice.join(" ").slice(0, maxChars)) // Same thing as above, slice to the maxChars in case the strings are too long
+                ], components: [row] });
             });
         } else {
             const defaultFooter = { text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`, iconURL: process.env.EMBEDICONURL };
-
             embed.setFooter(defaultFooter).setDescription(description.join(" "));
 
-    
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setStyle(ButtonStyle.Secondary)
-                        .setLabel("Disclaimer")
-                        .setCustomId("bias_alert"));
-    
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Disclaimer").setCustomId("bias_alert")
+            );
+
             return interaction.editReply({ embeds: [embed], components: [row] });
         }
         
