@@ -112,7 +112,7 @@ module.exports = {
             return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
         }
 
-        const maxVerses = 3;
+        const maxVerses = 2;
         const maxChars = 1900;
         if (description.length > maxVerses) {
             const paginationButtons = [
@@ -131,7 +131,7 @@ module.exports = {
                 components: [row],
             });
 
-            const collector = response.createMessageComponentCollector({ componentType: ComponentType.Button, time: 3_600_000 });
+            const collector = response.createMessageComponentCollector({ componentType: ComponentType.Button, time: 1_800_000 });
 
             collector.on('collect', async i => {
                 if (i.user.id !== interaction.user.id) return i.reply({ content: 'You cannot use this button!', ephemeral: true });

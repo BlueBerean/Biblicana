@@ -51,7 +51,7 @@ module.exports = {
                 components: [row],
             });
 
-            const collector = response.createMessageComponentCollector({ componentType: ComponentType.Button, time: 3_600_000 });
+            const collector = response.createMessageComponentCollector({ componentType: ComponentType.Button, time: 1_800_000 });
 
             collector.on('collect', async i => {
                 if (i.user.id !== interaction.user.id) return i.reply({ content: 'You cannot use this button 💔', ephemeral: true });
