@@ -47,7 +47,7 @@ module.exports = {
             "model": "gpt-3.5-turbo",
             "messages": [{
                 "role": "user", "content": `This must be valid JSON format, do not terminate it before completing. please respond with verses about this topic from a protestant perspective, ${requestedTopic}, in this JSON format with no other text please: [{ "book": "<abbreviated name>"
-        , "chapter": "<chapter number>", "startVerse": "<verse number>", "endVerse": "<verse number>" }, {<next one>}]. You may also include up to 5 verses in your output. Please only use these abbreviated names for the books in the bible [  'gen', 'exo', 'lev', 'num', 'deu', 'jos',  'jdg', 'rut', '1sa', '2sa', '1ki', '2ki',  '1ch', '2ch', 'ezr', 'neh', 'est', 'job',  'psa', 'pro', 'ecc', 'sos', 'isa', 'jer',  'lam', 'eze', 'dan', 'hos', 'joe', 'amo',  'oba', 'jon', 'mic', 'nah', 'hab', 'zep',  'hag', 'zec', 'mal', 'mat', 'mar', 'luk',  'joh', 'act', 'rom', '1co', '2co', 'gal',  'eph', 'php', 'col', '1th', '2th', '1ti',  '2ti', 'tit', 'phm', 'heb', 'jam', '1pe',  '2pe', '1jo', '2jo', '3jo', 'jde', 'rev']` }],
+        , "chapter": "<chapter number>", "startVerse": "<verse number>", "endVerse": "<verse number>" }, {<next one>}]. You may also include up to 4 verses in your output. Please only use these abbreviated names for the books in the bible [  'gen', 'exo', 'lev', 'num', 'deu', 'jos',  'jdg', 'rut', '1sa', '2sa', '1ki', '2ki',  '1ch', '2ch', 'ezr', 'neh', 'est', 'job',  'psa', 'pro', 'ecc', 'sos', 'isa', 'jer',  'lam', 'eze', 'dan', 'hos', 'joe', 'amo',  'oba', 'jon', 'mic', 'nah', 'hab', 'zep',  'hag', 'zec', 'mal', 'mat', 'mar', 'luk',  'joh', 'act', 'rom', '1co', '2co', 'gal',  'eph', 'php', 'col', '1th', '2th', '1ti',  '2ti', 'tit', 'phm', 'heb', 'jam', '1pe',  '2pe', '1jo', '2jo', '3jo', 'jde', 'rev']` }],
             "temperature": 0.7
         }, {
             headers: {
@@ -112,7 +112,7 @@ module.exports = {
             return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
         }
 
-        const maxVerses = 3;
+        const maxVerses = 2;
         const maxChars = 1900;
         if (description.length > maxVerses) {
             const paginationButtons = [
