@@ -29,11 +29,9 @@ module.exports = {
         } catch (error) {
             logger.error('API request failed:', error);
         
-            // Handle the error and provide a meaningful response to the user
+            // Handle the error and provide a "meaningful" response to the user
             return await interaction.editReply({ content: 'An error occurred while trying to fetch data. Please try again later.' });
         }
-
-
 
         const footer = { text: process.env.EMBEDFOOTERTEXT, iconURL: process.env.EMBEDICONURL };
         const embed = new EmbedBuilder()
@@ -49,6 +47,21 @@ module.exports = {
 
         const maxVerses = 5;
 
+        let pages = [];
+        let tempArray = [];
+        for (const field of fields) {
+            if (tempArray.length >= maxVerses) {
+                pages.push(tempArray);
+                tempArray = [];
+            }
+
+            tempArray.push(field);
+        }
+
+        if (tempArray.length > 0) {
+            pages.push(tempArray); // Push the last page
+        }
+
         if (fields.length > maxVerses) {
             const paginationButtons = [
                 new ButtonBuilder().setStyle(ButtonStyle.Primary).setEmoji("⬅️").setCustomId("page_back"),
@@ -58,9 +71,9 @@ module.exports = {
             const row = new ActionRowBuilder()
                 .addComponents(...paginationButtons);
 
-            footer.text = process.env.EMBEDFOOTERTEXT + ` | Page 1/${Math.floor(fields.length / maxVerses) + 1}`;
+            footer.text = process.env.EMBEDFOOTERTEXT + ` | Page 1/${pages.length}`;
             const response = await interaction.editReply({
-                embeds: [embed.setFooter(footer).addFields(fields.slice(0, maxVerses))],
+                embeds: [embed.setFooter(footer).addFields(pages[0])],
                 components: [row],
             });
 
@@ -73,30 +86,17 @@ module.exports = {
 
                 if (i.customId === 'page_next') {
                     currentPage++;
-                    if (currentPage > Math.floor(fields.length / maxVerses)) currentPage = 0;
+                    if (currentPage > pages.length - 1) currentPage = 0;
                 } else if (i.customId === 'page_back') {
                     currentPage--;
-                    if (currentPage < 0) currentPage = Math.floor(fields.length / maxVerses);
+                    if (currentPage < 0) currentPage = pages.length - 1;
                 }
                 
-                const start = currentPage * maxVerses;
-                const end = Math.min(start + maxVerses, fields.length);
-                const slice = fields.slice(start, end);
-
-                // If the slice is empty, wrap around to the beginning
-                if (slice.length === 0 && fields.length > 0) {
-                    const remaining = maxVerses - (start % maxVerses);
-                    slice.push(...fields.slice(0, remaining));
-                }
-
                 embed.data.fields = []; // make sure to clear the fields before adding new ones
-                footer.text = process.env.EMBEDFOOTERTEXT + ` | Page ${currentPage + 1}/${Math.floor(fields.length / maxVerses) + 1}`;
-                await i.update({ embeds: [embed.setFooter(footer).addFields(slice)], components: [row] });
+                footer.text = process.env.EMBEDFOOTERTEXT + ` | Page ${currentPage + 1}/${pages.length}`;
+                await i.update({ embeds: [embed.setFooter(footer).addFields(pages[currentPage])], components: [row] });
             });
         } else {
-            embed.addFields(fields); 
-
-    
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
@@ -104,7 +104,7 @@ module.exports = {
                         .setLabel("Disclaimer")
                         .setCustomId("bias_alert"));
     
-            return interaction.editReply({ embeds: [embed], components: [row] });
+            return interaction.editReply({ embeds: [embed.addFields(pages[0])], components: [row] });
         }
     },
 };

@@ -1,7 +1,8 @@
 const { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
 const swearWordFilter = require('../utils/filter');
-const splitString = require('../utils/splitString');
+const splitString = require('../utils/splitString.js');
 const { strongsWrapper } = require('../utils/bibleHelper.js')
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('define')
