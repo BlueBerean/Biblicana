@@ -108,7 +108,7 @@ module.exports = {
             .setDescription(englishResponse)
             .setFields([
                 { name: character === "g" ? "Greek" : "Hebrew", value: verseText },
-                { name: `${character === "g" ? "KJV (Left to Right)" : "KJV (Right to Left)"}`, value: `${character === "g" ? verseEnglish.join("") : verseEnglish.join("")}` },
+                { name: `${character === "g" ? "KJV (Left to Right)" : "KJV (Right to Left)"}`, value: `${character === "g" ? verseEnglish.join("") : verseEnglish.reverse().join("")}` },
                 { name: "Strongs", value: strongsPages[0] }
             ])
             .setColor(eval(process.env.EMBEDCOLOR))
