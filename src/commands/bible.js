@@ -35,12 +35,12 @@ module.exports = {
         
         const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
 
-        const book = interaction.options.getString('book').toLowerCase();
+        const book = interaction.options.getString('book').toLowerCase().split(" ").join(""); // Remove spaces
         const chapter = interaction.options.getString('chapter');
         const startVerse = interaction.options.getNumber('startverse');
         const endVerse = interaction.options.getNumber('endverse') || startVerse;
 
-        const bookid = books.get(book.toLowerCase());
+        const bookid = books.get(book);
         
         if (!bookid) {
             return interaction.reply({ content: 'I couldn\'t find that book!', ephemeral: true });
@@ -49,7 +49,6 @@ module.exports = {
         if (startVerse > endVerse) {
             return interaction.reply({ content: 'The start verse cannot be greater than the end verse!', ephemeral: true });
         }
-
 
         let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
 

@@ -98,7 +98,7 @@ module.exports = {
 
         let description = [];
         for (const verse of parsedVerses) {
-            const prettyBookName = numbersToBook.get(books.get(verse.book.toLowerCase()));
+            const prettyBookName = numbersToBook.get(books.get(verse.book.toLowerCase().split(" ").join("")));
             const verseRange = verse.endVerse && verse.startVerse != verse.endVerse ? `-${verse.endVerse}` : ""; // If there is an endVerse and it's not the same as the startVerse, add it to the range
             description.push(`**${prettyBookName} ${verse.chapter}:${verse.startVerse}${verseRange}**: ${verse.text ?? "No verse found"}\n`);
         }

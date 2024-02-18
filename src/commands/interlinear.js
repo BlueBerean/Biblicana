@@ -39,11 +39,14 @@ module.exports = {
         const chapter = interaction.options.getString('chapter');
         const verseNumber = interaction.options.getNumber('verse');
 
-        const bookid = books.get(book.toLowerCase());
-
+        const bookid = books.get(
+            book.toLowerCase()
+                .split(" ")
+                .join("") // Remove spaces
+        );
 
         if (!bookid) {
-            return interaction.reply({ content: 'I couldn\'t find that book!', ephemeral: true });
+            return interaction.editReply({ content: 'I couldn\'t find that book!', ephemeral: true });
         }
         
         const verse = await bibleWrapper.getInterlinearVerse(bookid, chapter, verseNumber);
