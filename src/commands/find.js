@@ -8,6 +8,9 @@ function generateFooter(translation = "BSB", page, maxPages = 2) {
     return { text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()} | Page ${page + 1}/${maxPages}`, iconURL: process.env.EMBEDICONURL };
 }
 
+function joinPage(page, maxChars) {
+    return page.join("\n").slice(0, maxChars);
+}
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('find')
@@ -88,8 +91,9 @@ module.exports = {
             }).join("");
 
             const prettyBookName = numbersToBook.get(bookId);
-            const displayEndVerse = endVerse && startVerse != verse.endVerse ? `-${verse.endVerse}` : ""; // If there is an endVerse and it's not the same as the startVerse, add it to the range
-            description.push(`**${prettyBookName} ${chapter}:${startVerse}${displayEndVerse}**: ${response ?? "No verse found"}\n`);
+            const verseRange = startVerse === endVerse ? startVerse : `${startVerse}-${endVerse}`;
+
+            description.push(`**${prettyBookName} ${chapter}:${verseRange}**: ${response ?? "No verse found"}\n`);
         }
 
         const embed = new EmbedBuilder()
@@ -106,13 +110,13 @@ module.exports = {
 
         let pages = [];
         let tempArr = [];
-        for (const index of description) { // When it loops through, it will use index instead of value
+        for (const verse of description) { // When it loops through, it will use index instead of value
             if (tempArr.length === maxVerses) {
                 pages.push(tempArr);
                 tempArr = [];
             }
 
-            tempArr.push(index);
+            tempArr.push(verse);
         }
 
         if (tempArr.length > 0) { // If the pages don't divide evenly, add the remaining verses to the last page
@@ -133,7 +137,7 @@ module.exports = {
             const response = await interaction.editReply({
                 embeds: [embed
                     .setFooter(generateFooter(translation, currentPage, pages.length))
-                    .setDescription(pages[0].join(" ").slice(0, maxChars))], // Slice to maxVerses then join and slice to maxChars in case the first verse is too long
+                    .setDescription(joinPage(pages[0], maxChars))], // Slice to maxVerses then join and slice to maxChars in case the first verse is too long
                 components: [row],
             });
 
@@ -152,12 +156,12 @@ module.exports = {
 
                 await i.update({ embeds: [embed
                     .setFooter(generateFooter(translation, currentPage, pages.length))
-                    .setDescription(pages[currentPage].join(" ").slice(0, maxChars)) // Same thing as above, slice to the maxChars in case the strings are too long
+                    .setDescription(joinPage(pages[currentPage], maxChars)) // Same thing as above, slice to the maxChars in case the strings are too long
                 ], components: [row] });
             });
         } else {
             const defaultFooter = { text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`, iconURL: process.env.EMBEDICONURL };
-            embed.setFooter(defaultFooter).setDescription(pages.join(" "));
+            embed.setFooter(defaultFooter).setDescription(joinPage(pages, maxChars));
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Disclaimer").setCustomId("bias_alert")
