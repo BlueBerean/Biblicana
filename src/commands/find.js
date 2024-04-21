@@ -72,7 +72,6 @@ module.exports = {
             const startVerse = parseInt(verse.startVerse);
             const endVerse = parseInt(verse.endVerse) || startVerse; 
 
-            console.log(bookId, chapter, startVerse, endVerse)
             if (!bookId || !chapter || !startVerse || startVerse > endVerse) { 
                 continue;
             }
