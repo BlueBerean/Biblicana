@@ -56,21 +56,15 @@ module.exports = {
             }
         });
 
-        if (apiResponse.data?.error) { 
-            return logger.warn(apiResponse.data.error);
-        }
-
         let parsedVerses;
         try {
             parsedVerses = JSON.parse(apiResponse.data.choices[0].message.content) // if this is invalid, it might fail and kill the program
-        } catch (error) {
+        } catch (error) { // if it catches, the data doesnt exist, so just log out the default error location
+            logger.warn(apiResponse.data.error);
             return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
         }
 
-        if (parsedVerses.length == 0) {
-            return interaction.editReply({ content: `I couldn't find any verses about ${requestedTopic}!` });
-        }
-
+        let description = []
         for (const verse of parsedVerses) {
             const book = verse.book.toLowerCase();
             const bookId = books.get(book);
@@ -78,7 +72,8 @@ module.exports = {
             const startVerse = parseInt(verse.startVerse);
             const endVerse = parseInt(verse.endVerse) || startVerse; 
 
-            if (!bookId || !chapter || !startVerse) { // There MUST be a book, chapter, and startVerse
+            console.log(bookId, chapter, startVerse, endVerse)
+            if (!bookId || !chapter || !startVerse || startVerse > endVerse) { 
                 continue;
             }
 
@@ -93,14 +88,9 @@ module.exports = {
                 return (index > 0 ? ` <**${number}**> ` : "") + verse[translation]; // If it's not the first verse, add a space before it and the number
             }).join("");
 
-            verse.text = response;
-        }
-
-        let description = [];
-        for (const verse of parsedVerses) {
-            const prettyBookName = numbersToBook.get(books.get(verse.book.toLowerCase().split(" ").join("")));
-            const verseRange = verse.endVerse && verse.startVerse != verse.endVerse ? `-${verse.endVerse}` : ""; // If there is an endVerse and it's not the same as the startVerse, add it to the range
-            description.push(`**${prettyBookName} ${verse.chapter}:${verse.startVerse}${verseRange}**: ${verse.text ?? "No verse found"}\n`);
+            const prettyBookName = numbersToBook.get(bookId);
+            const displayEndVerse = endVerse && startVerse != verse.endVerse ? `-${verse.endVerse}` : ""; // If there is an endVerse and it's not the same as the startVerse, add it to the range
+            description.push(`**${prettyBookName} ${chapter}:${startVerse}${displayEndVerse}**: ${response ?? "No verse found"}\n`);
         }
 
         const embed = new EmbedBuilder()
