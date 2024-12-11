@@ -3,6 +3,14 @@ const swearWordFilter = require('../utils/filter');
 const logger = require('../utils/logger');
 const axios = require('axios');
 
+function generateFooter(page = 0, maxPages = 1) {
+    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
+    return { 
+        text: `${process.env.EMBEDFOOTERTEXT}${pageText}`, 
+        iconURL: process.env.EMBEDICONURL 
+    };
+}
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('topic')
@@ -33,78 +41,137 @@ module.exports = {
             return await interaction.editReply({ content: 'An error occurred while trying to fetch data. Please try again later.' });
         }
 
-        const footer = { text: process.env.EMBEDFOOTERTEXT, iconURL: process.env.EMBEDICONURL };
         const embed = new EmbedBuilder()
-            .setTitle(`Commentaries about ${topic}`)
-            .setFooter(footer)
+            .setTitle(`📚 Topic Study: ${topic}`)
+            .setDescription('Here are some relevant commentaries and insights about this topic:')
             .setURL(process.env.WEBSITE)
             .setColor(eval(process.env.EMBEDCOLOR));
 
         let fields = response.data.results.slice(0, 19).map(result => ({
-            name: result.context.length > 256 ? result.context.substring(0, 250) + "..." : result.context,
-            value: result.text.length > 1024 ? result.text.substring(0, 1021) + "..." : result.text
+            name: result.context.length > 256 
+                ? result.context.substring(0, 250) + "..." 
+                : result.context,
+            value: (result.text.length > 1024 
+                ? result.text.substring(0, 1021) + "..." 
+                : result.text) + "\n\n─────────────────────",
+            inline: false
         }));
 
         const maxVerses = 5;
-
         let pages = [];
-        let tempArray = [];
-        for (const field of fields) {
-            if (tempArray.length >= maxVerses) {
-                pages.push(tempArray);
-                tempArray = [];
-            }
-
-            tempArray.push(field);
+        
+        // Create pages with fields
+        for (let i = 0; i < fields.length; i += maxVerses) {
+            pages.push(fields.slice(i, i + maxVerses));
         }
 
-        if (tempArray.length > 0) {
-            pages.push(tempArray); // Push the last page
+        if (pages.length === 0) {
+            return await interaction.editReply({ 
+                content: 'I couldn\'t find any commentaries related to that topic!' 
+            });
         }
 
-        if (fields.length > maxVerses) {
-            const paginationButtons = [
-                new ButtonBuilder().setStyle(ButtonStyle.Primary).setEmoji("⬅️").setCustomId("page_back"),
-                new ButtonBuilder().setStyle(ButtonStyle.Primary).setEmoji("➡️").setCustomId("page_next")
-            ];
+        let currentPageIndex = 0;
+        embed.addFields(pages[0])
+             .setFooter(generateFooter(currentPageIndex, pages.length));
 
-            const row = new ActionRowBuilder()
-                .addComponents(...paginationButtons);
-
-            footer.text = process.env.EMBEDFOOTERTEXT + ` | Page 1/${pages.length}`;
-            const response = await interaction.editReply({
-                embeds: [embed.setFooter(footer).addFields(pages[0])],
-                components: [row],
-            });
-
-            let currentPage = 0;
-
-            const collector = response.createMessageComponentCollector({ componentType: ComponentType.Button, time: 1_800_000 });
-
-            collector.on('collect', async i => {
-                if (i.user.id !== interaction.user.id) return i.reply({ content: 'You cannot use this button!', ephemeral: true });
-
-                if (i.customId === 'page_next') {
-                    currentPage++;
-                    if (currentPage > pages.length - 1) currentPage = 0;
-                } else if (i.customId === 'page_back') {
-                    currentPage--;
-                    if (currentPage < 0) currentPage = pages.length - 1;
-                }
-                
-                embed.data.fields = []; // make sure to clear the fields before adding new ones
-                footer.text = process.env.EMBEDFOOTERTEXT + ` | Page ${currentPage + 1}/${pages.length}`;
-                await i.update({ embeds: [embed.setFooter(footer).addFields(pages[currentPage])], components: [row] });
-            });
-        } else {
-            const row = new ActionRowBuilder()
+        if (pages.length === 1) {
+            const disclaimerRow = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
                         .setStyle(ButtonStyle.Secondary)
-                        .setLabel("Disclaimer")
-                        .setCustomId("bias_alert"));
-    
-            return interaction.editReply({ embeds: [embed.addFields(pages[0])], components: [row] });
+                        .setLabel("💡 Disclaimer")
+                        .setCustomId("bias_alert")
+                );
+            
+            return interaction.editReply({ 
+                embeds: [embed], 
+                components: [disclaimerRow] 
+            });
         }
+
+        // Add pagination for multiple pages
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('page_back')
+                    .setEmoji('◀️')
+                    .setLabel('Previous')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true),
+                new ButtonBuilder()
+                    .setCustomId('page_next')
+                    .setEmoji('▶️')
+                    .setLabel('Next')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(pages.length === 1),
+                new ButtonBuilder()
+                    .setStyle(ButtonStyle.Secondary)
+                    .setLabel("💡 Disclaimer")
+                    .setCustomId("bias_alert")
+            );
+
+        const message = await interaction.editReply({ 
+            embeds: [embed], 
+            components: [row] 
+        });
+
+        const collector = message.createMessageComponentCollector({
+            time: 600000 // 10 minutes
+        });
+
+        collector.on('collect', async i => {
+            if (i.user.id !== interaction.user.id) {
+                await i.reply({ 
+                    content: 'You cannot use these buttons!', 
+                    ephemeral: true 
+                });
+                return;
+            }
+
+            if (i.customId === 'bias_alert') {
+                await i.reply({
+                    content: '⚠ Please note that these commentaries represent various theological perspectives and interpretations. Always compare with Scripture and use discernment.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            if (i.customId === 'page_next') {
+                currentPageIndex++;
+                if (currentPageIndex >= pages.length) currentPageIndex = 0;
+            } else if (i.customId === 'page_back') {
+                currentPageIndex--;
+                if (currentPageIndex < 0) currentPageIndex = pages.length - 1;
+            }
+
+            const updatedRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('page_back')
+                        .setEmoji('◀️')
+                        .setLabel('Previous')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(currentPageIndex === 0),
+                    new ButtonBuilder()
+                        .setCustomId('page_next')
+                        .setEmoji('▶️')
+                        .setLabel('Next')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(currentPageIndex === pages.length - 1),
+                    new ButtonBuilder()
+                        .setStyle(ButtonStyle.Secondary)
+                        .setLabel("💡 Disclaimer")
+                        .setCustomId("bias_alert")
+                );
+
+            embed.setFields(pages[currentPageIndex])
+                 .setFooter(generateFooter(currentPageIndex, pages.length));
+
+            await i.update({ 
+                embeds: [embed], 
+                components: [updatedRow] 
+            });
+        });
     },
 };

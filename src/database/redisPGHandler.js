@@ -3,6 +3,7 @@ const Redis = require('ioredis');
 const logger = require('../utils/logger.js');
 const userModel = require('./schemas/user.js');
 const guildModel = require('./schemas/guild.js');
+const axios = require('axios');
 
 /**
  * This is a wrapper for the RedisPGClient class, it is used to make it easier to use the RedisPGClient class
@@ -125,6 +126,10 @@ class RedisPGClient {
         
         this.redisClient = new Redis(redisConfig);
 
+        // Add RapidAPI configuration
+        this.rapidApiKey = process.env.RAPIDAPIKEY;
+        this.rapidApiHost = 'uncovered-treasure-v1.p.rapidapi.com';
+
         this.redisClient.on('connect', () => {
             logger.debug('[Database] Connected to Redis');
         });
@@ -150,6 +155,91 @@ class RedisPGClient {
             logger.debug('[Database] Tables created successfully.');
         } catch (error) {
             logger.error(`[Database ERR] Error creating tables: ${error}`);
+        }
+    }
+
+    /**
+     * Get Strong's definition from RapidAPI
+     * @param {String} language - 'Hebrew' or 'Greek'
+     * @param {String} strongsId - The Strong's number
+     * @returns {Object} - The Strong's definition
+     */
+    async getStrongsDefinition(language, strongsId) {
+        try {
+            const options = {
+                method: 'GET',
+                url: `https://${this.rapidApiHost}/strongs/${strongsId}`,
+                headers: {
+                    'x-rapidapi-key': this.rapidApiKey,
+                    'x-rapidapi-host': this.rapidApiHost
+                }
+            };
+
+            const response = await axios.request(options);
+            logger.debug('[API Response]', response.data); // Log the response
+
+            if (!response.data) {
+                logger.error('[Error] No data in API response');
+                return null;
+            }
+
+            // Check if response has the expected structure
+            if (!response.data.language) {
+                logger.error('[Error] Response missing language property:', response.data);
+                return null;
+            }
+
+            if (language && response.data.language.toLowerCase() !== language.toLowerCase()) {
+                return null;
+            }
+            return response.data;
+        } catch (error) {
+            logger.error(`[Error] Failed to fetch Strong's definition:`, error.response?.data || error);
+            return null;
+        }
+    }
+
+    /**
+     * Search Strong's concordance by English word
+     * @param {String} language - 'Hebrew' or 'Greek' 
+     * @param {String} word - English word to search
+     * @returns {Array} - Matching Strong's entries
+     */
+    async searchStrongsByEnglish(language, word) {
+        try {
+            const options = {
+                method: 'GET',
+                url: `https://${this.rapidApiHost}/search/${encodeURIComponent(word)}`,
+                headers: {
+                    'x-rapidapi-key': this.rapidApiKey,
+                    'x-rapidapi-host': this.rapidApiHost
+                }
+            };
+
+            const response = await axios.request(options);
+            logger.debug('[API Response]', response.data); // Log the response
+
+            if (!response.data) {
+                logger.error('[Error] No data in API response');
+                return null;
+            }
+
+            // Check if response has the expected structure
+            if (!response.data.results) {
+                logger.error('[Error] Response missing results property:', response.data);
+                return null;
+            }
+
+            // Filter results by language if specified
+            if (language) {
+                return response.data.results.filter(entry => 
+                    entry.language && entry.language.toLowerCase() === language.toLowerCase()
+                );
+            }
+            return response.data.results;
+        } catch (error) {
+            logger.error(`[Error] Failed to search Strong's concordance:`, error.response?.data || error);
+            return null;
         }
     }
 

@@ -1,4 +1,4 @@
-const { Client, Collection } = require('discord.js');
+const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const redisPGHandler = require('./database/redisPGHandler.js');
@@ -11,13 +11,19 @@ const postgresConfig =  {
     "password": process.env.PGPASSWORD,
     "database": process.env.PGDATABASE,
     "ssl": {
-        "sslmode": "require"
-    }
+        "rejectUnauthorized": true
+    },
+    "port": 5432
 }
 const database = new redisPGHandler(postgresConfig) 
 
 const client = new Client({
-    intents: []
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildIntegrations
+    ]
 });
 
 client.commands = new Collection(); 

@@ -1,5 +1,19 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('@discordjs/builders');
-const { books, bibleWrapper, numbersToBook } = require('../utils/bibleHelper.js');
+const { books, bibleWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper.js');
+const logger = require('../utils/logger');
+
+// Add this near the top of the file after imports
+logger.info('[Bible Command] Books Map contents:', 
+    Array.from(books.entries())
+        .map(([abbr, id]) => `${abbr} -> ${id}`)
+        .join(', ')
+);
+
+logger.info('[Bible Command] NumbersToBook Map contents:', 
+    Array.from(numbersToBook.entries())
+        .map(([id, name]) => `${id} -> ${name}`)
+        .join(', ')
+);
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -31,61 +45,91 @@ module.exports = {
                     { name: "YLT", value: "YLT" },
                 )),
     async execute(interaction, database) {
-        const defaultTranslation = await database.getUserValue(interaction.user.id);
+        await interaction.deferReply();
         
-        const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
+        try {
+            const defaultTranslation = await database.getUserValue(interaction.user.id);
+            const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
 
-        const book = interaction.options.getString('book').toLowerCase().split(" ").join(""); // Remove spaces
-        const chapter = interaction.options.getString('chapter');
-        const startVerse = interaction.options.getNumber('startverse');
-        const endVerse = interaction.options.getNumber('endverse') || startVerse;
+            const rawBook = interaction.options.getString('book').split(" ").join(""); // Remove spaces only
+            logger.info(`[Bible Command] Raw book input: ${rawBook}`);
+            
+            // Use the imported getBookId function directly
+            const bookid = getBookId(rawBook);
+            logger.info(`[Bible Command] Book ID lookup result: ${bookid}`);
 
-        const bookid = books.get(book);
-        
-        if (!bookid) {
-            return interaction.reply({ content: 'I couldn\'t find that book!', ephemeral: true });
-        }
-
-        if (startVerse > endVerse) {
-            return interaction.reply({ content: 'The start verse cannot be greater than the end verse!', ephemeral: true });
-        }
-
-        let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
-
-        if (!verses.length > 0) return interaction.reply({ content: `I couldn't find any verses related to ${book} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}!`, ephemeral: true });
-        
-        verses.sort((a, b) => a.verse - b.verse);
-        
-        // Empty string for response
-        let response = "";
-        for (let i = 0; i < verses.length; i++) {
-            // i starts at 0, so add to get the actual verse number
-            let number = i + startVerse;
-
-            // Add a space if not the first verse!
-            if (response.length > 1) {
-                response += " ";
+            if (!bookid) {
+                logger.warn(`[Bible Command] Could not find book ID for: ${rawBook}`);
+                return interaction.editReply({ 
+                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`, 
+                    ephemeral: true 
+                });
             }
 
-            if (response.length + verses[i][translation].length > 1900) {
-                response = "**The response was too long! Please try again with a smaller range of verses. Here is all I can post:**\n\n" + response;
-                break ;
+            const chapter = interaction.options.getString('chapter');
+            const startVerse = interaction.options.getNumber('startverse');
+            const endVerse = interaction.options.getNumber('endverse') || startVerse;
+
+            logger.info(`[Bible Command] Looking up book ${bookid} (${numbersToBook.get(bookid)}) ${chapter}:${startVerse}-${endVerse} in ${translation}`);
+
+            if (startVerse > endVerse) {
+                return interaction.editReply({ content: 'The start verse cannot be greater than the end verse!', ephemeral: true });
             }
 
-            response += "<**" + number + "**> " + verses[i][translation];
-        }
+            let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
 
-        let embed = new EmbedBuilder()
-            // Because book is a number representing the book, we need to get the book name from the numbersToBook map
-            .setTitle(`${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}`)
-            .setDescription(response)
-            .setColor(eval(process.env.EMBEDCOLOR))
-            .setURL(process.env.WEBSITE)
-            .setFooter({ 
-                text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`, 
-                icon_url: process.env.EMBEDICONURL 
-            });
-        
-        return interaction.reply({ embeds: [embed] });
+            if (!verses.length > 0) {
+                return interaction.editReply({ 
+                    content: `I couldn't find any verses related to ${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}!`, 
+                    ephemeral: true 
+                });
+            }
+            
+            verses.sort((a, b) => a.verse - b.verse);
+            
+            // Empty string for response
+            let response = "";
+            for (let i = 0; i < verses.length; i++) {
+                // i starts at 0, so add to get the actual verse number
+                let number = i + startVerse;
+
+                // Add a space if not the first verse!
+                if (response.length > 1) {
+                    response += " ";
+                }
+
+                if (response.length + verses[i][translation].length > 1900) {
+                    response = "**The response was too long! Please try again with a smaller range of verses. Here is all I can post:**\n\n" + response;
+                    break;
+                }
+
+                response += "<**" + number + "**> " + verses[i][translation];
+            }
+
+            let embed = new EmbedBuilder()
+                .setTitle(`${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}`)
+                .setDescription(response)
+                .setColor(eval(process.env.EMBEDCOLOR))
+                .setURL(process.env.WEBSITE)
+                .setFooter({ 
+                    text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`, 
+                    iconURL: process.env.EMBEDICONURL 
+                });
+            
+            return interaction.editReply({ embeds: [embed] });
+
+        } catch (error) {
+            logger.error(`[Bible Command] Error processing request: ${error.message}`);
+            logger.error(error.stack);
+            
+            try {
+                return interaction.editReply({ 
+                    content: 'Sorry, there was an error processing your request.', 
+                    ephemeral: true 
+                });
+            } catch (e) {
+                logger.error(`[Bible Command] Could not send error message: ${e.message}`);
+            }
+        }
     },
 };
