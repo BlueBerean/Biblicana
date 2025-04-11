@@ -251,14 +251,48 @@ class strongsWrapper {
     /**
      * Use this method to get a word object from the strongs database using the strongs id
      * @param {*} language  The language to search for the word in (Hebrew or Greek)
-     * @param {*} id  The strongs id to search for
-     * @returns  The word object
+     * @param {*} id  The strongs id to search for (e.g., "G3972" or "H853")
+     * @returns  The word object or undefined if not found
      */
     async getStrongsId (language, id) {
-        const db = await this.db;
-        const query = await db.get(`SELECT * FROM ${language} WHERE strongs = ?`, [id]);
+        if (!id) return undefined; // Basic validation
 
-        return query;
+        const db = await this.db;
+        const normalizedLanguage = language.toLowerCase(); // Use lowercase for table name check
+        const tableName = normalizedLanguage === 'greek' ? 'Greek' : 'Hebrew'; // Adjust if table names are capitalized
+
+        try {
+            // Attempt 1: Query with the full ID (e.g., "G3972")
+            logger.debug(`[Strongs Wrapper] Attempting lookup for ID: ${id} in table: ${tableName}`);
+            let result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [id]);
+
+            if (result) {
+                logger.debug(`[Strongs Wrapper] Found match for full ID: ${id}`);
+                return result;
+            } else {
+                logger.debug(`[Strongs Wrapper] No match for full ID: ${id}. Checking number part.`);
+                // Attempt 2: Query with only the number part (e.g., "3972")
+                const numberPart = id.substring(1); // Remove the first character (G/H)
+                if (numberPart && !isNaN(numberPart)) {
+                    logger.debug(`[Strongs Wrapper] Attempting lookup for number: ${numberPart} in table: ${tableName}`);
+                    result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [numberPart]);
+                    if (result) {
+                        logger.debug(`[Strongs Wrapper] Found match for number part: ${numberPart}`);
+                        return result;
+                    } else {
+                        logger.debug(`[Strongs Wrapper] No match for number part: ${numberPart}`);
+                    }
+                }
+            }
+
+            // If both attempts fail
+            logger.warn(`[Strongs Wrapper] No definition found for ${id} (or number part) in ${tableName}`);
+            return undefined;
+
+        } catch (error) {
+            logger.error(`[Strongs Wrapper] Database error querying ${tableName} for ${id}: ${error.message}`);
+            return undefined; // Return undefined on error to prevent crashes
+        }
     }
 
 }

@@ -1,14 +1,39 @@
 const { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder } = require('discord.js');
 const swearWordFilter = require('../utils/filter');
-const splitString = require('../utils/splitString.js');
 const { strongsWrapper } = require('../utils/bibleHelper.js');
+const logger = require('../utils/logger');
+require('dotenv').config();
 
+// Constants
+const ITEMS_PER_PAGE = 5;
+const COLLECTOR_TIMEOUT_MS = 300_000; // 5 minutes
+const HEBREW_COLOR = 0x3498DB; // Keep specific colors for now
+const GREEK_COLOR = 0x9B59B6;
+
+// Helper to generate embed footer
 function generateFooter(currentPage, totalPages) {
     return {
         text: `${process.env.EMBEDFOOTERTEXT} | Page ${currentPage + 1}/${totalPages}`,
         iconURL: process.env.EMBEDICONURL
     };
 }
+
+// Helper to create the action row with buttons
+const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
+    .addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji('◀️')
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji('▶️')
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === totalPages - 1)
+    );
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -24,130 +49,171 @@ module.exports = {
                 ))
         .addStringOption(option => 
             option.setName('word')
-                .setDescription('Enter an English word or Strong\'s number (e.g. H1254 or G3056)')
+                .setDescription('Enter an English word or Strong\'s number (e.g., H1234 or G123)')
                 .setRequired(true)
-                .setMaxLength(250)),
+                .setMaxLength(100)), // Reduced max length slightly
 
     async execute(interaction) {
         await interaction.deferReply();
 
-        let word = swearWordFilter(interaction.options.getString('word'));
-        let lexiconId = interaction.options.getString('lexiconid');
-        
-        const wordContainsNumbers = /\d/.test(word);
+        try {
+            const lexiconId = interaction.options.getString('lexiconid');
+            const rawWord = interaction.options.getString('word').trim(); // Trim input
+            const word = swearWordFilter(rawWord); // Apply filter after trimming
 
-        const result = wordContainsNumbers 
-            ? [await strongsWrapper.getStrongsId(lexiconId, word)] 
-            : await strongsWrapper.getStrongsEnglish(lexiconId, word);
+            if (!word) {
+                return interaction.editReply({ content: 'Please provide a valid word or Strong\'s number.', ephemeral: true });
+            }
 
-        if (!result) {
+            // More specific Strong's number check (H or G followed by digits)
+            const strongsRegex = /^[HGhg]\d+$/i;
+            const isStrongsNumber = strongsRegex.test(word);
+
+            let results = [];
+            let queryType = '';
+
+            try {
+                if (isStrongsNumber) {
+                    queryType = 'Strongs ID';
+                    logger.info(`[Define Command] Fetching by Strong's ID: ${word} in ${lexiconId}`);
+                    const singleResult = await strongsWrapper.getStrongsId(lexiconId, word);
+                    if (singleResult) {
+                        results = [singleResult];
+                    }
+                } else {
+                    queryType = 'English Word';
+                    logger.info(`[Define Command] Fetching by English word: ${word} in ${lexiconId}`);
+                    results = await strongsWrapper.getStrongsEnglish(lexiconId, word);
+                }
+            } catch (fetchError) {
+                logger.error(`[Define Command] Error fetching from strongsWrapper (${queryType}: ${word}, Lexicon: ${lexiconId}): ${fetchError}`);
+                return interaction.editReply({ content: 'Sorry, there was an error communicating with the lexicon database. Please try again later.', ephemeral: true });
+            }
+
+            if (!results || results.length === 0) {
+                logger.warn(`[Define Command] No results found for ${queryType}: ${word} in ${lexiconId}`);
             return interaction.editReply({ 
                 content: `❌ No results found for "${word}" in the ${lexiconId} lexicon.`,
                 ephemeral: true 
             });
         }
 
-        // Group results into pages of 5
-        const itemsPerPage = 5;
+            // Filter out any potentially null/invalid results just in case
+            results = results.filter(item => item && item.strongs);
+            if (results.length === 0) {
+                 logger.warn(`[Define Command] Initial results found but filtered out as invalid for ${queryType}: ${word} in ${lexiconId}`);
+                 return interaction.editReply({ content: 'Found potential matches, but couldn\'t process them. Please check your input.', ephemeral: true });
+            }
+
+            // Group results into pages
         const pages = [];
-        for (let i = 0; i < result.length; i += itemsPerPage) {
-            const pageItems = result.slice(i, i + itemsPerPage);
+            const totalResults = results.length;
+            const totalPages = Math.ceil(totalResults / ITEMS_PER_PAGE);
+
+            for (let i = 0; i < totalResults; i += ITEMS_PER_PAGE) {
+                const pageItems = results.slice(i, i + ITEMS_PER_PAGE);
+                const pageNum = Math.floor(i / ITEMS_PER_PAGE);
+
+                // Use specific colors, could be replaced by env var if desired
+                const embedColor = lexiconId === "Greek" ? GREEK_COLOR : HEBREW_COLOR;
             
             const embed = new EmbedBuilder()
-                .setTitle(`📚 ${lexiconId} Word Study - "${word}"`)
-                .setColor(lexiconId === "Greek" ? 0x9B59B6 : 0x3498DB)
+                    .setTitle(`📚 ${lexiconId} Word Study - "${rawWord}"`) // Use rawWord for title
+                    .setColor(embedColor)
                 .setURL(process.env.WEBSITE);
 
             const descriptions = pageItems.map((item, index) => {
-                const strongsNumber = `${lexiconId === "Greek" ? "G" : "H"}${item.strongs}`;
-                const definition = lexiconId === "Greek" ? 
-                    (item.definition || item.strong_def) : 
-                    item.strong_def;
+                    // Construct Strong's number safely
+                    const strongsPrefix = lexiconId === "Greek" ? "G" : "H";
+                    const strongsNumber = item.strongs ? `${strongsPrefix}${item.strongs}` : 'N/A';
+
+                    // Determine definition source
+                    const definition = lexiconId === "Greek"
+                        ? (item.definition || item.strong_def || 'No definition available.')
+                        : (item.strong_def || 'No definition available.');
                     
+                    // Format entry
                 return [
-                    `### ${index + 1 + (i * itemsPerPage)}. ${strongsNumber}`,
+                        `### ${i + index + 1}. ${strongsNumber}`, // Use global index for numbering
                     '',
-                    `**Original Word:** ${item.unicode}`,
+                        `**Original Word:** ${item.unicode || 'N/A'}`,
                     `**Transliteration:** ${item.translit || item.xlit || "N/A"}`,
                     '',
-                    `**Definition:**\n${definition}`,
+                        `**Definition:**`,
+                        definition.substring(0, 1000) + (definition.length > 1000 ? '...' : ''), // Limit definition length per item
                     '―――――――――――――――'
                 ].join('\n');
             });
 
-            embed.setDescription(descriptions.join('\n\n'));
+                embed.setDescription(descriptions.join('\n')) // Join with single newline for compactness
+                     .setFooter(generateFooter(pageNum, totalPages));
             pages.push(embed);
         }
 
-        if (pages.length === 1) {
-            return interaction.editReply({ embeds: [pages[0]] });
-        }
+            if (pages.length === 0) { // Should not happen if results were validated, but safety check
+                 logger.error(`[Define Command] Processing resulted in zero pages for ${queryType}: ${word}`);
+                 return interaction.editReply({ content: 'An unexpected error occurred while formatting the results.', ephemeral: true });
+            }
 
-        // Setup pagination
-        let currentPage = 0;
+            // Send the first page
+            let currentPageIndex = 0;
+            const message = await interaction.editReply({
+                embeds: [pages[currentPageIndex]],
+                components: [createActionRow(currentPageIndex, totalPages, pages.length === 1)]
+            });
 
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('page_back')
-                    .setLabel('Previous')
-                    .setEmoji('◀️')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true),
-                new ButtonBuilder()
-                    .setCustomId('page_next')
-                    .setLabel('Next')
-                    .setEmoji('▶️')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(pages.length === 1)
-            );
+            // Stop if only one page
+            if (pages.length === 1) return;
 
-        const response = await interaction.editReply({
-            embeds: [pages[0].setFooter(generateFooter(currentPage, pages.length))],
-            components: [row]
-        });
-
-        const collector = response.createMessageComponentCollector({ 
+            // Setup collector
+            const filter = i => i.user.id === interaction.user.id;
+            const collector = message.createMessageComponentCollector({
+                filter,
             componentType: ComponentType.Button, 
-            time: 300000 // 5 minutes
+                time: COLLECTOR_TIMEOUT_MS
         });
 
         collector.on('collect', async i => {
-            if (i.user.id !== interaction.user.id) {
-                return i.reply({ 
-                    content: '❌ You cannot use these buttons', 
-                    ephemeral: true 
-                });
-            }
+                try {
+                    await i.deferUpdate();
 
-            currentPage = i.customId === 'page_back'
-                ? (currentPage === 0 ? pages.length - 1 : currentPage - 1)
-                : (currentPage === pages.length - 1 ? 0 : currentPage + 1);
+                    if (i.customId === 'page_back') {
+                        currentPageIndex = (currentPageIndex - 1 + totalPages) % totalPages;
+                    } else if (i.customId === 'page_next') {
+                        currentPageIndex = (currentPageIndex + 1) % totalPages;
+                    }
 
-            const updatedRow = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('page_back')
-                        .setLabel('Previous')
-                        .setEmoji('◀️')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(currentPage === 0),
-                    new ButtonBuilder()
-                        .setCustomId('page_next')
-                        .setLabel('Next')
-                        .setEmoji('▶️')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(currentPage === pages.length - 1)
-                );
-
-            await i.update({ 
-                embeds: [pages[currentPage].setFooter(generateFooter(currentPage, pages.length))],
-                components: [updatedRow]
-            });
+                    await i.editReply({
+                        embeds: [pages[currentPageIndex]], // Footer is already on the embed
+                        components: [createActionRow(currentPageIndex, totalPages)]
+                    });
+                } catch (collectError) {
+                    logger.error(`[Define Command] Error updating pagination: ${collectError}`);
+                     try {
+                         await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                     } catch { /* Ignore follow-up error */ }
+                }
         });
 
         collector.on('end', () => {
-            interaction.editReply({ components: [] }).catch(() => {});
+                logger.info(`[Define Command] Pagination collector ended for "${word}"`);
+                // Edit message to disable buttons
+                const timedOutRow = createActionRow(currentPageIndex, totalPages, true);
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                     logger.error(`[Define Command] Error disabling buttons after timeout: ${editError}`);
         });
+            });
+
+        } catch (error) {
+            logger.error(`[Define Command] Unhandled error: ${error.message}`, error.stack);
+            try {
+                 await interaction.editReply({
+                    content: 'An unexpected error occurred while processing your request. Please try again later.',
+                    ephemeral: true
+                 });
+            } catch (replyError) {
+                logger.error(`[Define Command] Failed to send error reply: ${replyError}`);
+            }
+        }
     },
 };

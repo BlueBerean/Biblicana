@@ -1,17 +1,31 @@
 const { EmbedBuilder } = require('discord.js');
+require('dotenv').config();
 
 module.exports = {
     id: "bias_alert",
-    execute(interaction) {
-        const embed = new EmbedBuilder()
-            .setTitle('Warning: Results may not be contextual.')
-            .setDescription('Biblicana uses a LLM (Large Language Model) to select verses. While the verses are accurate, the context of the results may vary. Always check original source for context. For support, please email hello@biblicana.org')
-            .setColor(eval(process.env.EMBEDCOLOR))
-            .setFooter({
-                text: process.env.EMBEDFOOTERTEXT,
-                iconURL: process.env.EMBEDICONURL
-            });
+    async execute(interaction) {
+        try {
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0xFFA500;
 
-        return interaction.reply({ embeds: [embed], ephemeral: true })
+            const embed = new EmbedBuilder()
+                .setTitle('⚠️ AI Response Disclaimer')
+                .setDescription('AI suggestions (like those in /find or /web) are based on patterns and may not always perfectly capture theological nuances or full context. Always refer back to Scripture as the primary source.')
+                .setColor(embedColor)
+                .setFooter({
+                    text: process.env.EMBEDFOOTERTEXT,
+                    iconURL: process.env.EMBEDICONURL
+                });
+
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+
+        } catch (error) {
+            try {
+                if (!interaction.replied) {
+                    await interaction.reply({ content: 'Could not display disclaimer due to an error.', ephemeral: true });
+                }
+            } catch (nestedError) {
+                console.error('Error during fallback reply:', nestedError);
+            }
+        }
     }
 }

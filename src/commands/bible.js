@@ -18,14 +18,14 @@ logger.info('[Bible Command] NumbersToBook Map contents:',
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('bible')
-        .setDescription('Find a specific verse in the bible!')
-        .addStringOption(option => option.setName('book').setDescription('The book you want to find a verse for!').setRequired(true))
-        .addStringOption(option => option.setName('chapter').setDescription('The chapter you want to find a verse for!').setRequired(true))
-        .addNumberOption(option => option.setName('startverse').setDescription('The range of verses you want to find!').setRequired(true))
+        .setDescription('Find a specific verse in the bible')
+        .addStringOption(option => option.setName('book').setDescription('The book you want to find a verse for').setRequired(true))
+        .addStringOption(option => option.setName('chapter').setDescription('The chapter you want to find a verse for').setRequired(true))
+        .addNumberOption(option => option.setName('startverse').setDescription('The range of verses you want to find').setRequired(true))
         .addNumberOption(option => option.setName('endverse').setDescription('The range of verses you want to find'))
         .addStringOption(option =>
             option.setName('translation')
-                .setDescription('The translation you want to use!')
+                .setDescription('The translation you want to use')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
                     { name: "NASB", value: "NASB" },
@@ -73,7 +73,7 @@ module.exports = {
             logger.info(`[Bible Command] Looking up book ${bookid} (${numbersToBook.get(bookid)}) ${chapter}:${startVerse}-${endVerse} in ${translation}`);
 
             if (startVerse > endVerse) {
-                return interaction.editReply({ content: 'The start verse cannot be greater than the end verse!', ephemeral: true });
+                return interaction.editReply({ content: 'The start verse cannot be greater than the end verse', ephemeral: true });
             }
 
             let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);

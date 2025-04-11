@@ -1,13 +1,14 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('@discordjs/builders');
-
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const logger = require('../utils/logger');
+require('dotenv').config();
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('setversion')
-        .setDescription('Set the default translation you want to use!')
+        .setDescription('Set your preferred default Bible translation.')
         .addStringOption(option =>
             option.setName('translation')
-                .setDescription('The translation you want to use!')
+                .setDescription('Your preferred translation')
                 .setRequired(true)
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
@@ -28,27 +29,55 @@ module.exports = {
                     { name: "YLT", value: "YLT" },
                 )),
     async execute(interaction, database) {
-        const translation = interaction.options.getString('translation') || 'BSB';
-        const userid = interaction.user.id;
-        const user = await database.getUserValue(userid);
+        const translation = interaction.options.getString('translation');
+        const userId = interaction.user.id;
+        const userName = interaction.user.username;
 
-        if (user) {
-            database.updateUserValue(userid, {translation: translation});
-        } else {
-            database.setUserValue(userid, { id: userid, translation: translation });
+        try {
+            logger.info(`[SetVersion Command] User ${userName} (${userId}) attempting to set default translation to ${translation}`);
+
+            const userExists = await database.getUserValue(userId);
+
+            let dbOperationSuccessful;
+            if (userExists) {
+                logger.debug(`[SetVersion Command] Updating existing user ${userId}`);
+                dbOperationSuccessful = await database.updateUserValue(userId, { translation: translation });
+            } else {
+                logger.debug(`[SetVersion Command] Inserting new user ${userId}`);
+                dbOperationSuccessful = await database.setUserValue(userId, { id: userId, translation: translation });
+            }
+
+            if (!dbOperationSuccessful && dbOperationSuccessful !== undefined) {
+                throw new Error('Database operation returned unsuccessful status.');
+            }
+
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+
+            let embed = new EmbedBuilder()
+                .setTitle('✅ Default Translation Set')
+                .setDescription(`Your default Bible translation has been set to **${translation}**. Commands like \`/find\` will now use this by default.`)
+                .setColor(embedColor)
+                .setURL(process.env.WEBSITE)
+                .setFooter({
+                    text: process.env.EMBEDFOOTERTEXT,
+                    iconURL: process.env.EMBEDICONURL
+                });
+
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+            logger.info(`[SetVersion Command] Successfully set default translation for ${userName} (${userId}) to ${translation}`);
+
+        } catch (error) {
+            logger.error(`[SetVersion Command] Error setting translation for ${userName} (${userId}) to ${translation}: ${error.message}`, error.stack);
+            try {
+                await interaction.reply({
+                    content: '❌ Sorry, there was an error saving your preference. Please try again later.',
+                    ephemeral: true
+                });
+            } catch (replyError) {
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[SetVersion Command] Failed to send error reply: ${replyError}`);
+                }
+            }
         }
-
-        let embed = new EmbedBuilder()
-            // Because book is a number representing the book, we need to get the book name from the numbersToBook map
-            .setTitle(`Set your default translation to ${translation}!`)
-            .setDescription(`Your default translation is now ${translation}! If you want to change it, use \`/setversion\` again!`)
-            .setColor(eval(process.env.EMBEDCOLOR))
-            .setURL(process.env.WEBSITE)
-            .setFooter({
-                text: process.env.EMBEDFOOTERTEXT,
-                iconURL: process.env.EMBEDICONURL
-            });
-        
-        return interaction.reply({ embeds: [embed] });
     },
 };

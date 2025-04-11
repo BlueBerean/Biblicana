@@ -192,6 +192,7 @@
     "wrappy": "^1.0.2",
     "ws": "^8.14.2",
     "yallist": "^4.0.0",
+    "yargs": "^17.7.2",
     "yocto-queue": "^0.1.0"
   },
   "scripts": {

@@ -2,43 +2,104 @@ const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butt
 const axios = require('axios');
 const logger = require('../utils/logger');
 const splitString = require('../utils/splitString');
-const { getBookId } = require('../utils/bibleHelper');
+const { getBookId, numbersToBook } = require('../utils/bibleHelper');
 require('dotenv').config();
+
+// Constants
+const MAX_CHARS_PER_CHUNK = 4000; // Max description length for Discord embeds is 4096
+const COLLECTOR_TIMEOUT_MS = 1_800_000; // 30 minutes
+
+// Helper to generate embed footer
+function generateFooter(page, maxPages) {
+    return {
+        text: `${process.env.EMBEDFOOTERTEXT} | Page ${page + 1}/${maxPages}`,
+        iconURL: process.env.EMBEDICONURL
+    };
+}
+
+// Helper to create the action row with buttons
+const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
+    .addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji('◀️')
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji('▶️')
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === totalPages - 1)
+    );
+
+// Function to clean commentary text
+function cleanCommentary(text) {
+    if (typeof text !== 'string') {
+        text = JSON.stringify(text);
+    }
+    // Remove HTML entities, scriptural/Talmudic references in various formats, multiple spaces/newlines
+    return text
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/\{[^}]+\}/g, '') // Remove {in curly braces}
+        .replace(/T\.\s*Bab\.\s*[^,]+\s*(?:fol\.|\.)\s*\d+(\.\d+)?/g, '') // Remove T. Bab. Pesachim. fol. 99. 2. etc.
+        .replace(/\([^)]*\b(?:Ibid|See|Compare|Cf)\b[^)]*\)/gi, '') // Remove (Ibid.), (See...), (Compare...)
+        .replace(/\([^)]+\)$/gm, '') // Remove simple (parentheses) at end of lines
+        .replace(/(\r\n|\n|\r)/gm, " ") // Replace newlines with spaces first
+        .replace(/\s{2,}/g, ' ') // Collapse multiple spaces
+        .trim();
+}
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('commentary')
-        .setDescription('Look up Gill\'s Bible Commentary for a specific verse')
+        .setDescription("Look up Gill's Bible Commentary for a specific verse")
         .addStringOption(option => 
             option.setName('book')
-                .setDescription('The book you want to find commentary for!')
+                .setDescription('The book you want to find commentary for')
                 .setRequired(true))
         .addStringOption(option => 
             option.setName('chapter')
-                .setDescription('The chapter you want to find commentary for!')
+                .setDescription('The chapter number')
                 .setRequired(true))
-        .addNumberOption(option => 
+        .addNumberOption(option => // Use Number for verse
             option.setName('verse')
-                .setDescription('The verse you want to find commentary for!')
-                .setRequired(true)),
+                .setDescription('The verse number')
+                .setRequired(true)
+                .setMinValue(1)), // Ensure verse is at least 1
 
     async execute(interaction) {
         await interaction.deferReply();
 
         try {
             const rawBook = interaction.options.getString('book');
-            const chapter = parseInt(interaction.options.getString('chapter'));
-            const verse = interaction.options.getNumber('verse');
+            const chapterInput = interaction.options.getString('chapter');
+            const verseInput = interaction.options.getNumber('verse');
 
+            // Validate chapter
+            const chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
                 return interaction.editReply({ 
-                    content: 'Please provide a valid chapter number.',
+                    content: 'Please provide a valid chapter number (must be 1 or greater).',
                     ephemeral: true 
                 });
             }
 
+            // Validate verse (already partly validated by setMinValue)
+            if (verseInput === null || !Number.isInteger(verseInput) || verseInput < 1) {
+                 return interaction.editReply({
+                    content: 'Please provide a valid verse number (must be a whole number, 1 or greater).',
+                    ephemeral: true
+                });
+            }
+            const verse = verseInput;
+
             // Get book ID using the existing helper function
             const bookId = getBookId(rawBook);
+            const bookName = numbersToBook.get(bookId); // Get book name for title
             if (!bookId) {
                 return interaction.editReply({ 
                     content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`, 
@@ -48,7 +109,7 @@ module.exports = {
 
             // Format verse ID as required by the API (e.g., "01001001" for Genesis 1:1)
             const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verse.toString().padStart(3, '0')}`;
-            logger.info(`[Commentary Command] Looking up commentary for verse ID: ${verseId}`);
+            logger.info(`[Commentary Command] Looking up commentary for ${bookName} ${chapter}:${verse} (ID: ${verseId})`);
 
             const options = {
                 method: 'GET',
@@ -64,159 +125,114 @@ module.exports = {
             };
 
             const response = await axios.request(options);
-            logger.debug('Commentary API Response:', response.data);
+            // logger.debug('[Commentary Command] API Response:', response.data); // Keep for debugging if needed
 
             if (!response.data) {
-                await interaction.editReply(`No commentary found for this verse.`);
-                return;
+                return interaction.editReply(`No commentary found for ${bookName} ${chapter}:${verse}.`);
             }
 
             // Clean and process the commentary text
-            let commentaryText = response.data;
-            if (typeof commentaryText !== 'string') {
-                commentaryText = JSON.stringify(commentaryText);
+            const cleanedCommentary = cleanCommentary(response.data);
+
+            if (!cleanedCommentary) {
+                 return interaction.editReply(`The commentary for ${bookName} ${chapter}:${verse} appears to be empty after cleaning.`);
             }
 
-            // Clean up the text
-            commentaryText = commentaryText
-                .replace(/&quot;/g, '"')
-                .replace(/&apos;/g, "'")
-                .replace(/&amp;/g, '&')
-                // Remove references in curly braces and their content
-                .replace(/\{[^}]+\}/g, '')
-                // Remove references like T. Bab. Pesachim, etc.
-                .replace(/T\. Bab\.[^\.]+\./g, '')
-                // Remove references in parentheses at the end of lines
-                .replace(/\([^)]+\)\./g, '.')
-                // Clean up multiple spaces
-                .replace(/\s+/g, ' ')
-                // Clean up multiple newlines
-                .replace(/\n+/g, '\n\n')
-                // Remove any remaining citations
-                .replace(/\s*\([^)]+\)\s*/g, ' ')
-                .trim();
+            const commentaryText = `*From Gill's Exposition of the Bible*\n\n${cleanedCommentary}`;
 
-            // Add a note about the commentary source
-            commentaryText = `*From Gill's Exposition of the Bible*\n\n${commentaryText}`;
+            // Split into chunks for pagination
+            const chunks = splitString(commentaryText, MAX_CHARS_PER_CHUNK);
 
-            // Split into chunks for pagination if needed
-            const chunks = splitString(commentaryText, 1900);
+            if (chunks.length === 0) { // Should not happen if cleanedCommentary has content, but good practice
+                 return interaction.editReply(`Failed to process commentary for ${bookName} ${chapter}:${verse}.`);
+            }
+
+            let currentPageIndex = 0;
+
+            // Use parseInt for safer color handling, provide a default
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR) : 0x0099FF;
 
             // Create the first embed
             const embed = new EmbedBuilder()
-                .setColor(eval(process.env.EMBEDCOLOR))
-                .setTitle(`📖 Gill's Commentary: ${rawBook} ${chapter}:${verse}`)
-                .setDescription(chunks[0])
+                .setColor(embedColor)
+                .setTitle(`📖 Gill's Commentary: ${bookName} ${chapter}:${verse}`)
+                .setDescription(chunks[currentPageIndex])
                 .setURL(process.env.WEBSITE)
-                .setFooter({
-                    text: `${process.env.EMBEDFOOTERTEXT} | Page 1/${chunks.length}`,
-                    iconURL: process.env.EMBEDICONURL
-                });
+                .setFooter(generateFooter(currentPageIndex, chunks.length));
 
             // If there's only one chunk, just send it
             if (chunks.length === 1) {
-                await interaction.editReply({ embeds: [embed] });
-                return;
+                return interaction.editReply({ embeds: [embed] });
             }
 
-            // If there are multiple chunks, add navigation buttons
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('page_back')
-                        .setEmoji('◀️')
-                        .setLabel('Previous')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(true),
-                    new ButtonBuilder()
-                        .setCustomId('page_next')
-                        .setEmoji('▶️')
-                        .setLabel('Next')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(chunks.length <= 1)
-                );
-
-            const response2 = await interaction.editReply({
+            // Send initial reply with buttons
+            const message = await interaction.editReply({
                 embeds: [embed],
-                components: [row]
+                components: [createActionRow(currentPageIndex, chunks.length)]
             });
 
-            const collector = response2.createMessageComponentCollector({ 
+            // Filter for button interactions from the original user
+            const filter = i => i.user.id === interaction.user.id;
+
+            const collector = message.createMessageComponentCollector({
+                filter,
                 componentType: ComponentType.Button, 
-                time: 1_800_000  // 30 minutes
+                time: COLLECTOR_TIMEOUT_MS
             });
-
-            let currentPage = 0;
 
             collector.on('collect', async i => {
-                if (i.user.id !== interaction.user.id) {
-                    await i.reply({ 
-                        content: '⚠️ These buttons are only for the user who ran the command.', 
-                        ephemeral: true 
-                    });
-                    return;
+                try {
+                     await i.deferUpdate(); // Acknowledge interaction
+
+                     if (i.customId === 'page_next') {
+                         currentPageIndex = (currentPageIndex + 1) % chunks.length;
+                     } else if (i.customId === 'page_back') {
+                         currentPageIndex = (currentPageIndex - 1 + chunks.length) % chunks.length;
+                     }
+
+                     // Update embed
+                     embed.setDescription(chunks[currentPageIndex])
+                          .setFooter(generateFooter(currentPageIndex, chunks.length));
+
+                     // Edit the message with updated embed and buttons
+                     await i.editReply({
+                         embeds: [embed],
+                         components: [createActionRow(currentPageIndex, chunks.length)]
+                     });
+                } catch (collectError) {
+                     logger.error(`[Commentary Command] Error updating pagination: ${collectError}`);
+                     try {
+                         await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                     } catch (followUpError) {
+                         logger.error(`[Commentary Command] Error sending follow-up after pagination error: ${followUpError}`);
+                     }
                 }
-
-                const selection = i.customId;
-                currentPage = (selection === "page_back") 
-                    ? (currentPage === 0 ? chunks.length - 1 : currentPage - 1)
-                    : (currentPage === chunks.length - 1 ? 0 : currentPage + 1);
-
-                // Update buttons with new style
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('page_back')
-                            .setEmoji('◀️')
-                            .setLabel('Previous')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPage === 0),
-                        new ButtonBuilder()
-                            .setCustomId('page_next')
-                            .setEmoji('▶️')
-                            .setLabel('Next')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPage === chunks.length - 1)
-                    );
-
-                // Update embed with new style
-                const embed = new EmbedBuilder()
-                    .setColor(eval(process.env.EMBEDCOLOR))
-                    .setTitle(`📖 Gill's Commentary: ${rawBook} ${chapter}:${verse}`)
-                    .setDescription(chunks[currentPage])
-                    .setURL(process.env.WEBSITE)
-                    .setFooter({
-                        text: `${process.env.EMBEDFOOTERTEXT} | Page ${currentPage + 1}/${chunks.length}`,
-                        iconURL: process.env.EMBEDICONURL
-                    });
-
-                await i.update({ embeds: [embed], components: [row] });
             });
 
-            // Add collector end handling to match other commands
-            collector.on('end', async () => {
-                const disabledRow = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('page_back')
-                            .setEmoji('◀️')
-                            .setLabel('Previous')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(true),
-                        new ButtonBuilder()
-                            .setCustomId('page_next')
-                            .setEmoji('▶️')
-                            .setLabel('Next')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(true)
-                    );
-
-                await response2.edit({ components: [disabledRow] }).catch(() => {});
+            collector.on('end', () => { // Removed unused 'collected' param
+                logger.info(`[Commentary Command] Pagination collector ended for ${bookName} ${chapter}:${verse}`);
+                // Edit the message to disable buttons after timeout
+                const timedOutRow = createActionRow(currentPageIndex, chunks.length, true); // Pass true to disable
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                    logger.error(`[Commentary Command] Error disabling buttons after timeout: ${editError}`);
+                });
             });
 
         } catch (error) {
-            logger.error('Commentary command error:', error.response?.data || error);
-            await interaction.editReply('Sorry, there was an error fetching the commentary. Please try again later.');
+            logger.error(`[Commentary Command] Error: ${error.message}`, error.stack);
+             if (error.response) {
+                logger.error(`[Commentary Command] API Error Status: ${error.response.status}`);
+                logger.error(`[Commentary Command] API Error Data: ${JSON.stringify(error.response.data)}`);
+            }
+            try {
+                 // Provide a user-friendly error message
+                 await interaction.editReply({
+                     content: 'Sorry, there was an error fetching or processing the commentary. Please check the book/chapter/verse or try again later.',
+                     ephemeral: true
+                 });
+             } catch (replyError) {
+                 logger.error(`[Commentary Command] Failed to send error reply: ${replyError}`);
+             }
         }
     },
 }; 

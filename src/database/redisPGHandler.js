@@ -17,6 +17,10 @@ class RedisPGWrapper {
         this.RedisPGClient = new RedisPGClient(postgresConfig, redisConfig, redisExpiry);
     }
 
+    async initialize() {
+        await this.RedisPGClient.initialize();
+    }
+
     // User functions
     async setUserValue(id, value) {
         return this.validateAndSetValue(`user:${id}`, value, userModel);
@@ -122,8 +126,6 @@ class RedisPGClient {
     constructor(postgresConfig, redisConfig = null, redisExpiry = 21600) {
         this.pgClient = new pg.Pool(postgresConfig);
 
-        this.createTables();
-        
         this.redisClient = new Redis(redisConfig);
 
         // Add RapidAPI configuration
@@ -136,6 +138,15 @@ class RedisPGClient {
 
         this.expiry = redisExpiry;
         
+    }
+
+    async initialize() {
+        // Perform async initialization tasks here
+        logger.debug('[Database] Initializing Database Handler...');
+        await this.createTables();
+        // Add Redis connection check/wait if necessary in the future
+        // Example: await this.redisClient.ping(); 
+        logger.info('[Database] Database Handler Initialized.');
     }
 
     async createTables() {

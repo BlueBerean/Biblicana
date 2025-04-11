@@ -1,8 +1,12 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const axios = require('axios');
 const logger = require('../utils/logger');
-const { bibleWrapper, getBookId } = require('../utils/bibleHelper');
+const { bibleWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper');
+const VOTDData = require('../../data/VOTD.json');
 require('dotenv').config();
+
+// --- Constants ---
+// Keep potentially useful constants if needed later, like timeouts for fetches
+const VERSE_FETCH_TIMEOUT_MS = 6000;
 
 function generateFooter(translation = "BSB") {
     return { 
@@ -11,13 +15,49 @@ function generateFooter(translation = "BSB") {
     };
 }
 
+// Function to parse reference string (e.g., "John 3:16", "1 Cor 13:4-7")
+function parseVOTDReference(refString) {
+    if (!refString) return null;
+
+    // Regex to capture book name, chapter, start verse, and optional end verse
+    // Allows for spaces and numbers in book names (e.g., "1 Corinthians")
+    const match = refString.match(/^([1-3]?\s*[\w\s]+)\s+(\d+):(\d+)(?:-(\d+))?$/i);
+
+    if (!match) {
+        logger.warn(`[parseVOTDReference] Could not parse reference string: ${refString}`);
+        return null;
+    }
+
+    const bookNameStr = match[1].trim();
+    const chapterStr = match[2];
+    const startVerseStr = match[3];
+    const endVerseStr = match[4]; // Might be undefined
+
+    const bookId = getBookId(bookNameStr);
+    if (!bookId) {
+        logger.warn(`[parseVOTDReference] Could not get bookId for book name: ${bookNameStr}`);
+        return null;
+    }
+
+    const chapter = parseInt(chapterStr);
+    const startVerse = parseInt(startVerseStr);
+    const endVerse = endVerseStr ? parseInt(endVerseStr) : startVerse; // Default end to start if not present
+
+    if (isNaN(chapter) || isNaN(startVerse) || isNaN(endVerse)) {
+        logger.warn(`[parseVOTDReference] Failed to parse chapter/verse numbers in: ${refString}`);
+        return null;
+    }
+
+    return { bookId, chapter, startVerse, endVerse };
+}
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('passageoftheday')
-        .setDescription('Get today\'s featured Bible passage')
+        .setDescription('Get the Bible passage selected for today')
         .addStringOption(option =>
             option.setName('translation')
-                .setDescription('The translation to show the passage in')
+                .setDescription('The translation to show the passage in (defaults to BSB)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
                     { name: "NASB", value: "NASB" },
@@ -31,109 +71,110 @@ module.exports = {
         await interaction.deferReply();
 
         try {
-            const defaultTranslation = await database.getUserValue(interaction.user.id);
-            const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
-
-            const options = {
-                method: 'GET',
-                url: 'https://complete-study-bible.p.rapidapi.com/daily-passage/',
-                headers: {
-                    'x-rapidapi-key': process.env.RAPIDAPIKEY,
-                    'x-rapidapi-host': 'complete-study-bible.p.rapidapi.com'
-                }
-            };
-
-            const response = await axios.request(options);
-            logger.info('[PassageOfTheDay Command] API Response:', JSON.stringify(response.data, null, 2));
-
-            if (!response.data || !Array.isArray(response.data) || !response.data[0]?.verses?.[0]) {
-                return interaction.editReply({
-                    content: 'Sorry, I couldn\'t fetch today\'s passage. Please try again later.',
-                    ephemeral: true
-                });
+            // --- Determine Translation ---
+            let translation = 'BSB'; // Default
+            try {
+                const userPref = await database.getUserValue(interaction.user.id);
+                if (userPref?.translation) translation = userPref.translation;
+            } catch (dbError) {
+                logger.error(`[PassageOfTheDay Command] Failed to get user preference: ${dbError}`);
             }
+            translation = interaction.options.getString('translation') || translation;
 
-            const passageData = response.data[0];
-            const verseData = passageData.verses[0];
-            
-            // Since the API doesn't provide book and chapter info, we need to look it up
-            // based on the verse ID. For now, we know this is 1 John 4:18 based on the content
-            const book = 62; // 1 John
-            const chapter = 4;
-            const verse = verseData.verse; // 18
-
-            // Get verse text using bibleWrapper
-            const verseText = await bibleWrapper.getVerses(
-                book,
-                chapter,
-                verse,
-                verse
-            );
-
-            if (!verseText || verseText.length === 0) {
-                return interaction.editReply({
-                    content: 'Sorry, I couldn\'t fetch the verse text. Please try again later.',
-                    ephemeral: true
-                });
-            }
-
-            // Create reference string
-            const reference = `1 John ${chapter}:${verse}`;
-            
-            // Format the verse text with proper spacing and styling
-            const formattedVerseText = verseText[0][translation] || verseData.kjv;
-            
-            // Get current date
+            // --- Get Today's Reference from VOTD.json ---
             const today = new Date();
-            const dateString = today.toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const monthName = monthNames[today.getMonth()];
+            const dayOfMonth = today.getDate().toString(); // Get day as string for JSON key
+
+            const referenceString = VOTDData?.[monthName]?.[dayOfMonth];
+
+            if (!referenceString) {
+                logger.error(`[PassageOfTheDay Command] No reference found in VOTD.json for ${monthName} ${dayOfMonth}`);
+                return interaction.editReply({ content: 'Sorry, could not find today\'s passage in the schedule.', ephemeral: true });
+            }
+
+            logger.info(`[PassageOfTheDay Command] Today's reference from JSON: ${referenceString}`);
+
+            // --- Parse Reference ---
+            const parsedRef = parseVOTDReference(referenceString);
+
+            if (!parsedRef) {
+                logger.error(`[PassageOfTheDay Command] Failed to parse reference string: ${referenceString}`);
+                return interaction.editReply({ content: 'Sorry, there was an error understanding today\'s passage reference.', ephemeral: true });
+            }
+
+            const { bookId, chapter, startVerse, endVerse } = parsedRef;
+            const bookName = numbersToBook.get(bookId); // We already validated bookId in parse function
+
+            // --- Fetch Verse Text ---
+            let verseTextResult;
+            try {
+                // Add a timeout for safety
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), VERSE_FETCH_TIMEOUT_MS);
+                verseTextResult = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+                if (!verseTextResult || verseTextResult.length === 0) {
+                    throw new Error('No verses returned from bibleWrapper');
+                }
+            } catch (fetchError) {
+                logger.error(`[PassageOfTheDay Command] Error fetching verse text for ${bookName} ${chapter}:${startVerse}-${endVerse}: ${fetchError}`);
+                return interaction.editReply({ content: 'Sorry, I couldn\'t fetch the text for today\'s passage.', ephemeral: true });
+            }
+
+            // --- Format Verse Text and Reference ---
+            let formattedVerseText = "";
+            let referenceDisplay = "";
+            if (startVerse === endVerse) {
+                referenceDisplay = `${bookName} ${chapter}:${startVerse}`;
+                formattedVerseText = verseTextResult[0]?.[translation] || '(Translation not available)';
+            } else {
+                referenceDisplay = `${bookName} ${chapter}:${startVerse}-${endVerse}`;
+                // Combine verses with verse numbers
+                formattedVerseText = verseTextResult.map(v => `**${v.verse}** ${v[translation] || '(Translation missing)'}`).join(' ');
+            }
+
+            // Limit length just in case
+            const MAX_DESC_LENGTH = 4000; // Keep under 4096 limit
+            if (formattedVerseText.length > MAX_DESC_LENGTH) {
+                formattedVerseText = formattedVerseText.substring(0, MAX_DESC_LENGTH - 3) + '...';
+            }
+
+            // --- Create Embed ---
+            const dateString = today.toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
             });
 
-            // Create embed with improved formatting
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+
             const embed = new EmbedBuilder()
                 .setTitle(`📖 Daily Bible Passage - ${dateString}`)
-                .setDescription([
-                    `### ${reference}`,
-                    '',
-                    `*"${formattedVerseText}"*`,
-                    ''
-                ].join('\n'))
-                .setColor(eval(process.env.EMBEDCOLOR))
+                .setDescription(`### ${referenceDisplay}\n\n*${formattedVerseText}*`)
+                .setColor(embedColor)
                 .setURL(process.env.WEBSITE)
                 .setFooter(generateFooter(translation));
 
-            // Add the note/commentary with improved formatting
-            if (passageData.note) {
-                embed.addFields([
-                    {
-                        name: '💭 Daily Reflection',
-                        value: passageData.note.length > 1024 
-                            ? `${passageData.note.substring(0, 1021)}...`
-                            : passageData.note
-                    }
-                ]);
-            }
-
-            // Add additional context field
-            embed.addFields([
-                {
-                    name: '📝 Context',
-                    value: 'This passage is from the First Epistle of John, written to emphasize the basics of faith in Christ and the fundamentals of Christian living.',
-                    inline: false
-                }
-            ]);
-
+            // --- Send Reply ---
             await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
-            logger.error('[PassageOfTheDay Command] Error:', error);
-            await interaction.editReply({ 
-                content: '❌ Sorry, there was an error processing your request. Please try again later.',
-                ephemeral: true 
-            });
+            logger.error(`[PassageOfTheDay Command] Unhandled error: ${error.message}`, error.stack);
+            try {
+                await interaction.editReply({
+                    content: '❌ Sorry, there was an unexpected error processing your request.',
+                    ephemeral: true,
+                    embeds: [], components: [] // Clear potentially broken reply
+                });
+            } catch (replyError) {
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[PassageOfTheDay Command] Failed to send final error reply: ${replyError}`);
+                }
+            }
         }
     }
 }; 

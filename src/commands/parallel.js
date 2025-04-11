@@ -1,36 +1,58 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const axios = require('axios');
 const { getBookId, bibleWrapper, numbersToBook } = require('../utils/bibleHelper');
 const logger = require('../utils/logger');
+const swearWordFilter = require('../utils/filter');
+const splitString = require('../utils/splitString');
 require('dotenv').config();
 
-function generateFooter(translation = "BSB", page, maxPages) {
+const MAX_CHARS_PER_PAGE = 4000;
+const COLLECTOR_TIMEOUT_MS = 600_000;
+
+function generateFooter(topTranslation = "BSB", page, maxPages) {
     const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
     return { 
-        text: `${process.env.EMBEDFOOTERTEXT} | Top Translation: ${translation.toUpperCase()}${pageText}`, 
+        text: `${process.env.EMBEDFOOTERTEXT} | Top Translation: ${topTranslation.toUpperCase()}${pageText}`, 
         iconURL: process.env.EMBEDICONURL 
     };
 }
 
+const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
+    .addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji('◀️')
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji('▶️')
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === totalPages - 1)
+    );
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('parallel')
-        .setDescription('Find parallel verses in the Bible')
+        .setDescription('View a verse in multiple parallel Bible translations')
         .addStringOption(option => 
             option.setName('book')
-                .setDescription('The book you want to find parallel verses for')
+                .setDescription('The book name or abbreviation')
                 .setRequired(true))
         .addStringOption(option => 
             option.setName('chapter')
-                .setDescription('The chapter you want to find parallel verses for')
+                .setDescription('The chapter number')
                 .setRequired(true))
         .addNumberOption(option => 
             option.setName('verse')
-                .setDescription('The verse you want to find parallel verses for')
-                .setRequired(true))
+                .setDescription('The verse number')
+                .setRequired(true)
+                .setMinValue(1))
         .addStringOption(option =>
             option.setName('translation')
-                .setDescription('The translation you want to use')
+                .setDescription('The primary translation to display at the top (defaults to BSB)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
                     { name: "NASB", value: "NASB" },
@@ -44,32 +66,36 @@ module.exports = {
         await interaction.deferReply();
 
         try {
-            const defaultTranslation = await database.getUserValue(interaction.user.id);
-            const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
-            
-            const rawBook = interaction.options.getString('book');
-            const chapter = parseInt(interaction.options.getString('chapter'));
-            const verse = interaction.options.getNumber('verse');
+            const rawBookInput = interaction.options.getString('book').trim();
+            const chapterInput = interaction.options.getString('chapter');
+            const verseInput = interaction.options.getNumber('verse');
+            const rawBook = swearWordFilter(rawBookInput);
 
+            const chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ 
-                    content: 'Please provide a valid chapter number.',
-                    ephemeral: true 
-                });
+                return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
             }
 
             const bookId = getBookId(rawBook);
-            if (!bookId) {
-                return interaction.editReply({ 
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`, 
-                    ephemeral: true 
-                });
+            const bookName = numbersToBook.get(bookId);
+            if (!bookId || !bookName) {
+                logger.warn(`[Parallel Command] Invalid book: ${rawBook}`);
+                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, ephemeral: true });
             }
 
-            const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verse.toString().padStart(3, '0')}`;
-            logger.info(`[Parallel Command] Looking up parallel verses for verse ID: ${verseId}`);
+            let primaryTranslation = 'BSB';
+            try {
+                const userPref = await database.getUserValue(interaction.user.id);
+                if (userPref?.translation) primaryTranslation = userPref.translation;
+            } catch (dbError) {
+                logger.error(`[Parallel Command] Failed to get user preference: ${dbError}`);
+            }
+            primaryTranslation = interaction.options.getString('translation') || primaryTranslation;
 
-            const options = {
+            const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verseInput.toString().padStart(3, '0')}`;
+            logger.info(`[Parallel Command] Request: ${bookName} ${chapter}:${verseInput} (ID: ${verseId}, Primary: ${primaryTranslation})`);
+
+            const apiOptions = {
                 method: 'GET',
                 url: 'https://iq-bible.p.rapidapi.com/GetParallelVerses',
                 params: { verseId },
@@ -79,137 +105,142 @@ module.exports = {
                 }
             };
 
-            const [response, originalVerse] = await Promise.all([
-                axios.request(options),
-                bibleWrapper.getVerses(bookId, chapter, verse, verse)
+            const [parallelResult, originalVerseResult] = await Promise.allSettled([
+                axios.request(apiOptions),
+                bibleWrapper.getVerses(bookId, chapter, verseInput, verseInput)
             ]);
 
-            // Add logging to see the API response structure
-            logger.info('[Parallel Command] API Response:', JSON.stringify(response.data, null, 2));
+            if (originalVerseResult.status === 'rejected' || !originalVerseResult.value || originalVerseResult.value.length === 0 || !originalVerseResult.value[0][primaryTranslation]) {
+                const reason = originalVerseResult.reason?.message || 'Not Found or Translation Unavailable';
+                logger.error(`[Parallel Command] Failed to fetch original verse ${bookName} ${chapter}:${verseInput} (${primaryTranslation}): ${reason}`);
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the text for the primary verse (${bookName} ${chapter}:${verseInput} - ${primaryTranslation}). ${reason}`, ephemeral: true });
+            }
+            const originalVerseText = originalVerseResult.value[0][primaryTranslation];
 
-            if (!response.data || response.data.length === 0) {
-                return interaction.editReply(`No parallel verses found for ${numbersToBook.get(bookId)} ${chapter}:${verse}.`);
+            if (parallelResult.status === 'rejected') {
+                logger.error(`[Parallel Command] API request failed for verse ID ${verseId}: ${parallelResult.reason?.message}`);
+                if (parallelResult.reason?.response) {
+                    logger.error(`[Parallel Command] API Error Status: ${parallelResult.reason.response.status}`);
+                    logger.error(`[Parallel Command] API Error Data: ${JSON.stringify(parallelResult.reason.response.data)}`);
+                }
+                return interaction.editReply({ content: 'Sorry, failed to connect to the parallel translations source.', ephemeral: true });
             }
 
-            if (!originalVerse || originalVerse.length === 0) {
-                return interaction.editReply('Error: Could not fetch the original verse text.');
+            const parallelData = parallelResult.value?.data;
+            logger.debug("[Parallel Command] Raw API Response Data:", JSON.stringify(parallelData));
+
+            if (!Array.isArray(parallelData) || parallelData.length === 0) {
+                logger.warn(`[Parallel Command] No parallel translations found or invalid format for ${verseId}`);
+                const noParallelEmbed = new EmbedBuilder()
+                    .setTitle(`Parallel Translations - ${bookName} ${chapter}:${verseInput}`)
+                    .setDescription(`**${bookName} ${chapter}:${verseInput} (${primaryTranslation.toUpperCase()})**\n${originalVerseText}\n\n*No other parallel translations were found for this verse.*`)
+                    .setColor(0x0099FF)
+                    .setURL(process.env.WEBSITE)
+                    .setFooter(generateFooter(primaryTranslation, 0, 1));
+                return interaction.editReply({ embeds: [noParallelEmbed] });
             }
 
-            // Create pages of parallel verses
-            const maxChars = 1900;
-            const pages = [];
-            const originalVerseText = originalVerse[0][translation];
-            const verseReference = `**${numbersToBook.get(bookId)} ${chapter}:${verse} (${translation})**`;
-            let currentPage = `${verseReference}\n${originalVerseText}\n\n**Parallel Translations:**\n`;
+            let combinedContent = `**${bookName} ${chapter}:${verseInput} (${primaryTranslation.toUpperCase()})**\n${originalVerseText}\n\n**Parallel Translations:**\n`;
+            let validTranslationsCount = 0;
 
-            // Process the translations
-            const translations = response.data.map(translationArray => {
-                if (!Array.isArray(translationArray) || translationArray.length === 0) return null;
-                const version = translationArray[0];
-                if (!version || !version.versionAbbreviation || !version.t) return null;
-                
-                return `• **${version.versionAbbreviation}**: ${version.t}\n`;
-            }).filter(Boolean);
-
-            // Split translations into pages
-            for (const translation of translations) {
-                if ((currentPage + translation).length > maxChars) {
-                    pages.push(currentPage);
-                    currentPage = `${verseReference}\n${originalVerseText}\n\n**Parallel Translations:**\n${translation}`;
+            for (const translationEntry of parallelData) {
+                if (Array.isArray(translationEntry) && translationEntry.length > 0 && typeof translationEntry[0] === 'object' && translationEntry[0] !== null) {
+                    const version = translationEntry[0];
+                    if (version.versionAbbreviation && version.t) {
+                        if (version.versionAbbreviation.toUpperCase() !== primaryTranslation.toUpperCase()) {
+                            combinedContent += `• **${version.versionAbbreviation.toUpperCase()}**: ${version.t}\n`;
+                            validTranslationsCount++;
+                        }
+                    } else {
+                        logger.warn("[Parallel Command] Invalid translation object structure:", JSON.stringify(version));
+                    }
                 } else {
-                    currentPage += translation;
+                    logger.warn("[Parallel Command] Unexpected entry format in parallel data array:", JSON.stringify(translationEntry));
                 }
             }
 
-            if (currentPage) {
-                pages.push(currentPage);
+            if (validTranslationsCount === 0) {
+                logger.warn(`[Parallel Command] API returned data, but no valid parallel translations found for ${verseId} after filtering.`);
+                const noValidParallelEmbed = new EmbedBuilder()
+                    .setTitle(`Parallel Translations - ${bookName} ${chapter}:${verseInput}`)
+                    .setDescription(`**${bookName} ${chapter}:${verseInput} (${primaryTranslation.toUpperCase()})**\n${originalVerseText}\n\n*No other valid parallel translations were found after processing.*`)
+                    .setColor(0x0099FF)
+                    .setURL(process.env.WEBSITE)
+                    .setFooter(generateFooter(primaryTranslation, 0, 1));
+                return interaction.editReply({ embeds: [noValidParallelEmbed] });
             }
 
-            // If no valid translations were found
+            const pages = splitString(combinedContent, MAX_CHARS_PER_PAGE);
+
             if (pages.length === 0) {
-                return interaction.editReply(`No parallel translations found for ${numbersToBook.get(bookId)} ${chapter}:${verse}.`);
+                logger.error("[Parallel Command] Failed to create pages from combined content.");
+                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the parallel translations.', ephemeral: true });
             }
 
             let currentPageIndex = 0;
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+
             const embed = new EmbedBuilder()
-                .setTitle(`Parallel Translations - ${numbersToBook.get(bookId)} ${chapter}:${verse}`)
-                .setDescription(pages[0])
-                .setColor(eval(process.env.EMBEDCOLOR))
+                .setTitle(`Parallel Translations - ${bookName} ${chapter}:${verseInput}`)
+                .setDescription(pages[currentPageIndex])
+                .setColor(embedColor)
                 .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(translation, currentPageIndex, pages.length));
+                .setFooter(generateFooter(primaryTranslation, currentPageIndex, pages.length));
 
-            // Only add pagination buttons if there are multiple pages
-            if (pages.length === 1) {
-                return interaction.editReply({ embeds: [embed] });
-            }
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('page_back')
-                        .setEmoji('◀️')
-                        .setLabel('Previous')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(true),
-                    new ButtonBuilder()
-                        .setCustomId('page_next')
-                        .setEmoji('▶️')
-                        .setLabel('Next')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(pages.length <= 1)
-                );
-
-            const message = await interaction.editReply({ 
-                embeds: [embed], 
-                components: [row] 
+            const message = await interaction.editReply({
+                embeds: [embed],
+                components: pages.length > 1 ? [createActionRow(currentPageIndex, pages.length)] : []
             });
 
+            if (pages.length <= 1) return;
+
+            const filter = i => i.user.id === interaction.user.id;
             const collector = message.createMessageComponentCollector({
-                time: 600000
+                filter,
+                componentType: ComponentType.Button,
+                time: COLLECTOR_TIMEOUT_MS
             });
 
             collector.on('collect', async i => {
-                if (i.user.id !== interaction.user.id) {
-                    await i.reply({ content: 'You cannot use this button!', ephemeral: true });
-                    return;
+                try {
+                    await i.deferUpdate();
+                    if (i.customId === 'page_back') {
+                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
+                    } else if (i.customId === 'page_next') {
+                        currentPageIndex = (currentPageIndex + 1) % pages.length;
+                    }
+
+                    embed.setDescription(pages[currentPageIndex])
+                         .setFooter(generateFooter(primaryTranslation, currentPageIndex, pages.length));
+
+                    await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
+                } catch (collectError) {
+                    logger.error(`[Parallel Command] Error updating pagination: ${collectError}`);
+                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch (followUpError) {
+                        logger.warn(`[Parallel Command] Failed to send follow-up pagination error: ${followUpError.message}`);
+                    }
                 }
+            });
 
-                if (i.customId === 'page_next') {
-                    currentPageIndex++;
-                    if (currentPageIndex > (pages.length - 1)) currentPageIndex = 0;
-                } else if (i.customId === 'page_back') {
-                    currentPageIndex--;
-                    if (currentPageIndex < 0) currentPageIndex = pages.length - 1;
-                }
-
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('page_back')
-                            .setEmoji('◀️')
-                            .setLabel('Previous')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPageIndex === 0),
-                        new ButtonBuilder()
-                            .setCustomId('page_next')
-                            .setEmoji('▶️')
-                            .setLabel('Next')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPageIndex === pages.length - 1)
-                    );
-
-                embed.setDescription(pages[currentPageIndex])
-                     .setFooter(generateFooter(translation, currentPageIndex, pages.length));
-
-                await i.update({ embeds: [embed], components: [row] });
+            collector.on('end', () => {
+                logger.info(`[Parallel Command] Pagination collector ended for ${bookName} ${chapter}:${verseInput}`);
+                const timedOutRow = createActionRow(currentPageIndex, pages.length, true);
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                    if (editError.code !== 10008) {
+                        logger.error(`[Parallel Command] Error disabling buttons: ${editError}`);
+                    }
+                });
             });
 
         } catch (error) {
-            logger.error('[Parallel Command] Error:', error);
-            await interaction.editReply({ 
-                content: 'Sorry, there was an error processing your request. Please try again later.',
-                ephemeral: true 
-            });
+            logger.error(`[Parallel Command] Unhandled error: ${error.message}`, error.stack);
+            try {
+                await interaction.editReply({ content: 'An unexpected error occurred. Please try again later.', embeds: [], components: [] });
+            } catch (replyError) {
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[Parallel Command] Failed to send final error reply: ${replyError}`);
+                }
+            }
         }
     }
 }; 

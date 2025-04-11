@@ -8,7 +8,7 @@ const logger = require('../utils/logger');
 const MAX_VERSES_PER_PAGE = 2;
 const MAX_EMBED_CHARS = 1900;
 const PAGINATION_TIMEOUT_MS = 900000; // 15 minutes
-const OPENAI_MODEL = "gpt-3.5-turbo";
+const OPENAI_MODEL = "gpt-4o-mini";
 const OPENAI_MAX_TOKENS = 500;
 const OPENAI_TEMPERATURE = 0.7;
 
@@ -22,7 +22,7 @@ function joinPage(page, maxChars) {
 
 // Helper function to get verse references from OpenAI
 async function fetchAndParseVerseReferences(topic) {
-    const prompt = `You are a Bible verse finder. Please find relevant verses about "${topic}" and respond ONLY with a JSON array in this exact format: [{"book": "abbreviated_name", "chapter": "chapter_number", "startVerse": "verse_number", "endVerse": "verse_number"}]. Use only these abbreviated names: gen, exo, lev, num, deu, jos, jdg, rut, 1sa, 2sa, 1ki, 2ki, 1ch, 2ch, ezr, neh, est, job, psa, pro, ecc, sos, isa, jer, lam, eze, dan, hos, joe, amo, oba, jon, mic, nah, hab, zep, hag, zec, mal, mat, mar, luk, joh, act, rom, 1co, 2co, gal, eph, php, col, 1th, 2th, 1ti, 2ti, tit, phm, heb, jam, 1pe, 2pe, 1jo, 2jo, 3jo, jde, rev. Return 2-5 relevant verses only. If no relevant verses are found, return an empty JSON array []. Do not include any text before or after the JSON array.`;
+    const prompt = `You are a Bible verse finder. Please find5 to 10 relevant verses about "${topic}" and respond ONLY with a JSON array in this exact format: [{"book": "abbreviated_name", "chapter": "chapter_number", "startVerse": "verse_number", "endVerse": "verse_number"}]. Use only these abbreviated names: gen, exo, lev, num, deu, jos, jdg, rut, 1sa, 2sa, 1ki, 2ki, 1ch, 2ch, ezr, neh, est, job, psa, pro, ecc, sos, isa, jer, lam, eze, dan, hos, joe, amo, oba, jon, mic, nah, hab, zep, hag, zec, mal, mat, mar, luk, joh, act, rom, 1co, 2co, gal, eph, php, col, 1th, 2th, 1ti, 2ti, tit, phm, heb, jam, 1pe, 2pe, 1jo, 2jo, 3jo, jde, rev. If no relevant verses are found, return an empty JSON array []. Do not include any text before or after the JSON array.`;
 
     try {
         const apiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
@@ -182,10 +182,11 @@ async function sendPaginatedReply(interaction, embed, description, translation, 
 
         singlePageCollector.on('collect', async i => {
             if (i.user.id !== interaction.user.id) {
-                return i.reply({ content: 'You cannot use this button!', ephemeral: true });
-            }
-            if (i.customId === 'bias_alert') {
-                return i.reply({ content: 'AI suggestions are based on patterns and may not always perfectly capture theological nuances. Always refer back to the full context of Scripture.', ephemeral: true });
+                try { await i.deferUpdate(); } catch (e) {
+                    logger.warn(`[Find Command] Failed to defer user check interaction: ${e.message}`);
+                }
+                await i.followUp({ content: 'You cannot use this button.', ephemeral: true });
+                return;
             }
         });
 
@@ -227,14 +228,16 @@ async function sendPaginatedReply(interaction, embed, description, translation, 
 
     collector.on('collect', async i => {
         if (i.user.id !== interaction.user.id) {
-            return i.reply({ content: 'You cannot use this button!', ephemeral: true });
-        }
-
-        if (i.customId === 'bias_alert') {
-            return i.reply({ content: 'AI suggestions are based on patterns and may not always perfectly capture theological nuances. Always refer back to the full context of Scripture.', ephemeral: true });
+            try { await i.deferUpdate(); } catch (e) {
+                logger.warn(`[Find Command] Failed to defer user check interaction: ${e.message}`);
+            }
+            await i.followUp({ content: 'You cannot use this button.', ephemeral: true });
+            return;
         }
 
         try {
+            await i.deferUpdate(); // Acknowledge pagination click (deferUpdate is better than deferReply here)
+
             if (i.customId === 'page_next') {
                 currentPage = (currentPage + 1) % pages.length;
             } else if (i.customId === 'page_back') {
@@ -246,12 +249,12 @@ async function sendPaginatedReply(interaction, embed, description, translation, 
                  .setFooter(generateFooter(translation, currentPage, pages.length))
                  .setDescription(joinPage(pages[currentPage], MAX_EMBED_CHARS));
 
-            await i.update({
+            await i.editReply({
                 embeds: [updatedEmbed],
-                components: [actionRow, secondRow]
+                components: [actionRow, secondRow] // Keep both rows
             });
         } catch (updateError) {
-            logger.warn(`[Find Command] Failed to update interaction: ${updateError.message} (Code: ${updateError.code})`);
+            logger.warn(`[Find Command] Failed to update interaction after pagination: ${updateError.message} (Code: ${updateError.code})`);
         }
     });
 
@@ -271,11 +274,11 @@ async function sendPaginatedReply(interaction, embed, description, translation, 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('find')
-        .setDescription('Find a specific verse related to a topic!')
-        .addStringOption(option => option.setName('topic').setDescription('The topic you want to find a verse for!').setRequired(true).setMinLength(3).setMaxLength(250))
+        .setDescription('Find a specific verse related to a topic')
+        .addStringOption(option => option.setName('topic').setDescription('The topic you want to find a verse for').setRequired(true).setMinLength(3).setMaxLength(250))
         .addStringOption(option =>
             option.setName('translation')
-                .setDescription('The translation you want to use!')
+                .setDescription('The translation you want to use')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
                     { name: "NASB", value: "NASB" },

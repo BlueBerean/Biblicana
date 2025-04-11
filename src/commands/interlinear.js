@@ -1,18 +1,67 @@
 const { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder } = require('discord.js');
-const { bibleWrapper, books, strongsWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper.js')
+const { bibleWrapper, strongsWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper.js');
 const logger = require('../utils/logger');
+const swearWordFilter = require('../utils/filter');
+require('dotenv').config();
 
+// --- Constants ---
+const VERSE_FETCH_TIMEOUT_MS = 6000; // Slightly increased
+const STRONGS_FETCH_TIMEOUT_MS = 5000; // Timeout per Strong's number
+const COLLECTOR_TIMEOUT_MS = 600_000; // 10 minutes
+const STRONGS_PAGE_CHAR_LIMIT = 1000; // Limit for Strong's field value (actual limit 1024)
+const EMBED_FIELD_VALUE_LIMIT = 1024; // Discord limit
+
+// --- Helper Functions ---
+
+// Standard footer generation
+function generateFooter(textPrefix, page, maxPages) {
+    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
+    return {
+        text: `${textPrefix}${pageText}`,
+        iconURL: process.env.EMBEDICONURL
+    };
+}
+
+// Standard button row creation
+const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
+    .addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji('◀️')
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji('▶️')
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === totalPages - 1)
+    );
+
+// --- Command Export ---
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('interlinear')
-        .setDescription('Find a specific verse in the interlinear bible!')
-        .addStringOption(option => option.setName('book').setDescription('The book you want to find a verse for!').setRequired(true))
-        .addStringOption(option => option.setName('chapter').setDescription('The chapter you want to find a verse for!').setRequired(true))
-        .addNumberOption(option => option.setName('verse').setDescription('The verse you want to find!').setRequired(true))
+        .setDescription('Get an interlinear view of a specific Bible verse')
+        .addStringOption(option =>
+            option.setName('book')
+                .setDescription('Book name or abbreviation (e.g., gen, john, 1co)')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('chapter')
+                .setDescription('Chapter number')
+                .setRequired(true))
+        .addNumberOption(option =>
+            option.setName('verse')
+                .setDescription('Verse number')
+                .setRequired(true)
+                .setMinValue(1)) // Add min value validation
         .addStringOption(option =>
             option.setName('translation')
-                .setDescription('The translation you want to use in parallel!')
+                .setDescription('Parallel translation (defaults to your preference or BSB)')
                 .addChoices(
+                    // Full list of choices
                     { name: 'BSB', value: 'BSB' },
                     { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
@@ -32,249 +81,252 @@ module.exports = {
                 )),
 
     async execute(interaction, database) {
-        let isDeferred = false;
-        let hasResponded = false;
-        
+        await interaction.deferReply();
+
         try {
-            const rawBook = interaction.options.getString('book');
-            const chapter = interaction.options.getString('chapter');
-            const verseNumber = interaction.options.getNumber('verse');
+            // --- Input Validation and Setup ---
+            const rawBookInput = interaction.options.getString('book').trim();
+            const chapterInput = interaction.options.getString('chapter');
+            const verseInput = interaction.options.getNumber('verse');
+            const rawBook = swearWordFilter(rawBookInput);
 
-            // Validate inputs synchronously before any async operations
-            if (!rawBook || !chapter || !verseNumber) {
-                hasResponded = true;
-                return interaction.reply({ 
-                    content: 'Please provide all required parameters (book, chapter, and verse).', 
-                    ephemeral: true 
-                });
+            const chapter = parseInt(chapterInput);
+            if (isNaN(chapter) || chapter < 1) {
+                return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
+            }
+            // verseInput validated by .setMinValue(1)
+
+            const bookId = getBookId(rawBook);
+            const bookName = numbersToBook.get(bookId);
+            if (!bookId || !bookName) {
+                logger.warn(`[Interlinear Command] Invalid book: ${rawBook}`);
+                return interaction.editReply({ content: `Invalid book: "${rawBook}". Use names like Genesis, John, 1 Corinthians, or abbreviations like gen, jn, 1co.`, ephemeral: true });
             }
 
-            // Defer first since we'll be doing async operations
-            await interaction.deferReply();
-            isDeferred = true;
-            hasResponded = true;
-
-            // Then validate the book
-            const bookid = getBookId(rawBook);
-            if (!bookid) {
-                logger.warn(`[Interlinear Command] Invalid book name: ${rawBook}`);
-                return interaction.editReply({ 
-                    content: `I couldn't find the book "${rawBook}". Try using common abbreviations like "gen", "exo", "mat", "mrk", "1 cor", "rev" or the full name.`, 
-                    ephemeral: true 
-                });
-            }
-
-            const defaultTranslation = (await database.getUserValue(interaction.user.id))?.translation || 'BSB';
-            const translation = interaction.options.getString('translation') || defaultTranslation;
-
-            logger.info(`[Interlinear Command] Processing request for ${rawBook} ${chapter}:${verseNumber}`);
-
-            // Get verse data with timeout
-            const verse = await Promise.race([
-                bibleWrapper.getInterlinearVerse(bookid, chapter, verseNumber),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Timeout getting verse')), 5000)
-                )
-            ]);
-
-            if (!verse) {
-                return interaction.editReply({ 
-                    content: `I couldn't find any verses related to ${numbersToBook.get(bookid)} ${chapter}:${verseNumber}!`,
-                    ephemeral: true 
-                });
-            }
-
-            // Parse verse data
-            let data;
+            // Determine translation
+            let translation = 'BSB'; // Default
             try {
-                data = JSON.parse(verse.data);
-                logger.info(`[Interlinear Command] Successfully parsed verse data`);
-            } catch (error) {
-                logger.error(`[Interlinear Command] Error parsing verse data: ${error.message}`);
-                throw new Error('Failed to parse verse data');
+                const userPref = await database.getUserValue(interaction.user.id);
+                if (userPref?.translation) translation = userPref.translation;
+            } catch (dbError) {
+                logger.error(`[Interlinear Command] Failed to get user preference: ${dbError}`);
+            }
+            translation = interaction.options.getString('translation') || translation;
+
+            logger.info(`[Interlinear Command] Request: ${bookName} ${chapter}:${verseInput} (${translation})`);
+
+            // --- Fetch Interlinear and English Data ---
+            let interlinearDataJson;
+            let englishVerseData;
+            try {
+                const fetchTimeout = (ms, reason = 'Fetch timeout') => new Promise((_, reject) => setTimeout(() => reject(new Error(reason)), ms));
+
+                const [interlinearResult, englishResult] = await Promise.allSettled([
+                    Promise.race([bibleWrapper.getInterlinearVerse(bookId, chapter, verseInput), fetchTimeout(VERSE_FETCH_TIMEOUT_MS, 'Interlinear fetch timeout')]),
+                    Promise.race([bibleWrapper.getVerses(bookId, chapter, verseInput, verseInput), fetchTimeout(VERSE_FETCH_TIMEOUT_MS, 'English verse fetch timeout')])
+                ]);
+
+                if (interlinearResult.status === 'rejected' || !interlinearResult.value?.data) {
+                    throw new Error(`Failed to fetch interlinear data: ${interlinearResult.reason?.message || 'No data returned'}`);
+                }
+                if (englishResult.status === 'rejected' || !englishResult.value || englishResult.value.length === 0) {
+                    throw new Error(`Failed to fetch English verse data: ${englishResult.reason?.message || 'Not found'}`);
+                }
+
+                interlinearDataJson = interlinearResult.value.data;
+                englishVerseData = englishResult.value;
+                logger.info(`[Interlinear Command] Fetched interlinear and English data.`);
+
+            } catch (fetchError) {
+                logger.error(`[Interlinear Command] Error fetching data: ${fetchError.message}`);
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the required verse data (${fetchError.message}). Please check the reference or try again later.`, ephemeral: true });
             }
 
-            // Process verse data
-            let verseText = "";
-            let strongsNumbers = [];
-            let verseEnglish = [];
-            let character = data[0].number.match(/[a-zA-Z]+/)[0];
+            // --- Parse Interlinear Data ---
+            let interlinearItems;
+            try {
+                interlinearItems = JSON.parse(interlinearDataJson);
+                if (!Array.isArray(interlinearItems) || interlinearItems.length === 0) {
+                    throw new Error('Parsed data is not a valid array or is empty.');
+                }
+            } catch (parseError) {
+                logger.error(`[Interlinear Command] Error parsing interlinear JSON: ${parseError.message}`);
+                // logger.debug(`[Interlinear Command] Raw JSON string: ${interlinearDataJson}`); // Keep for debugging if needed
+                return interaction.editReply({ content: 'Sorry, there was an error processing the interlinear data format from the source.', ephemeral: true });
+            }
 
-            // Process all Strong's numbers in parallel
-            const strongsPromises = data.map(async (item) => {
-                verseText += `${item.word} | `;
-                character = item.number.match(/[a-zA-Z]+/)[0];
-                const numbers = item.number.match(/\d+/)[0];
+            // --- Process Interlinear and Strong's Data ---
+            let originalVerseText = "";
+            let transliterationText = "";
+            const strongsEntries = []; // Array to hold { number: 'H123', word: '...', translit: '...', def: '...' }
+            let languageType = ''; // 'Hebrew' or 'Greek' - determined by first valid entry
+
+            const strongsProcessingPromises = interlinearItems.map(async (item) => {
+                if (!item || typeof item.number !== 'string' || !item.number) return; // Skip invalid items
+
+                originalVerseText += `${item.word || ''} | `;
+                transliterationText += `${item.text || ''} | `;
+
+                const match = item.number.match(/([HG])(\d+)/i);
+                if (!match) return;
+
+                const char = match[1].toUpperCase();
+                const numbers = match[2];
+                const currentLexicon = char === "G" ? "Greek" : "Hebrew";
+                if (!languageType) languageType = currentLexicon;
+
+                const strongsId = `${char}${numbers}`;
 
                 try {
-                    const strongs = await strongsWrapper.getStrongsId(
-                        character === "g" ? "Greek" : "Hebrew", 
-                        numbers
-                    );
+                    // Log the request being made
+                    logger.debug(`[Interlinear Command] Requesting Strongs: ${strongsId} (Lexicon: ${currentLexicon})`);
 
-                    const strongsInfo = strongs
-                        ? `• ${item.number} - ${item.word} (${character === "g" ? strongs.translit || "NONE" : strongs.xlit || "NONE"})\n  ${strongs.strong_def || "NONE"}`
-                        : `• ${item.number} - ${item.word}\n  No definition available`;
+                    const fetchTimeout = (ms, reason = `Strongs ${strongsId} timeout`) => new Promise((_, reject) => setTimeout(() => reject(new Error(reason)), ms));
+                    const strongsData = await Promise.race([
+                        strongsWrapper.getStrongsId(currentLexicon, strongsId),
+                        fetchTimeout(STRONGS_FETCH_TIMEOUT_MS)
+                    ]);
 
-                    strongsNumbers.push(strongsInfo);
-                    verseEnglish.push(`${item.text} | `);
-                } catch (error) {
-                    logger.error(`[Interlinear Command] Error getting Strong's data: ${error.message}`);
-                    strongsNumbers.push(`• ${item.number} - ${item.word}\n  Error getting definition`);
-                    verseEnglish.push(`${item.text} | `);
+                    // Log the raw response data
+                    logger.debug(`[Interlinear Command] Received Strongs data for ${strongsId}: ${JSON.stringify(strongsData)}`);
+
+                    const translit = currentLexicon === "Greek" ? (strongsData?.translit) : (strongsData?.xlit);
+                    const definition = strongsData?.strong_def || "No definition found.";
+
+                    // Log if definition specifically is missing
+                    if (!strongsData?.strong_def) {
+                        logger.warn(`[Interlinear Command] strong_def missing for ${strongsId}. Raw data: ${JSON.stringify(strongsData)}`);
+                    }
+
+                    strongsEntries.push({
+                        number: strongsId,
+                        word: item.word || '',
+                        translit: translit || 'N/A',
+                        def: definition
+                    });
+                } catch (strongsError) {
+                    // Ensure the specific error for this ID is logged clearly
+                    logger.warn(`[Interlinear Command] Failed Strongs fetch for ${strongsId}: ${strongsError.message}`);
+                    strongsEntries.push({
+                        number: strongsId,
+                        word: item.word || '',
+                        translit: 'Error',
+                        def: 'Error fetching definition.'
+                    });
                 }
             });
 
-            // Add timeout for Strong's lookups
-            const strongsTimeout = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Strong\'s lookup timeout')), 8000)
-            );
+            // Wait for all Strong's fetches (or timeouts)
+            await Promise.allSettled(strongsProcessingPromises);
+            logger.info(`[Interlinear Command] Processed ${strongsEntries.length} Strong's entries.`);
 
-            try {
-                await Promise.race([
-                    Promise.all(strongsPromises),
-                    strongsTimeout
-                ]);
-            } catch (error) {
-                logger.error(`[Interlinear Command] Strong's lookup timed out or failed: ${error.message}`);
-                // Continue with partial data
-            }
+            // --- Format Output ---
+            const englishVerseText = englishVerseData[0]?.[translation] || `(${translation.toUpperCase()} translation not available)`;
 
-            // Get English verses
-            const englishVerses = await bibleWrapper.getVerses(bookid, chapter, verseNumber, verseNumber);
-            englishVerses.sort((a, b) => a.verse - b.verse);
+            // Safely slice text for fields
+            const sliceField = (text) => text.slice(0, EMBED_FIELD_VALUE_LIMIT - 10); // Leave buffer
+            const formattedOriginal = `\\\`\\\`\\\`${sliceField(originalVerseText.slice(0, -3))}\\\`\\\`\\\``; // Remove trailing ' | '
+            const formattedTranslit = `\\\`\\\`\\\`${sliceField(transliterationText.slice(0, -3))}\\\`\\\`\\\``;
+            const translitDirection = languageType === "Hebrew" ? "(Right to Left)" : "(Left to Right)";
 
-            // Create response
-            let englishResponse = englishVerses.map((verse, i) => 
-                `<**${i + verseNumber}**> ${verse[translation]}`
-            ).join(" ");
+            // Paginate Strong's definitions
+            const strongsPages = [];
+            let currentPageText = "";
+            for (const item of strongsEntries) {
+                const entry = `• **${item.number}** - ${item.word} (${item.translit})\n  ${item.def}`;
+                const potentialLength = currentPageText ? currentPageText.length + entry.length + 2 : entry.length; // +2 for \n\n
 
-            // Create Strong's pages
-            let strongsPages = [];
-            let tempArr = [];
-            for (const strongsNumber of strongsNumbers) {
-                if (tempArr.join("\n\n").length + strongsNumber.length > 1000) {
-                    strongsPages.push(tempArr.join("\n\n"));
-                    tempArr = [];
+                if (currentPageText && potentialLength > STRONGS_PAGE_CHAR_LIMIT) {
+                    strongsPages.push(currentPageText);
+                    currentPageText = entry;
+                } else {
+                    currentPageText += (currentPageText ? "\n\n" : "") + entry;
                 }
-                tempArr.push(strongsNumber);
             }
-            if (tempArr.length > 0) {
-                strongsPages.push(tempArr.join("\n\n"));
-            }
+            if (currentPageText) strongsPages.push(currentPageText);
+            if (strongsPages.length === 0) strongsPages.push("No Strong's definitions could be processed or found.");
 
-            // Create embed
+            const totalStrongsPages = strongsPages.length;
+            let currentStrongsPage = 0;
+
+            // --- Create Embed ---
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF; // Base 16 for hex
+            const baseFooterText = `${process.env.EMBEDFOOTERTEXT} • ${bookName} ${chapter}:${verseInput}`; // Base footer
+
             const embed = new EmbedBuilder()
-                .setTitle(`${numbersToBook.get(bookid)} ${chapter}:${verseNumber} ${translation}`)
-                .setDescription(`*English Translation*\n${englishResponse}`)
-                .setFields([
-                    { 
-                        name: `📜 Original ${character === "g" ? "Greek" : "Hebrew"}`, 
-                        value: `\`\`\`${verseText.slice(0, -3)}\`\`\``,
-                        inline: false 
-                    },
-                    { 
-                        name: `🔄 Transliteration (${character === "g" ? "Left to Right" : "Right to Left"})`, 
-                        value: `\`\`\`${character === "g" 
-                            ? verseEnglish.join("").slice(0, -3) 
-                            : verseEnglish.reverse().join("").slice(0, -3)}\`\`\``,
-                        inline: false 
-                    },
-                    { 
-                        name: "📚 Strong's Concordance", 
-                        value: strongsPages[0],
-                        inline: false 
-                    }
-                ])
-                .setColor(eval(process.env.EMBEDCOLOR));
+                .setTitle(`Interlinear: ${bookName} ${chapter}:${verseInput} (${translation.toUpperCase()})`)
+                .setDescription(`*${translation.toUpperCase()} Translation*\n${englishVerseText}`)
+                .addFields(
+                    { name: `📜 Original ${languageType}`, value: formattedOriginal, inline: false },
+                    { name: `🔄 Transliteration ${translitDirection}`, value: formattedTranslit, inline: false },
+                    { name: "📚 Strong's Definitions", value: strongsPages[currentStrongsPage], inline: false }
+                )
+                .setColor(embedColor)
+                .setURL(process.env.WEBSITE)
+                .setFooter(generateFooter(baseFooterText, currentStrongsPage, totalStrongsPages));
 
-            if (strongsPages.length > 1) {
-                let currentPage = 0;
+            // --- Send Response and Handle Pagination ---
+            const message = await interaction.editReply({
+                embeds: [embed],
+                components: totalStrongsPages > 1 ? [createActionRow(currentStrongsPage, totalStrongsPages)] : []
+            });
 
-                const paginationButtons = [
-                    new ButtonBuilder()
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("◀️")
-                        .setLabel("Previous")
-                        .setCustomId("page_back"),
-                    new ButtonBuilder()
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("▶️")
-                        .setLabel("Next")
-                        .setCustomId("page_next")
-                ];
+            if (totalStrongsPages <= 1) return; // No collector needed
 
-                const row = new ActionRowBuilder()
-                    .addComponents(...paginationButtons);
-
-                const defaultFooter = { 
-                    text: `${process.env.EMBEDFOOTERTEXT} • Strong's Concordance Page 1/${strongsPages.length}`, 
-                    iconURL: process.env.EMBEDICONURL 
-                };
-                const response = await interaction.editReply({
-                    embeds: [embed.setFooter(defaultFooter)],
-                    components: [row],
-                });
-
-                try {
-                    const collector = response.createMessageComponentCollector({ 
+            const filter = i => i.user.id === interaction.user.id;
+            const collector = message.createMessageComponentCollector({
+                filter,
                         componentType: ComponentType.Button, 
-                        time: 1_800_000 
+                time: COLLECTOR_TIMEOUT_MS
                     });
 
                     collector.on('collect', async i => {
                         try {
-                            if (i.user.id !== interaction.user.id) {
-                                return i.reply({ content: 'You cannot use this button!', ephemeral: true });
-                            }
-                            const selection = i.customId;
+                    await i.deferUpdate();
+                    if (i.customId === 'page_back') {
+                        currentStrongsPage = (currentStrongsPage - 1 + totalStrongsPages) % totalStrongsPages;
+                    } else if (i.customId === 'page_next') {
+                        currentStrongsPage = (currentStrongsPage + 1) % totalStrongsPages;
+                    }
 
-                            if (selection === 'page_next') {
-                                currentPage++;
-                                if (currentPage > (strongsPages.length - 1)) currentPage = 0; // currentPage is 0 indexed, so the last page is pages.length - 1
-                            } else if (selection === 'page_back') {
-                                currentPage--;
-                                if (currentPage < 0) currentPage = strongsPages.length - 1;
-                            }
+                    // Update the Strong's field value and footer
+                    // Ensure the field exists before trying to modify it
+                    if (embed.data.fields && embed.data.fields.length > 2) {
+                        embed.data.fields[2].value = strongsPages[currentStrongsPage];
+                    } else {
+                        // Fallback or error handling if fields structure is unexpected
+                        logger.error("[Interlinear Command] Embed fields structure incorrect during pagination.");
+                        embed.spliceFields(2, 1, { name: "📚 Strong's Definitions", value: strongsPages[currentStrongsPage], inline: false });
+                    }
+                    embed.setFooter(generateFooter(baseFooterText, currentStrongsPage, totalStrongsPages));
 
-                            embed.data.fields[2].value = strongsPages[currentPage];
-                      
-                            const pageFooter = { 
-                                text: `${process.env.EMBEDFOOTERTEXT} • Strong's Concordance Page ${currentPage + 1}/${strongsPages.length}`, 
-                                iconURL: process.env.EMBEDICONURL 
-                            };
-
-                            await i.update({ embeds: [embed.setFooter(pageFooter)] });
-                        } catch (error) {
-                            logger.error(`[Interlinear Command] Error in collector: ${error.message}`);
-                        }
-                    });
-                } catch (error) {
-                    logger.error(`[Interlinear Command] Error setting up collector: ${error.message}`);
+                    await i.editReply({ embeds: [embed], components: [createActionRow(currentStrongsPage, totalStrongsPages)] });
+                } catch (collectError) {
+                    logger.error(`[Interlinear Command] Error updating pagination: ${collectError}`);
+                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch { /* Ignore */ }
                 }
-            } else {
-                
-                return interaction.editReply({ embeds: [embed.setFooter({text: process.env.EMBEDFOOTERTEXT, iconURL: process.env.EMBEDICONURL})] });
-            }
+            });
+
+            collector.on('end', () => {
+                logger.info(`[Interlinear Command] Pagination collector ended for ${bookName} ${chapter}:${verseInput}`);
+                const timedOutRow = createActionRow(currentStrongsPage, totalStrongsPages, true); // Disable buttons
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                    // Ignore error if message was deleted
+                    if (editError.code !== 10008) {
+                        logger.error(`[Interlinear Command] Error disabling buttons: ${editError}`);
+                    }
+                });
+            });
 
         } catch (error) {
-            logger.error(`[Interlinear Command] Error processing request: ${error.message}`);
-            
+            logger.error(`[Interlinear Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                if (!hasResponded) {
-                    await interaction.reply({ 
-                        content: 'Sorry, there was an error processing your request.',
-                        ephemeral: true 
-                    });
-                } else if (isDeferred) {
-                    await interaction.editReply({ 
-                        content: 'Sorry, there was an error processing your request.',
-                        ephemeral: true 
-                    });
-                }
-            } catch (e) {
-                if (e.code !== 10062 && e.code !== 40060) {
-                    logger.error(`[Interlinear Command] Could not send error message: ${e.message}`);
+                // Ensure we reply, even if deferred
+                await interaction.editReply({ content: 'An unexpected error occurred. Please try again later.', embeds: [], components: [] }); // Clear components on error
+            } catch (replyError) {
+                // Ignore specific errors if interaction is no longer valid
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[Interlinear Command] Failed to send final error reply: ${replyError}`);
                 }
             }
         }

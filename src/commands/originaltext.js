@@ -1,9 +1,18 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const axios = require('axios');
 const { getBookId, bibleWrapper, numbersToBook } = require('../utils/bibleHelper');
 const logger = require('../utils/logger');
+const swearWordFilter = require('../utils/filter');
+const splitString = require('../utils/splitString');
 require('dotenv').config();
 
+// --- Constants ---
+const MAX_CHARS_PER_PAGE = 4000; // Discord embed description limit is 4096
+const COLLECTOR_TIMEOUT_MS = 600_000; // 10 minutes
+
+// --- Helper Functions ---
+
+// Standard footer generation
 function generateFooter(translation = "BSB", page, maxPages) {
     return { 
         text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()} | Page ${page + 1}/${maxPages}`, 
@@ -11,6 +20,24 @@ function generateFooter(translation = "BSB", page, maxPages) {
     };
 }
 
+// Standard button row creation
+const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
+    .addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji('◀️')
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji('▶️')
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === totalPages - 1)
+    );
+
+// --- Command Export ---
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('originaltext')
@@ -26,7 +53,8 @@ module.exports = {
         .addNumberOption(option => 
             option.setName('verse')
                 .setDescription('The verse you want to see the original text for')
-                .setRequired(true))
+                .setRequired(true)
+                .setMinValue(1))
         .addStringOption(option =>
             option.setName('translation')
                 .setDescription('The translation to show in parallel')
@@ -43,32 +71,39 @@ module.exports = {
         await interaction.deferReply();
 
         try {
-            const defaultTranslation = await database.getUserValue(interaction.user.id);
-            const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
-            
-            const rawBook = interaction.options.getString('book');
-            const chapter = parseInt(interaction.options.getString('chapter'));
-            const verse = interaction.options.getNumber('verse');
+            // --- Input Validation and Setup ---
+            const rawBookInput = interaction.options.getString('book').trim();
+            const chapterInput = interaction.options.getString('chapter');
+            const verseInput = interaction.options.getNumber('verse');
+            const rawBook = swearWordFilter(rawBookInput);
 
+            const chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ 
-                    content: 'Please provide a valid chapter number.',
-                    ephemeral: true 
-                });
+                return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
             }
 
             const bookId = getBookId(rawBook);
-            if (!bookId) {
-                return interaction.editReply({ 
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`, 
-                    ephemeral: true 
-                });
+            const bookName = numbersToBook.get(bookId);
+            if (!bookId || !bookName) {
+                logger.warn(`[OriginalText Command] Invalid book: ${rawBook}`);
+                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, ephemeral: true });
             }
 
-            const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verse.toString().padStart(3, '0')}`;
-            logger.info(`[OriginalText Command] Looking up original text for verse ID: ${verseId}`);
+            // Determine translation
+            let translation = 'BSB'; // Default
+            try {
+                const userPref = await database.getUserValue(interaction.user.id);
+                if (userPref?.translation) translation = userPref.translation;
+            } catch (dbError) {
+                logger.error(`[OriginalText Command] Failed to get user preference: ${dbError}`);
+            }
+            translation = interaction.options.getString('translation') || translation;
 
-            const options = {
+            const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verseInput.toString().padStart(3, '0')}`;
+            logger.info(`[OriginalText Command] Request: ${bookName} ${chapter}:${verseInput} (ID: ${verseId}, Translation: ${translation})`);
+
+            // --- Fetch Data ---
+            const apiOptions = {
                 method: 'GET',
                 url: 'https://iq-bible.p.rapidapi.com/GetOriginalText',
                 params: { verseId },
@@ -78,173 +113,170 @@ module.exports = {
                 }
             };
 
-            const [response, englishVerse] = await Promise.all([
-                axios.request(options),
-                bibleWrapper.getVerses(bookId, chapter, verse, verse)
+            const [originalTextResult, englishVerseResult] = await Promise.allSettled([
+                axios.request(apiOptions),
+                bibleWrapper.getVerses(bookId, chapter, verseInput, verseInput)
             ]);
 
-            // Parse the response data if it's a string
-            const wordData = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+            // Validate English Verse Fetch
+            if (englishVerseResult.status === 'rejected' || !englishVerseResult.value || englishVerseResult.value.length === 0 || !englishVerseResult.value[0][translation]) {
+                const reason = englishVerseResult.reason?.message || 'Not Found or Translation Unavailable';
+                logger.error(`[OriginalText Command] Failed to fetch English verse ${bookName} ${chapter}:${verseInput} (${translation}): ${reason}`);
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the English text for ${bookName} ${chapter}:${verseInput} (${translation}). ${reason}`, ephemeral: true });
+            }
+            const englishVerseText = englishVerseResult.value[0][translation];
 
-            if (!wordData || !Array.isArray(wordData) || wordData.length === 0) {
-                return interaction.editReply(`No original text found for ${numbersToBook.get(bookId)} ${chapter}:${verse}.`);
+            // Validate and Parse Original Text Fetch
+            if (originalTextResult.status === 'rejected') {
+                logger.error(`[OriginalText Command] API request failed for verse ID ${verseId}: ${originalTextResult.reason?.message}`);
+                if (originalTextResult.reason?.response) {
+                    logger.error(`[OriginalText Command] API Error Status: ${originalTextResult.reason.response.status}`);
+                    logger.error(`[OriginalText Command] API Error Data: ${JSON.stringify(originalTextResult.reason.response.data)}`);
+                }
+                return interaction.editReply({ content: 'Sorry, failed to connect to the original text source.', ephemeral: true });
             }
 
-            if (!englishVerse || englishVerse.length === 0) {
-                return interaction.editReply('Error: Could not fetch the English verse text.');
+            let wordDataRaw = originalTextResult.value?.data;
+            let wordData;
+            try {
+                if (typeof wordDataRaw === 'string') {
+                    logger.debug("[OriginalText Command] API response was a string, attempting JSON parse.");
+                    wordData = JSON.parse(wordDataRaw);
+                } else {
+                    wordData = wordDataRaw;
+                }
+                if (!Array.isArray(wordData) || wordData.length === 0) {
+                    throw new Error('Parsed data is not a non-empty array.');
+                }
+            } catch (parseError) {
+                logger.error(`[OriginalText Command] Failed to parse original text data for ${verseId}: ${parseError.message}`);
+                logger.debug("[OriginalText Command] Raw original text response data:", wordDataRaw);
+                return interaction.editReply({ content: 'Sorry, received invalid data format from the original text source.', ephemeral: true });
             }
 
-            // Create pages from the original text data
-            const maxChars = 1900;
-            const pages = [];
-            let currentPage = '';
-
-            // Add English translation
-            currentPage += `**${numbersToBook.get(bookId)} ${chapter}:${verse} (${translation})**\n${englishVerse[0][translation]}\n\n`;
-
-            // Add original text section with language-specific emoji
+            // --- Process and Format Data for Embed ---
             const isNewTestament = bookId > 39;
-            currentPage += `**${isNewTestament ? '🇬🇷 Greek' : '🕎 Hebrew'}:**\n${wordData.map(w => w.word).join(' ')}\n\n`;
+            const languageName = isNewTestament ? 'Greek' : 'Hebrew';
+            const languageEmoji = isNewTestament ? '🇬🇷' : '🕎';
 
-            // Add pronunciation guide with emoji
-            currentPage += `**🗣️ Pronunciation Guide:**\n`;
+            let combinedContent = `**${bookName} ${chapter}:${verseInput} (${translation.toUpperCase()})**\n${englishVerseText}\n\n`;
+            combinedContent += `**${languageEmoji} ${languageName}:**\n${wordData.map(w => w.word || '').join(' ')}\n\n`;
+
+            // Process Pronunciation
+            let pronunciationSection = "";
             for (const word of wordData) {
                 try {
-                    const pronun = JSON.parse(word.pronun);
-                    const wordEntry = `‎${word.word} (${pronun.dic_mod || pronun.dic})\n`;
-                    
-                    if ((currentPage + wordEntry).length > maxChars) {
-                        pages.push(currentPage);
-                        currentPage = wordEntry;
-                    } else {
-                        currentPage += wordEntry;
+                    if (word.pronun) {
+                        const pronunData = JSON.parse(word.pronun); // Parse pronunciation here
+                        pronunciationSection += `\`${word.word}\` - ${pronunData.dic_mod || pronunData.dic || 'N/A'}\n`;
                     }
                 } catch (e) {
-                    logger.error('[OriginalText Command] Error parsing pronunciation:', e);
+                    logger.warn(`[OriginalText Command] Error parsing pronunciation for "${word.word}" (${verseId}): ${e.message}`);
+                    pronunciationSection += `\`${word.word}\` - (Error parsing pronunciation)\n`;
                 }
             }
+            if (pronunciationSection) {
+                combinedContent += `**🗣️ Pronunciation Guide:**\n${pronunciationSection}\n`;
+            }
 
-            // Add word-by-word analysis with emoji
-            currentPage += `\n**📝 Word Analysis:**\n`;
+            // Process Word Analysis
+            let analysisSection = "";
+            const strongsPrefix = isNewTestament ? 'G' : 'H';
             for (const word of wordData) {
-                const strongsPrefix = isNewTestament ? 'G' : 'H';
-                const wordEntry = `‎${word.word} - ${strongsPrefix}${word.strongs}${word.morph ? ` (${word.morph})` : ''}\n`;
-                
-                if ((currentPage + wordEntry).length > maxChars) {
-                    pages.push(currentPage);
-                    currentPage = wordEntry;
-                } else {
-                    currentPage += wordEntry;
+                const morph = word.morph ? `(\`${word.morph}\`)` : ''; // Format morphology in backticks
+                analysisSection += `\`${word.word}\` - ${strongsPrefix}${word.strongs || 'N/A'} ${morph}\n`;
+            }
+            if (analysisSection) {
+                combinedContent += `**📝 Word Analysis:**\n${analysisSection}\n`;
+            }
+
+            // Process Notes
+            let notesSection = "";
+            for (const word of wordData) {
+                if (word.notes) {
+                    notesSection += `\`${word.word}\`: ${word.notes}\n`;
                 }
             }
-
-            // Add notes section with emoji (if notes exist)
-            const notesWithContent = wordData.filter(w => w.notes);
-            if (notesWithContent.length > 0) {
-                currentPage += `\n**📌 Notes:**\n`;
-                for (const word of notesWithContent) {
-                    const noteEntry = `‎${word.word}: ${word.notes}\n`;
-                    
-                    if ((currentPage + noteEntry).length > maxChars) {
-                        pages.push(currentPage);
-                        currentPage = noteEntry;
-                    } else {
-                        currentPage += noteEntry;
-                    }
-                }
+            if (notesSection) {
+                combinedContent += `**📌 Notes:**\n${notesSection}\n`;
             }
 
-            if (currentPage) {
-                pages.push(currentPage);
-            }
+            // Add final note
+            combinedContent += `\n*For detailed Strong's definitions, use the /interlinear command.*`;
 
-            // Add a note about using /interlinear for definitions
-            currentPage += `\n*For detailed Strong's definitions, use the /interlinear command.*`;
+            // --- Create Pages and Embed ---
+            const pages = splitString(combinedContent, MAX_CHARS_PER_PAGE);
 
             if (pages.length === 0) {
-                return interaction.editReply(`No detailed analysis available for ${numbersToBook.get(bookId)} ${chapter}:${verse}.`);
+                logger.error("[OriginalText Command] Failed to create pages from combined content.");
+                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the analysis.', ephemeral: true });
             }
 
             let currentPageIndex = 0;
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+
             const embed = new EmbedBuilder()
-                .setTitle(`📜 Original Text Analysis - ${numbersToBook.get(bookId)} ${chapter}:${verse}`)
-                .setDescription(pages[0])
-                .setColor(eval(process.env.EMBEDCOLOR))
+                .setTitle(`📜 Original Text Analysis - ${bookName} ${chapter}:${verseInput}`)
+                .setDescription(pages[currentPageIndex])
+                .setColor(embedColor)
                 .setURL(process.env.WEBSITE)
                 .setFooter(generateFooter(translation, currentPageIndex, pages.length));
 
-            if (pages.length === 1) {
-                return interaction.editReply({ embeds: [embed] });
-            }
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('page_back')
-                        .setEmoji('◀️')
-                        .setLabel('Previous')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(true),
-                    new ButtonBuilder()
-                        .setCustomId('page_next')
-                        .setEmoji('▶️')
-                        .setLabel('Next')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(false)
-                );
-
-            const message = await interaction.editReply({ 
-                embeds: [embed], 
-                components: [row] 
+            // --- Send Response and Handle Pagination ---
+            const message = await interaction.editReply({
+                embeds: [embed],
+                components: pages.length > 1 ? [createActionRow(currentPageIndex, pages.length)] : []
             });
 
+            if (pages.length <= 1) return; // No collector needed
+
+            const filter = i => i.user.id === interaction.user.id;
             const collector = message.createMessageComponentCollector({
-                time: 600000
+                filter,
+                componentType: ComponentType.Button,
+                time: COLLECTOR_TIMEOUT_MS
             });
 
             collector.on('collect', async i => {
-                if (i.user.id !== interaction.user.id) {
-                    await i.reply({ content: 'You cannot use this button!', ephemeral: true });
-                    return;
+                try {
+                    await i.deferUpdate();
+                    if (i.customId === 'page_back') {
+                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
+                    } else if (i.customId === 'page_next') {
+                        currentPageIndex = (currentPageIndex + 1) % pages.length;
+                    }
+
+                    embed.setDescription(pages[currentPageIndex])
+                         .setFooter(generateFooter(translation, currentPageIndex, pages.length));
+
+                    await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
+                } catch (collectError) {
+                    logger.error(`[OriginalText Command] Error updating pagination: ${collectError}`);
+                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch (followUpError) {
+                        logger.warn(`[OriginalText Command] Failed to send follow-up pagination error: ${followUpError.message}`);
+                    }
                 }
+            });
 
-                if (i.customId === 'page_next') {
-                    currentPageIndex++;
-                    if (currentPageIndex > (pages.length - 1)) currentPageIndex = 0;
-                } else if (i.customId === 'page_back') {
-                    currentPageIndex--;
-                    if (currentPageIndex < 0) currentPageIndex = pages.length - 1;
-                }
-
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('page_back')
-                            .setEmoji('◀️')
-                            .setLabel('Previous')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPageIndex === 0),
-                        new ButtonBuilder()
-                            .setCustomId('page_next')
-                            .setEmoji('▶️')
-                            .setLabel('Next')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPageIndex === pages.length - 1)
-                    );
-
-                embed.setDescription(pages[currentPageIndex])
-                     .setFooter(generateFooter(translation, currentPageIndex, pages.length));
-
-                await i.update({ embeds: [embed], components: [row] });
+            collector.on('end', () => {
+                logger.info(`[OriginalText Command] Pagination collector ended for ${bookName} ${chapter}:${verseInput}`);
+                const timedOutRow = createActionRow(currentPageIndex, pages.length, true); // Disable buttons
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                    if (editError.code !== 10008) { // Ignore if message was deleted
+                        logger.error(`[OriginalText Command] Error disabling buttons: ${editError}`);
+                    }
+                });
             });
 
         } catch (error) {
-            logger.error('[OriginalText Command] Error:', error);
-            logger.error('[OriginalText Command] API Response:', error.response?.data);
-            await interaction.editReply({ 
-                content: 'Sorry, there was an error processing your request. Please try again later.',
-                ephemeral: true 
-            });
+            logger.error(`[OriginalText Command] Unhandled error: ${error.message}`, error.stack);
+            try {
+                await interaction.editReply({ content: 'An unexpected error occurred. Please try again later.', embeds: [], components: [] });
+            } catch (replyError) {
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[OriginalText Command] Failed to send final error reply: ${replyError}`);
+                }
+            }
         }
     }
 }; 

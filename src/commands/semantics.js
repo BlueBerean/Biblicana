@@ -1,18 +1,53 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const axios = require('axios');
 const logger = require('../utils/logger');
+const swearWordFilter = require('../utils/filter');
+const splitString = require('../utils/splitString');
 require('dotenv').config();
 
-function createSemanticEmbed(word, pageContent, currentPage, totalPages) {
-    return new EmbedBuilder()
-        .setTitle(`📚 Semantic Relations for "${word}"`)
-        .setDescription(pageContent)
-        .setColor(eval(process.env.EMBEDCOLOR))
-        .setURL(process.env.WEBSITE)
-        .setFooter({ 
-            text: `${process.env.EMBEDFOOTERTEXT} | Page ${currentPage + 1}/${totalPages}`, 
+const MAX_CHARS_PER_PAGE = 4000;
+const COLLECTOR_TIMEOUT_MS = 600_000;
+const API_TIMEOUT_MS = 6000;
+
+function generateFooter(page, maxPages) {
+    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
+    return {
+        text: `${process.env.EMBEDFOOTERTEXT}${pageText}`,
             iconURL: process.env.EMBEDICONURL 
-        });
+    };
+}
+
+const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
+    .addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji('◀️')
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji('▶️')
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(isEnd || currentPage === totalPages - 1)
+    );
+
+function formatRelationType(type) {
+    return type.toLowerCase()
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, l => l.toUpperCase());
+}
+
+function getRelationEmoji(type) {
+    switch(type.toLowerCase()) {
+        case 'synonyms': return '🟢';
+        case 'antonyms': return '🔴';
+        case 'related_terms': return '🔵';
+        case 'broader_terms': return '⬆️';
+        case 'narrower_terms': return '⬇️';
+        default: return '•';
+    }
 }
 
 module.exports = {
@@ -22,14 +57,21 @@ module.exports = {
         .addStringOption(option => 
             option.setName('word')
                 .setDescription('The word you want to find semantic relations for')
-                .setRequired(true)),
+                .setRequired(true)
+                .setMaxLength(100)),
 
     async execute(interaction) {
         await interaction.deferReply();
 
         try {
-            const word = interaction.options.getString('word');
-            logger.info(`[Semantics Command] Looking up semantic relations for word: ${word}`);
+            const rawWord = interaction.options.getString('word').trim();
+            const word = swearWordFilter(rawWord);
+
+            if (!word) {
+                return interaction.editReply({ content: 'Please provide a valid word.', ephemeral: true });
+            }
+
+            logger.info(`[Semantics Command] Looking up relations for: "${word}"`);
 
             const options = {
                 method: 'GET',
@@ -41,163 +83,123 @@ module.exports = {
                 }
             };
 
-            const response = await axios.request(options);
-            
-            // Add logging to see the API response
-            logger.info('[Semantics Command] API Response:', JSON.stringify(response.data, null, 2));
-
-            if (!response.data || Object.keys(response.data).length === 0) {
-                return interaction.editReply(`No semantic relations found for "${word}".`);
+            let apiResponseData;
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+                const response = await axios.request({...options, signal: controller.signal });
+                clearTimeout(timeoutId);
+                apiResponseData = response.data;
+                logger.debug("[Semantics Command] Raw API Response:", JSON.stringify(apiResponseData));
+            } catch (apiError) {
+                logger.error(`[Semantics Command] API request failed for "${word}": ${apiError.message}`);
+                if (apiError.response) {
+                    logger.error(`[Semantics Command] API Status: ${apiError.response.status}, Data: ${JSON.stringify(apiError.response.data)}`);
+                }
+                return interaction.editReply({ content: 'Sorry, failed to fetch semantic relations from the source.', ephemeral: true });
             }
 
-            // Create pages of semantic relations
-            const maxChars = 1900;
-            const pages = [];
-            let currentPage = '';
+            if (!apiResponseData || typeof apiResponseData !== 'object' || Object.keys(apiResponseData).length === 0) {
+                logger.warn(`[Semantics Command] No relations found or invalid format for "${word}".`);
+                return interaction.editReply({ content: `❌ No semantic relations found for "${word}". Try a different word or check spelling.`, ephemeral: true });
+            }
 
-            // Process the response data
-            const relations = response.data;
-            
-            // Add an introduction section
-            currentPage += `🔍 Exploring semantic relationships for **${word}**\n\n`;
-            
-            // Handle each type of relation with improved formatting
-            for (const type in relations) {
-                if (relations[type] && Array.isArray(relations[type])) {
-                    const words = relations[type].filter(word => word && word.trim());
-                    if (words.length > 0) {
-                        const formattedType = type.toLowerCase()
-                            .replace(/_/g, ' ')
-                            .replace(/\b\w/g, l => l.toUpperCase());
+            let combinedContent = `🔍 Exploring semantic relationships for **${rawWord}**\n\n`;
+            let relationsFound = false;
 
-                        // Add emojis based on relation type
-                        let emoji = '•';
-                        switch(type.toLowerCase()) {
-                            case 'synonyms': emoji = '🟢'; break;
-                            case 'antonyms': emoji = '🔴'; break;
-                            case 'related_terms': emoji = '🔵'; break;
-                            case 'broader_terms': emoji = '⬆️'; break;
-                            case 'narrower_terms': emoji = '⬇️'; break;
-                            default: emoji = '•';
-                        }
-
-                        const section = `**${formattedType}:**\n${words.map(w => `${emoji} ${w}`).join('\n')}\n\n`;
-                        
-                        if ((currentPage + section).length > maxChars) {
-                            pages.push(currentPage);
-                            currentPage = section;
-                        } else {
-                            currentPage += section;
-                        }
+            for (const type in apiResponseData) {
+                const words = apiResponseData[type];
+                if (words && Array.isArray(words)) {
+                    const validWords = words.filter(w => w && typeof w === 'string' && w.trim()).map(w => w.trim());
+                    if (validWords.length > 0) {
+                        relationsFound = true;
+                        const formattedType = formatRelationType(type);
+                        const emoji = getRelationEmoji(type);
+                        combinedContent += `**${formattedType}:**\n${validWords.map(w => `${emoji} ${w}`).join('\n')}\n\n`;
                     }
                 }
             }
 
-            if (currentPage) {
-                pages.push(currentPage);
+            if (!relationsFound) {
+                logger.warn(`[Semantics Command] API returned data for "${word}" but no valid relations found after processing.`);
+                return interaction.editReply({ content: `❌ No valid semantic relations found for "${word}".`, ephemeral: true });
             }
 
-            // If no valid relations were found
+            const pages = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
+
             if (pages.length === 0) {
-                return interaction.editReply({
-                    content: `❌ No semantic relations found for "${word}". Try a different word or check the spelling.`,
-                    ephemeral: true
-                });
+                logger.error("[Semantics Command] Failed to create pages from combined content.");
+                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the relations.', ephemeral: true });
             }
 
             let currentPageIndex = 0;
-            const embed = createSemanticEmbed(word, pages[0], currentPageIndex, pages.length);
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
 
-            if (pages.length === 1) {
-                return interaction.editReply({ embeds: [embed] });
-            }
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('page_back')
-                        .setEmoji('◀️')
-                        .setLabel('Previous')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(true),
-                    new ButtonBuilder()
-                        .setCustomId('page_next')
-                        .setEmoji('▶️')
-                        .setLabel('Next')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(pages.length <= 1)
-                );
+            const embed = new EmbedBuilder()
+                .setTitle(`📚 Semantic Relations for "${rawWord}"`)
+                .setDescription(pages[currentPageIndex])
+                .setColor(embedColor)
+                .setURL(process.env.WEBSITE)
+                .setFooter(generateFooter(currentPageIndex, pages.length));
 
             const message = await interaction.editReply({ 
                 embeds: [embed], 
-                components: [row] 
+                components: pages.length > 1 ? [createActionRow(currentPageIndex, pages.length)] : []
             });
 
+            if (pages.length <= 1) return;
+
+            const filter = i => i.user.id === interaction.user.id;
             const collector = message.createMessageComponentCollector({
-                time: 600000 // 10 minutes
+                filter,
+                componentType: ComponentType.Button,
+                time: COLLECTOR_TIMEOUT_MS
             });
 
             collector.on('collect', async i => {
-                if (i.user.id !== interaction.user.id) {
-                    await i.reply({ 
-                        content: '⚠️ These buttons are only for the user who ran the command.', 
-                        ephemeral: true 
-                    });
-                    return;
+                try {
+                    await i.deferUpdate();
+                    if (i.customId === 'page_back') {
+                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
+                    } else if (i.customId === 'page_next') {
+                        currentPageIndex = (currentPageIndex + 1) % pages.length;
                 }
 
-                if (i.customId === 'page_next') {
-                    currentPageIndex = (currentPageIndex + 1) % pages.length;
-                } else if (i.customId === 'page_back') {
-                    currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
+                    embed.setDescription(pages[currentPageIndex])
+                         .setFooter(generateFooter(currentPageIndex, pages.length));
+
+                    await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
+                } catch (collectError) {
+                    logger.error(`[Semantics Command] Error updating pagination: ${collectError}`);
+                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch (followUpError) {
+                        logger.warn(`[Semantics Command] Failed to send follow-up pagination error: ${followUpError.message}`);
+                    }
                 }
-
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('page_back')
-                            .setEmoji('◀️')
-                            .setLabel('Previous')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPageIndex === 0),
-                        new ButtonBuilder()
-                            .setCustomId('page_next')
-                            .setEmoji('▶️')
-                            .setLabel('Next')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPageIndex === pages.length - 1)
-                    );
-
-                const updatedEmbed = createSemanticEmbed(word, pages[currentPageIndex], currentPageIndex, pages.length);
-                await i.update({ embeds: [updatedEmbed], components: [row] });
             });
 
-            collector.on('end', async () => {
-                const disabledRow = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('page_back')
-                            .setEmoji('◀️')
-                            .setLabel('Previous')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(true),
-                        new ButtonBuilder()
-                            .setCustomId('page_next')
-                            .setEmoji('▶️')
-                            .setLabel('Next')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(true)
-                    );
-
-                await message.edit({ components: [disabledRow] }).catch(() => {});
+            collector.on('end', () => {
+                logger.info(`[Semantics Command] Pagination collector ended for "${word}"`);
+                const timedOutRow = createActionRow(currentPageIndex, pages.length, true);
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                    if (editError.code !== 10008) {
+                        logger.error(`[Semantics Command] Error disabling buttons: ${editError}`);
+                    }
+                });
             });
 
         } catch (error) {
-            logger.error('[Semantics Command] Error:', error);
+            logger.error(`[Semantics Command] Unhandled error: ${error.message}`, error.stack);
+            try {
             await interaction.editReply({ 
-                content: '❌ Sorry, there was an error processing your request. Please try again later.',
-                ephemeral: true 
+                    content: '❌ Sorry, there was an unexpected error processing your request.',
+                    ephemeral: true,
+                    embeds: [], components: []
             });
+            } catch (replyError) {
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[Semantics Command] Failed to send final error reply: ${replyError}`);
+                }
+            }
         }
     }
 }; 
