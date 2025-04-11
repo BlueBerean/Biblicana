@@ -1,5 +1,7 @@
 node_modules
 backups
 config_old.json
-data
 .env
+data/bible.db
+data/strongs.db
+data/books.json

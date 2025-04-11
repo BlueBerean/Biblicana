@@ -8,8 +8,8 @@ module.exports = {
 
         const fields = [
             {
-                name: '📖 Bible Verse Access', 
-                value: 'Use `/bible` to read specific verses. Supports multiple translations and verse ranges.'
+                name: '📖 Bible Verse Access',
+                value: '• `/bible` - Read specific verses. Supports multiple translations and verse ranges.\n• `/bookinfo` - Get detailed background information about a book of the Bible.\n• `/randomverse` - Get a random verse, optionally limited by book/chapter.'
             },
             {
                 name: '🔍 Find Scripture',
@@ -17,7 +17,7 @@ module.exports = {
             },
             {
                 name: "📚 Commentary Search",
-                value: "Use `/commentary` to access Gill's Bible Commentary for specific verses.\nUse `/topic` to search over 25,000 topical commentaries."
+                value: "• `/commentary` - Access Gill's Bible Commentary for specific verses.\n• `/topic` - Search over 25,000 topical commentaries."
             },
             {
                 name: "🔤 Language Study",
@@ -29,7 +29,7 @@ module.exports = {
             },
             {
                 name: "🎯 Topical Study",
-                value: "• `/topicalindex` - Browse verses by topic\n• `/semantics` - Explore word relationships and meanings\n• `/dictionary` - Access Smith's Bible Dictionary"
+                value: "• `/topicalindex` - Browse verses by topic\n• `/semantics` - Explore word relationships and meanings\n• `/dictionary` - Access Smith's Bible Dictionary\n• `/propheciesofjesus` - View prophecies about Jesus and their fulfillment"
             },
             {
                 name: "🔊 Audio Features",
@@ -48,8 +48,12 @@ module.exports = {
                 value: "Use `/passageoftheday` to receive today's featured Bible passage."
             },
             {
+                name: "🛠️ Utilities",
+                value: "• `/ping` - Check bot response time\n• `/stats` - View bot operating statistics\n• `/help` - Show this command guide"
+            },
+            {
                 name: "💡 Tips",
-                value: "• Supports book abbreviations (e.g., 'Gen' for Genesis)\n• Most commands work with multiple Bible translations\n• Use `/randomverse` for random verse inspiration"
+                value: "• Supports book abbreviations (e.g., 'Gen' for Genesis)\n• Most commands work with multiple Bible translations"
             }
         ];
 
