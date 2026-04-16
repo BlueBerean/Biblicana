@@ -24,13 +24,9 @@ const __dirname = path.dirname(__filename);
 const PROPHECIES_PER_PAGE = 5;
 const MAX_DESCRIPTION_CHARS = 350;
 
-// Parses refs like "Isaiah 7:14", "Matthew 1:23", "Genesis 22:1-14", "2 Samuel 7:12".
-// If the source field contains multiple refs (e.g., "Psalm 22:1; Matt 27:46"),
-// takes the first. Returns null if unparseable.
-function parseVerseRef(refStr) {
-    if (!refStr) return null;
-    const firstChunk = refStr.split(/[;,]/)[0].trim();
-    const match = firstChunk.match(/^([1-3]?\s*[A-Za-z]+(?:\s+[A-Za-z]+)*)\s+(\d+):(\d+)(?:-(\d+))?$/);
+// Parse ONE ref chunk like "Isaiah 7:14" or "Genesis 22:1-14". Returns null if unparseable.
+function parseSingleRef(chunk) {
+    const match = chunk.trim().match(/^([1-3]?\s*[A-Za-z]+(?:\s+[A-Za-z]+)*)\s+(\d+):(\d+)(?:-(\d+))?$/);
     if (!match) return null;
     const bookId = getBookId(match[1].trim());
     if (!bookId) return null;
@@ -38,7 +34,17 @@ function parseVerseRef(refStr) {
     const startVerse = parseInt(match[3]);
     const endVerse = match[4] ? parseInt(match[4]) : startVerse;
     if (isNaN(chapter) || isNaN(startVerse)) return null;
-    return { bookId, chapter, startVerse, endVerse };
+    return { bookId, chapter, startVerse, endVerse, label: chunk.trim() };
+}
+
+// Parse a refs field that may contain multiple refs separated by ; or ,
+// (e.g., "Gal 4:4-5; Matt 1:18"). Returns an array of parsed refs, skipping
+// any unparseable chunks. Empty array if nothing valid.
+function parseAllVerseRefs(refStr) {
+    if (!refStr) return [];
+    return refStr.split(/[;,]/)
+        .map(chunk => parseSingleRef(chunk))
+        .filter(Boolean);
 }
 
 function truncate(text, max) {
@@ -70,59 +76,79 @@ function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false
         const ntRef = p['NT Fulfillment'];
         const description = p.Description || '';
 
-        // OT Section — prophecy text + [Open OT] button
-        const otParsed = parseVerseRef(otRef);
-        const otText = `**📜 Prophecy (${otRef || 'OT ref missing'}):**\n${truncate(description, MAX_DESCRIPTION_CHARS)}`;
-        const otSection = new SectionBuilder()
-            .addTextDisplayComponents(new TextDisplayBuilder().setContent(otText));
-
-        if (otParsed) {
-            otSection.setButtonAccessory(
-                new ButtonBuilder()
-                    .setCustomId(buildOpenCustomId(otParsed, `ot${globalIdx}`))
-                    .setLabel('Open OT')
-                    .setEmoji({ name: '📖' })
-                    .setStyle(ButtonStyle.Secondary)
-            );
+        // OT — one Section per parsed ref. First Section carries the prophecy
+        // description; subsequent Sections (for multi-ref fields) just label
+        // the additional ref. If nothing parses, fall back to a disabled button.
+        const otRefs = parseAllVerseRefs(otRef);
+        if (otRefs.length > 0) {
+            otRefs.forEach((parsed, refIdx) => {
+                const firstChunk = refIdx === 0
+                    ? `**📜 Prophecy (${parsed.label}):**\n${truncate(description, MAX_DESCRIPTION_CHARS)}`
+                    : `**📜 Prophecy (${parsed.label})**`;
+                container.addSectionComponents(
+                    new SectionBuilder()
+                        .addTextDisplayComponents(new TextDisplayBuilder().setContent(firstChunk))
+                        .setButtonAccessory(
+                            new ButtonBuilder()
+                                .setCustomId(buildOpenCustomId(parsed, `ot${globalIdx}-${refIdx}`))
+                                .setLabel('Open OT')
+                                .setEmoji({ name: '📖' })
+                                .setStyle(ButtonStyle.Secondary)
+                        )
+                );
+            });
         } else {
-            otSection.setButtonAccessory(
-                new ButtonBuilder()
-                    .setCustomId(`prophecy:noot:${globalIdx}`)
-                    .setLabel('Open OT')
-                    .setEmoji({ name: '📖' })
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true)
+            const otText = `**📜 Prophecy (${otRef || 'OT ref missing'}):**\n${truncate(description, MAX_DESCRIPTION_CHARS)}`;
+            container.addSectionComponents(
+                new SectionBuilder()
+                    .addTextDisplayComponents(new TextDisplayBuilder().setContent(otText))
+                    .setButtonAccessory(
+                        new ButtonBuilder()
+                            .setCustomId(`prophecy:noot:${globalIdx}`)
+                            .setLabel('Open OT')
+                            .setEmoji({ name: '📖' })
+                            .setStyle(ButtonStyle.Secondary)
+                            .setDisabled(true)
+                    )
             );
         }
-        container.addSectionComponents(otSection);
 
-        // NT Section — fulfillment + [Open NT] button (only if NT ref present)
+        // NT — one Section per parsed ref. Fulfillment fields commonly contain
+        // multiple refs like "Gal 4:4-5; Matt 1:18"; each gets its own Open button.
         if (ntRef && ntRef !== 'N/A') {
-            const ntParsed = parseVerseRef(ntRef);
-            const ntSection = new SectionBuilder()
-                .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-                    `✅ **Fulfillment (${ntRef})**`
-                ));
-
-            if (ntParsed) {
-                ntSection.setButtonAccessory(
-                    new ButtonBuilder()
-                        .setCustomId(buildOpenCustomId(ntParsed, `nt${globalIdx}`))
-                        .setLabel('Open NT')
-                        .setEmoji({ name: '📖' })
-                        .setStyle(ButtonStyle.Secondary)
-                );
+            const ntRefs = parseAllVerseRefs(ntRef);
+            if (ntRefs.length > 0) {
+                ntRefs.forEach((parsed, refIdx) => {
+                    container.addSectionComponents(
+                        new SectionBuilder()
+                            .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+                                `✅ **Fulfillment (${parsed.label})**`
+                            ))
+                            .setButtonAccessory(
+                                new ButtonBuilder()
+                                    .setCustomId(buildOpenCustomId(parsed, `nt${globalIdx}-${refIdx}`))
+                                    .setLabel('Open NT')
+                                    .setEmoji({ name: '📖' })
+                                    .setStyle(ButtonStyle.Secondary)
+                            )
+                    );
+                });
             } else {
-                ntSection.setButtonAccessory(
-                    new ButtonBuilder()
-                        .setCustomId(`prophecy:nont:${globalIdx}`)
-                        .setLabel('Open NT')
-                        .setEmoji({ name: '📖' })
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(true)
+                container.addSectionComponents(
+                    new SectionBuilder()
+                        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+                            `✅ **Fulfillment (${ntRef})**`
+                        ))
+                        .setButtonAccessory(
+                            new ButtonBuilder()
+                                .setCustomId(`prophecy:nont:${globalIdx}`)
+                                .setLabel('Open NT')
+                                .setEmoji({ name: '📖' })
+                                .setStyle(ButtonStyle.Secondary)
+                                .setDisabled(true)
+                        )
                 );
             }
-            container.addSectionComponents(ntSection);
         }
     });
 

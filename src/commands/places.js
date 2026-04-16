@@ -70,15 +70,13 @@ function buildMapsLink(lonlat) {
 }
 
 function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
-    const { name, firstRef, structured } = displayName(place.unique_name);
+    const { name, structured } = displayName(place.unique_name);
     const displayTitle = place.openbible_name || name;
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
     const description = truncate(place.ext_description || place.short_description || '*No description available.*', MAX_DESC_LENGTH);
 
-    // Facts block
     const facts = [];
-    if (firstRef) facts.push(`**📖 First Mention:** ${firstRef}`);
     if (place.uStrong) facts.push(`**Strong's:** ${place.uStrong}`);
     if (place.lonlat) facts.push(`**🧭 Coordinates:** ${place.lonlat}`);
 

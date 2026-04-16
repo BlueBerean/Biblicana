@@ -19,7 +19,7 @@ import 'dotenv/config';
 
 const MAX_CHARS_PER_PAGE = 3800;
 const COLLECTOR_TIMEOUT_MS = 1_800_000;
-const DEFAULT_COMMENTATOR_ID = 'jamieson-fausset-brown';
+const DEFAULT_COMMENTATOR_ID = 'adam-clarke';
 
 // Tyndale verse entries are prefixed with "3:16" / "3:16-21" — strip for display.
 function stripTyndaleReferencePrefix(text, commentatorId) {
@@ -149,7 +149,7 @@ export default {
                 .setMinValue(1))
         .addStringOption(option =>
             option.setName('commentator')
-                .setDescription(`Which commentator to use (default: Jamieson-Fausset-Brown)`)
+                .setDescription(`Which commentator to use (default: Adam Clarke)`)
                 .setRequired(false)
                 .addChoices(
                     ...COMMENTATORS.map(c => ({ name: c.label, value: c.id }))

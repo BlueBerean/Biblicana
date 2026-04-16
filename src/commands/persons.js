@@ -3,6 +3,7 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
+    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -80,16 +81,13 @@ function truncate(text, max) {
 }
 
 function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
-    const { name, firstRef, structured } = displayName(person.unique_name);
+    const { name, structured } = displayName(person.unique_name);
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
-    // Facts block: tribe + sex only (first mention and Strong's get their own
-    // Sections below so the affordance sits next to the info it applies to).
     const facts = [];
     if (person.tribe) facts.push(`**🏛 Tribe:** ${person.tribe}`);
     if (person.sex) facts.push(`**Sex:** ${person.sex}`);
 
-    // Family relations
     const family = [];
     const father = formatRelation(person.father);
     const mother = formatRelation(person.mother);
@@ -116,22 +114,7 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
         container.addTextDisplayComponents(new TextDisplayBuilder().setContent(family.join('\n')));
     }
 
-    // First Mention Section — info tied to its action button.
-    if (structured && firstRef) {
-        container.addSectionComponents(
-            new SectionBuilder()
-                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 First Mention:** ${firstRef}`))
-                .setButtonAccessory(
-                    new ButtonBuilder()
-                        .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
-                        .setLabel('Open passage')
-                        .setEmoji({ name: '📖' })
-                        .setStyle(ButtonStyle.Secondary)
-                )
-        );
-    }
-
-    // Strong's Section — info tied to its action button.
+    // Strong's Section — info + Define button tied together.
     const strongs = parseStrongs(person.uStrong);
     if (strongs) {
         container.addSectionComponents(
@@ -152,6 +135,17 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
     ));
 
     const components = [container];
+
+    // Action row — Open passage if the encoded reference is resolvable.
+    if (structured) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
+                .setLabel('Open passage')
+                .setEmoji({ name: '📖' })
+                .setStyle(ButtonStyle.Secondary)
+        ));
+    }
 
     if (totalPages > 1) {
         components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));

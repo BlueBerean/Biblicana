@@ -1,7 +1,6 @@
 import {
     SlashCommandBuilder,
-    ContainerBuilder,
-    TextDisplayBuilder,
+    EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
@@ -14,7 +13,7 @@ import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
-import { accentColor, footerLine } from '../utils/theme.js';
+import { accentColor } from '../utils/theme.js';
 import 'dotenv/config';
 
 const HARDCODED_VERSION = 'kjv';
@@ -29,20 +28,23 @@ async function fetchAudioNarration(bookId, chapter, version) {
     return fetchIQBible('GetAudioNarration', params);
 }
 
+// V1 (legacy) message shape — V2's IsComponentsV2 flag disables inline
+// rendering of plain file attachments, which is what breaks the desktop
+// audio player. Sticking with EmbedBuilder + ActionRow here keeps the
+// inline audio behavior that Discord auto-generates for audio attachments.
 function buildAudioResponse({ bookId, bookName, chapter, audioUrl }) {
-    const container = new ContainerBuilder()
-        .setAccentColor(accentColor())
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `## 🔊 ${bookName} ${chapter} — Audio Narration (KJV)`
-        ))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `Listen to ${bookName} chapter ${chapter} narrated in the King James Version.\n\n💻 Audio player appears inline on desktop. 📱 Mobile users: tap **Download MP3** below.`
-        ))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            footerLine('MP3 format')
-        ));
+    const embed = new EmbedBuilder()
+        .setColor(accentColor())
+        .setTitle(`🔊 ${bookName} ${chapter} — Audio Narration (KJV)`)
+        .setDescription(
+            `Listen to ${bookName} chapter ${chapter} narrated in the King James Version.\n\n` +
+            `💻 Audio player appears inline on desktop. 📱 Mobile users: tap **Download MP3** below.`
+        )
+        .setFooter({
+            text: `${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | MP3 format`,
+            iconURL: process.env.EMBEDICONURL
+        });
 
-    // Row 1 — in-app actions routed through openverse
     const inAppRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`openverse:chapter:${bookId}:${chapter}:1`)
@@ -57,7 +59,6 @@ function buildAudioResponse({ bookId, bookName, chapter, audioUrl }) {
             .setStyle(ButtonStyle.Secondary)
     );
 
-    // Row 2 — external link (MP3 download). Link buttons need no custom_id.
     const linkRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setLabel('Download MP3')
@@ -66,7 +67,7 @@ function buildAudioResponse({ bookId, bookName, chapter, audioUrl }) {
             .setURL(audioUrl)
     );
 
-    return [container, inAppRow, linkRow];
+    return { embed, components: [inAppRow, linkRow] };
 }
 
 export default {
@@ -107,7 +108,7 @@ export default {
             });
         }
 
-        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
+        await interaction.deferReply();
 
         try {
             const response = await fetchAudioNarration(bookId, chapter, HARDCODED_VERSION);
@@ -116,10 +117,7 @@ export default {
             if (!audioUrl || typeof audioUrl !== 'string') {
                 logger.warn(`[Audio Command] No valid fileName in API response for ${bookName} ${chapter}`);
                 return interaction.editReply({
-                    flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(
-                        `❌ No audio narration found for ${bookName} chapter ${chapter} (KJV). It might not be available.`
-                    )]
+                    content: `❌ No audio narration found for ${bookName} chapter ${chapter} (KJV). It might not be available.`
                 });
             }
 
@@ -128,8 +126,7 @@ export default {
             } catch (urlError) {
                 logger.error(`[Audio Command] Invalid audio URL: ${audioUrl}`);
                 return interaction.editReply({
-                    flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(`❌ Received an invalid audio link from the source.`)]
+                    content: `❌ Received an invalid audio link from the source.`
                 });
             }
 
@@ -138,9 +135,11 @@ export default {
                 description: `Audio narration for ${bookName} chapter ${chapter}`
             });
 
+            const { embed, components } = buildAudioResponse({ bookId, bookName, chapter, audioUrl });
+
             await interaction.editReply({
-                flags: MessageFlags.IsComponentsV2,
-                components: buildAudioResponse({ bookId, bookName, chapter, audioUrl }),
+                embeds: [embed],
+                components,
                 files: [audioAttachment]
             });
             logger.info(`[Audio Command] Sent audio for ${bookName} ${chapter}`);
@@ -157,10 +156,7 @@ export default {
             }
 
             try {
-                await interaction.editReply({
-                    flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(`❌ ${userErrorMessage}`)]
-                });
+                await interaction.editReply({ content: `❌ ${userErrorMessage}` });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
                     logger.error(`[Audio Command] Failed to send error reply: ${replyError}`);

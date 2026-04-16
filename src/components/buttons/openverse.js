@@ -1,5 +1,8 @@
 import {
     EmbedBuilder,
+    ContainerBuilder,
+    SectionBuilder,
+    TextDisplayBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
@@ -12,6 +15,8 @@ import { commentaryWrapper, crossRefWrapper, toCommentaryBookCodes, COMMENTATORS
 import { renderInterlinearEphemeral } from '../../utils/interlinearRenderer.js';
 import { renderParallelEphemeral } from '../../utils/parallelRenderer.js';
 import { renderBibleEphemeral } from '../../utils/bibleRenderer.js';
+import { accentColor, footerLine } from '../../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../../utils/paginationHelper.js';
 import logger from '../../utils/logger.js';
 import 'dotenv/config';
 
@@ -20,14 +25,14 @@ const XREF_MAX_FETCH = 50;
 const XREF_PER_PAGE = 8;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 
-// Fallback order for /bible's [Commentary] button. JFB first (our default),
-// then the other five commentators. Keil is filtered out for NT books at the
-// call site (he only covers OT).
+// Fallback order for /bible's [Commentary] button. Adam Clarke first (our
+// default), then the others. Keil is filtered out for NT books at the call
+// site (he only covers OT); Tyndale has no chapter-level intros.
 const COMMENTARY_FALLBACK_ORDER = [
+    'adam-clarke',
     'jamieson-fausset-brown',
     'john-gill',
     'matthew-henry',
-    'adam-clarke',
     'keil-delitzsch',
     'tyndale'
 ];
@@ -100,10 +105,10 @@ function buildChapterCommentaryEmbed({ commentator, text, bookName, chapter }) {
 async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter, bookName }) {
     const isNT = bookId > 39;
     const availableIds = [
+        'adam-clarke',
         'jamieson-fausset-brown',
         'john-gill',
         'matthew-henry',
-        'adam-clarke',
         'keil-delitzsch'
     ].filter(id => !(id === 'keil-delitzsch' && isNT));
 
@@ -190,7 +195,7 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
     }
 }
 
-async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId = 'jamieson-fausset-brown' }) {
+async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId = 'adam-clarke' }) {
     const bookCodes = toCommentaryBookCodes(bookId);
     if (bookCodes.length === 0) return null;
 
@@ -264,7 +269,7 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
         });
     }
 
-    const preferredId = COMMENTARY_FALLBACK_ORDER[0]; // JFB
+    const preferredId = COMMENTARY_FALLBACK_ORDER[0]; // Adam Clarke
     const wasFallback = result.commentatorId !== preferredId;
     const preferred = COMMENTATORS.find(c => c.id === preferredId);
     let currentId = result.commentatorId;
@@ -347,14 +352,69 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
 
 // --- Crossref (paginated) -------------------------------------------------
 
+function buildXrefPage({ processed, sourceLabel, sourceText, translation, pageIdx, totalPages, totalRefCount, disableNav = false }) {
+    const start = pageIdx * XREF_PER_PAGE;
+    const pageRefs = processed.slice(start, start + XREF_PER_PAGE);
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor())
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `## 🔗 Cross References — ${sourceLabel}${pageInfo}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `**${translation.toUpperCase()}:** ${sourceText}`
+        ));
+
+    pageRefs.forEach((ref, localIdx) => {
+        const globalIdx = start + localIdx;
+        container.addSectionComponents(
+            new SectionBuilder()
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${ref.label}** — ${ref.text}`))
+                .setButtonAccessory(
+                    new ButtonBuilder()
+                        .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}:x${globalIdx}`)
+                        .setLabel('Open')
+                        .setEmoji({ name: '📖' })
+                        .setStyle(ButtonStyle.Secondary)
+                )
+        );
+    });
+
+    const shownSuffix = totalRefCount > processed.length
+        ? ` | ${processed.length} of ${totalRefCount} shown`
+        : '';
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        footerLine(`Translation: ${translation.toUpperCase()}${shownSuffix}`)
+    ));
+
+    const components = [container];
+    if (totalPages > 1) {
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
+    }
+    return components;
+}
+
 async function handleCrossref({ interaction, bookId, chapter, verse, bookName, translation }) {
-    const refs = await crossRefWrapper.getForVerse(bookName, chapter, verse);
-    if (!refs || refs.length === 0) {
+    // Same shape as /crossref command — Section-per-ref with [📖 Open] buttons
+    // that chain back into openverse:bible so the user can drill into any ref.
+    const [refsResult, sourceResult] = await Promise.allSettled([
+        crossRefWrapper.getForVerse(bookName, chapter, verse),
+        bibleWrapper.getVerses(bookId, chapter, verse, verse)
+    ]);
+
+    if (refsResult.status === 'rejected' || !refsResult.value || refsResult.value.length === 0) {
         return interaction.reply({
             content: `No cross-references found for ${bookName} ${chapter}:${verse}.`,
             flags: MessageFlags.Ephemeral
         });
     }
+
+    const refs = refsResult.value;
+    const sourceText = (sourceResult.status === 'fulfilled' && sourceResult.value?.[0])
+        ? (sourceResult.value[0][translation] || sourceResult.value[0].BSB || '')
+        : '';
+    const sourceLabel = `${bookName} ${chapter}:${verse}`;
 
     const fetchable = refs.slice(0, XREF_MAX_FETCH);
 
@@ -373,7 +433,14 @@ async function handleCrossref({ interaction, bookId, chapter, verse, bookName, t
         const rangeLabel = endVerse > ref.target_verse_start
             ? `${refBookName} ${ref.target_chapter}:${ref.target_verse_start}-${endVerse}`
             : `${refBookName} ${ref.target_chapter}:${ref.target_verse_start}`;
-        return { label: rangeLabel, text };
+        return {
+            label: rangeLabel,
+            text: text.length > 300 ? text.substring(0, 299) + '…' : text,
+            bookId: refBookId,
+            chapter: ref.target_chapter,
+            startVerse: ref.target_verse_start,
+            endVerse
+        };
     })))
         .filter(r => r.status === 'fulfilled' && r.value)
         .map(r => r.value);
@@ -386,80 +453,27 @@ async function handleCrossref({ interaction, bookId, chapter, verse, bookName, t
     }
 
     const totalPages = Math.ceil(processed.length / XREF_PER_PAGE);
-    let currentPage = 0;
-
-    const buildEmbed = (pageIdx) => {
-        const start = pageIdx * XREF_PER_PAGE;
-        const chunk = processed.slice(start, start + XREF_PER_PAGE);
-        const body = chunk.map(r => `• **${r.label}** — ${r.text}`).join('\n\n');
-        const footerSuffix = refs.length > XREF_MAX_FETCH
-            ? ` | ${processed.length} of ${refs.length} refs`
-            : '';
-        return new EmbedBuilder()
-            .setColor(baseEmbedColor())
-            .setTitle(`🔗 Cross References — ${bookName} ${chapter}:${verse}`)
-            .setDescription(body.substring(0, 4000))
-            .setURL(process.env.WEBSITE)
-            .setFooter(standardFooter(
-                `Translation: ${translation.toUpperCase()} | Page ${pageIdx + 1}/${totalPages}${footerSuffix}`
-            ));
-    };
-
-    const buildRow = (pageIdx, disabled = false) => new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji({ name: '◀️' })
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled || pageIdx === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji({ name: '▶️' })
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled || pageIdx === totalPages - 1)
-    );
 
     await interaction.reply({
-        embeds: [buildEmbed(0)],
-        components: totalPages > 1 ? [buildRow(0)] : [],
-        flags: MessageFlags.Ephemeral
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+        components: buildXrefPage({
+            processed, sourceLabel, sourceText, translation,
+            pageIdx: 0, totalPages, totalRefCount: refs.length
+        })
     });
 
     if (totalPages <= 1) return;
 
-    try {
-        const message = await interaction.fetchReply();
-        const filter = i => i.user.id === interaction.user.id &&
-            (i.customId === 'page_back' || i.customId === 'page_next');
-        const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-        collector.on('collect', async i => {
-            try {
-                await i.deferUpdate();
-                if (i.customId === 'page_next') currentPage = Math.min(totalPages - 1, currentPage + 1);
-                else currentPage = Math.max(0, currentPage - 1);
-                await i.editReply({ embeds: [buildEmbed(currentPage)], components: [buildRow(currentPage)] });
-            } catch (err) {
-                logger.error(`[OpenVerse Xref] Pagination error: ${err.message}`);
-            }
-        });
-
-        collector.on('end', async () => {
-            try {
-                await interaction.editReply({
-                    embeds: [buildEmbed(currentPage)],
-                    components: [buildRow(currentPage, true)]
-                });
-            } catch (err) {
-                if (err.code !== 10008 && err.code !== 10062) {
-                    logger.error(`[OpenVerse Xref] End error: ${err.message}`);
-                }
-            }
-        });
-    } catch (err) {
-        logger.error(`[OpenVerse Xref] Setup error: ${err.message}`);
-    }
+    const message = await interaction.fetchReply();
+    attachPageCollector({
+        interaction, message, totalPages,
+        logLabel: '[OpenVerse Xref]',
+        render: (pageIdx, { disableNav }) =>
+            buildXrefPage({
+                processed, sourceLabel, sourceText, translation,
+                pageIdx, totalPages, totalRefCount: refs.length, disableNav
+            })
+    });
 }
 
 // --- Parallel (single page, all translations local) ----------------------

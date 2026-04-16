@@ -152,6 +152,26 @@ class FathersWrapper {
             [name]
         );
     }
+
+    // Distinct list of all fathers with their entry counts + metadata for a
+    // "who can I search?" directory page. NULL default_year values (fathers
+    // without dating metadata) are sorted last.
+    async listAllFathers() {
+        const db = await this.db;
+        return db.all(
+            `SELECT c.father_name AS name,
+                    m.default_year AS year,
+                    m.wiki_url    AS wiki_url,
+                    COUNT(c.id)   AS entry_count
+             FROM commentary c
+             LEFT JOIN father_meta m ON m.name = c.father_name COLLATE NOCASE
+             GROUP BY c.father_name
+             ORDER BY
+                CASE WHEN m.default_year IS NULL THEN 1 ELSE 0 END,
+                m.default_year ASC,
+                c.father_name ASC`
+        );
+    }
 }
 
 class PersonsWrapper {
@@ -174,16 +194,33 @@ class PersonsWrapper {
 class PlacesWrapper {
     constructor() { this.db = personPlacesPromise; }
 
+    // Priority-ordered search so "Jerusalem" surfaces Jerusalem itself before
+    // "Beautiful Gate (in Jerusalem)", etc.
+    //   0 — openbible_name is exactly the query
+    //   1 — unique_name starts with "query_"  (canonical name prefix)
+    //   2 — openbible_name starts with the query
+    //   3 — anything else that matches (fallback substring)
     async search(name) {
         const db = await this.db;
         const underscored = name.replace(/\s+/g, '_');
+        const namePrefix = `${underscored}_%`;
+        const obPrefix = `${name}%`;
+        const obSubstr = `%${name}%`;
         return db.all(
             `SELECT id, unique_name, uStrong, openbible_name, lonlat, short_description, ext_description, pleiades, wikidata
              FROM places
-             WHERE unique_name LIKE ? COLLATE NOCASE OR openbible_name LIKE ? COLLATE NOCASE
-             ORDER BY unique_name
+             WHERE unique_name LIKE ? COLLATE NOCASE
+                OR openbible_name LIKE ? COLLATE NOCASE
+             ORDER BY
+                CASE
+                    WHEN openbible_name = ? COLLATE NOCASE THEN 0
+                    WHEN unique_name LIKE ? COLLATE NOCASE THEN 1
+                    WHEN openbible_name LIKE ? COLLATE NOCASE THEN 2
+                    ELSE 3
+                END,
+                unique_name
              LIMIT 25`,
-            [`${underscored}_%`, `%${name}%`]
+            [namePrefix, obSubstr, name, namePrefix, obPrefix]
         );
     }
 }

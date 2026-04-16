@@ -18,6 +18,7 @@ import swearWordFilter, { escapeMarkdown } from '../utils/filter.js';
 import 'dotenv/config';
 
 const MAX_TEXT_LENGTH = 3500;
+const FATHERS_PER_LIST_PAGE = 30;
 
 function truncate(text, max) {
     if (!text) return '';
@@ -80,26 +81,61 @@ function buildFatherPage({ entry, bookId, bookName, chapter, verse, pageIdx, tot
     return components;
 }
 
+function buildFathersListPage({ fathers, pageIdx, totalPages, disableNav = false }) {
+    const start = pageIdx * FATHERS_PER_LIST_PAGE;
+    const pageFathers = fathers.slice(start, start + FATHERS_PER_LIST_PAGE);
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const lines = pageFathers.map(f => {
+        const year = f.year ? `c. ${f.year}` : 'undated';
+        const count = f.entry_count === 1 ? '1 entry' : `${f.entry_count} entries`;
+        return `• **${f.name}** — *${year}* · ${count}`;
+    });
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor())
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `## 📜 Early Church Fathers${pageInfo}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `*${fathers.length} fathers available. Use \`/fathers book:<name> chapter:<#> verse:<#> father:<name>\` to filter by any of these.*`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join('\n')))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            footerLine(`${fathers.length} fathers total${pageInfo}`)
+        ));
+
+    const components = [container];
+    if (totalPages > 1) {
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
+    }
+    return components;
+}
+
 export default {
     data: new SlashCommandBuilder()
         .setName('fathers')
-        .setDescription('Search Early Church Fathers\' commentary on a biblical passage')
+        .setDescription('Search Early Church Fathers\' commentary (or list all with list:true)')
         .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
         .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
+        .addBooleanOption(option =>
+            option.setName('list')
+                .setDescription('List all 334 Church Fathers available to search (ignores other options)')
+                .setRequired(false))
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('Bible book (e.g., John, Genesis, 1 Corinthians)')
-                .setRequired(true)
+                .setRequired(false)
                 .setMaxLength(50))
         .addIntegerOption(option =>
             option.setName('chapter')
                 .setDescription('Chapter number')
-                .setRequired(true)
+                .setRequired(false)
                 .setMinValue(1))
         .addIntegerOption(option =>
             option.setName('verse')
                 .setDescription('Verse number')
-                .setRequired(true)
+                .setRequired(false)
                 .setMinValue(1))
         .addStringOption(option =>
             option.setName('father')
@@ -108,11 +144,57 @@ export default {
                 .setMaxLength(100)),
 
     async execute(interaction) {
-        const rawBook = swearWordFilter(interaction.options.getString('book').trim());
+        const listMode = interaction.options.getBoolean('list') === true;
+
+        if (listMode) {
+            await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
+            try {
+                logger.info(`[Fathers Command] Listing all fathers`);
+                const fathers = await fathersWrapper.listAllFathers();
+                if (!fathers || fathers.length === 0) {
+                    return interaction.editReply({
+                        flags: MessageFlags.IsComponentsV2,
+                        components: [new TextDisplayBuilder().setContent(`❌ No fathers data available.`)]
+                    });
+                }
+                const totalPages = Math.ceil(fathers.length / FATHERS_PER_LIST_PAGE);
+                const message = await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: buildFathersListPage({ fathers, pageIdx: 0, totalPages })
+                });
+                if (totalPages <= 1) return;
+                return attachPageCollector({
+                    interaction, message, totalPages,
+                    logLabel: '[Fathers Command]',
+                    render: (pageIdx, { disableNav }) =>
+                        buildFathersListPage({ fathers, pageIdx, totalPages, disableNav })
+                });
+            } catch (err) {
+                logger.error(`[Fathers Command] List error: ${err.message}`);
+                try {
+                    await interaction.editReply({
+                        flags: MessageFlags.IsComponentsV2,
+                        components: [new TextDisplayBuilder().setContent(`❌ Couldn't load fathers directory.`)]
+                    });
+                } catch (_) { /* ignore */ }
+                return;
+            }
+        }
+
+        // Passage-lookup mode requires book + chapter + verse.
+        const rawBookInput = interaction.options.getString('book');
         const chapter = interaction.options.getInteger('chapter');
         const verse = interaction.options.getInteger('verse');
         const fatherFilter = interaction.options.getString('father')?.trim() || null;
 
+        if (!rawBookInput || chapter === null || verse === null) {
+            return interaction.reply({
+                content: `Please provide **book**, **chapter**, and **verse** — or use \`list:True\` to see all available fathers.`,
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        const rawBook = swearWordFilter(rawBookInput.trim());
         const bookId = getBookId(rawBook);
         const canonicalBookName = bookId ? numbersToBook.get(bookId) : null;
         if (!bookId || !canonicalBookName) {

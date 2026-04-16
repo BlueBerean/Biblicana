@@ -20,8 +20,9 @@ import 'dotenv/config';
 
 const MAX_CHARS_PER_CHUNK = 3500;
 
-// Returns { label, bookId, chapter, verse } — or null if no usable reference.
-// bookId/chapter/verse are populated only when resolvable enough for an openverse button.
+// Returns { label, bookId, chapter, startVerse, endVerse, isMultiChapter } — or null.
+// isMultiChapter flags spans like Gen 11:26 – 25:11 that can't be cleanly opened
+// via /bible (single-chapter only). Caller disables the Open button for those.
 function resolveScriptureRef(p) {
     const bookId = fromCommentaryBookCode(p.referenceBook);
     const bookName = bookId ? numbersToBook.get(bookId) : p.referenceBook;
@@ -32,10 +33,12 @@ function resolveScriptureRef(p) {
     const endChapter = p.referenceEndChapter;
     const endVerse = p.referenceEndVerse;
 
-    if (!chapter) return { label: bookName, bookId: null, chapter: null, verse: null };
+    if (!chapter) return { label: bookName, bookId: null, chapter: null, startVerse: null, endVerse: null, isMultiChapter: false };
+
+    const isMultiChapter = !!(endChapter && endChapter !== chapter);
 
     let label;
-    if (endChapter && endChapter !== chapter) {
+    if (isMultiChapter) {
         const endPart = endVerse ? `${endChapter}:${endVerse}` : `${endChapter}`;
         label = `${bookName} ${chapter}:${verse} – ${endPart}`;
     } else if (endVerse && endVerse !== verse) {
@@ -49,7 +52,9 @@ function resolveScriptureRef(p) {
         label,
         bookId: openable ? bookId : null,
         chapter: openable ? chapter : null,
-        verse: openable ? verse : null
+        startVerse: openable ? verse : null,
+        endVerse: openable ? (endVerse && !isMultiChapter ? endVerse : verse) : null,
+        isMultiChapter
     };
 }
 
@@ -73,18 +78,23 @@ function buildProfilePage({ page, pageIdx, totalPages, matchType, rawTopic, disa
     if (chunkIdx === 0) {
         const ref = resolveScriptureRef(profile);
         if (ref) {
-            if (ref.bookId && ref.chapter && ref.verse) {
-                // Resolvable to a specific verse → Section with [📖 Open passage] button
-                const section = new SectionBuilder()
-                    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 Primary Reference:** ${ref.label}`))
-                    .setButtonAccessory(
-                        new ButtonBuilder()
-                            .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.verse}`)
-                            .setLabel('Open passage')
-                            .setEmoji({ name: '📖' })
-                            .setStyle(ButtonStyle.Secondary)
-                    );
-                container.addSectionComponents(section);
+            if (ref.bookId && ref.chapter && ref.startVerse) {
+                // Resolvable to a verse. Button is enabled for single-chapter refs,
+                // disabled for multi-chapter spans (can't open cleanly via /bible).
+                const button = new ButtonBuilder()
+                    .setCustomId(ref.isMultiChapter
+                        ? `profile:noopen:multichapter`
+                        : `openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}`)
+                    .setLabel('Open passage')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(ref.isMultiChapter);
+
+                container.addSectionComponents(
+                    new SectionBuilder()
+                        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 Primary Reference:** ${ref.label}`))
+                        .setButtonAccessory(button)
+                );
             } else {
                 // Book-only or ambiguous — just show the reference as text
                 container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 Primary Reference:** ${ref.label}`));

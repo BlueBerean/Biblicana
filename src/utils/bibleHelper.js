@@ -138,6 +138,10 @@ class StrongsWrapper {
         return query;
     }
 
+    // Tries the full Strong's ID (e.g., "G2316") first, then falls back to
+    // just the numeric part ("2316") since some rows are keyed without the
+    // language prefix. "No match" is normal (many words have no Strong's)
+    // so it logs at debug — only real DB errors bubble up at error level.
     async getStrongsId(language, id) {
         if (!id) return undefined;
 
@@ -146,27 +150,14 @@ class StrongsWrapper {
         const tableName = normalizedLanguage === 'greek' ? 'Greek' : 'Hebrew';
 
         try {
-            logger.debug(`[Strongs Wrapper] Attempting lookup for ID: ${id} in table: ${tableName}`);
             let result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [id]);
+            if (result) return result;
 
-            if (result) {
-                logger.debug(`[Strongs Wrapper] Found match for full ID: ${id}`);
-                return result;
-            }
-
-            logger.debug(`[Strongs Wrapper] No match for full ID: ${id}. Checking number part.`);
             const numberPart = id.substring(1);
             if (numberPart && !isNaN(numberPart)) {
-                logger.debug(`[Strongs Wrapper] Attempting lookup for number: ${numberPart} in table: ${tableName}`);
                 result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [numberPart]);
-                if (result) {
-                    logger.debug(`[Strongs Wrapper] Found match for number part: ${numberPart}`);
-                    return result;
-                }
-                logger.debug(`[Strongs Wrapper] No match for number part: ${numberPart}`);
+                if (result) return result;
             }
-
-            logger.warn(`[Strongs Wrapper] No definition found for ${id} (or number part) in ${tableName}`);
             return undefined;
         } catch (error) {
             logger.error(`[Strongs Wrapper] Database error querying ${tableName} for ${id}: ${error.message}`);
