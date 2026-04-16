@@ -1,42 +1,26 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import axios from 'axios';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_PAGE = 4000;
+const MAX_CHARS_PER_PAGE = 3800;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const API_TIMEOUT_MS = 6000;
 
-function generateFooter(page, maxPages) {
-    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT}${pageText}`,
-        iconURL: process.env.EMBEDICONURL
-    };
-}
-
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === totalPages - 1)
-    );
-
 function formatRelationType(type) {
-    return type.toLowerCase()
-        .replace(/_/g, ' ')
-        .replace(/\b\w/g, l => l.toUpperCase());
+    return type.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 }
 
 function getRelationEmoji(type) {
@@ -48,6 +32,42 @@ function getRelationEmoji(type) {
         case 'narrower_terms': return '⬇️';
         default: return '•';
     }
+}
+
+function buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `## 🧠 Semantic Relations — "${rawWord}"${pageInfo}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(chunks[pageIdx]))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+        ));
+
+    const components = [container];
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+
+    return components;
 }
 
 export default {
@@ -63,17 +83,17 @@ export default {
                 .setMaxLength(100)),
 
     async execute(interaction) {
-        await interaction.deferReply();
+        const rawWord = interaction.options.getString('word').trim();
+        const word = swearWordFilter(rawWord);
+
+        if (!word) {
+            return interaction.reply({ content: 'Please provide a valid word.', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawWord = interaction.options.getString('word').trim();
-            const word = swearWordFilter(rawWord);
-
-            if (!word) {
-                return interaction.editReply({ content: 'Please provide a valid word.', flags: MessageFlags.Ephemeral });
-            }
-
-            logger.info(`[Semantics Command] Looking up relations for: "${word}"`);
+            logger.info(`[Semantics Command] Looking up: "${word}"`);
 
             const options = {
                 method: 'GET',
@@ -92,18 +112,23 @@ export default {
                 const response = await axios.request({ ...options, signal: controller.signal });
                 clearTimeout(timeoutId);
                 apiResponseData = response.data;
-                logger.debug("[Semantics Command] Raw API Response:", JSON.stringify(apiResponseData));
             } catch (apiError) {
                 logger.error(`[Semantics Command] API request failed for "${word}": ${apiError.message}`);
-                if (apiError.response) {
-                    logger.error(`[Semantics Command] API Status: ${apiError.response.status}, Data: ${JSON.stringify(apiError.response.data)}`);
-                }
-                return interaction.editReply({ content: 'Sorry, failed to fetch semantic relations from the source.', flags: MessageFlags.Ephemeral });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Failed to fetch semantic relations from the source.`
+                    )]
+                });
             }
 
             if (!apiResponseData || typeof apiResponseData !== 'object' || Object.keys(apiResponseData).length === 0) {
-                logger.warn(`[Semantics Command] No relations found or invalid format for "${word}".`);
-                return interaction.editReply({ content: `❌ No semantic relations found for "${word}". Try a different word or check spelling.`, flags: MessageFlags.Ephemeral });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No semantic relations found for "${word}". Try a different word or check spelling.`
+                    )]
+                });
             }
 
             let combinedContent = `🔍 Exploring semantic relationships for **${rawWord}**\n\n`;
@@ -123,78 +148,65 @@ export default {
             }
 
             if (!relationsFound) {
-                logger.warn(`[Semantics Command] API returned data for "${word}" but no valid relations found after processing.`);
-                return interaction.editReply({ content: `❌ No valid semantic relations found for "${word}".`, flags: MessageFlags.Ephemeral });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No valid semantic relations found for "${word}".`
+                    )]
+                });
             }
 
-            const pages = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
+            const chunks = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
+            const totalPages = chunks.length;
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            if (pages.length === 0) {
-                logger.error("[Semantics Command] Failed to create pages from combined content.");
-                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the relations.', flags: MessageFlags.Ephemeral });
-            }
-
-            let currentPageIndex = 0;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`📚 Semantic Relations for "${rawWord}"`)
-                .setDescription(pages[currentPageIndex])
-                .setColor(embedColor)
-                .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(currentPageIndex, pages.length));
-
-            const message = await interaction.editReply({
-                embeds: [embed],
-                components: pages.length > 1 ? [createActionRow(currentPageIndex, pages.length)] : []
+            await interaction.editReply({
+                flags,
+                components: buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord })
             });
 
-            if (pages.length <= 1) return;
+            if (totalPages <= 1) return;
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                componentType: ComponentType.Button,
-                time: COLLECTOR_TIMEOUT_MS
-            });
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
-                    } else if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1) % pages.length;
-                    }
-
-                    embed.setDescription(pages[currentPageIndex])
-                        .setFooter(generateFooter(currentPageIndex, pages.length));
-
-                    await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
-                } catch (collectError) {
-                    logger.error(`[Semantics Command] Error updating pagination: ${collectError}`);
-                    try { await i.followUp({ content: 'Error changing page.', flags: MessageFlags.Ephemeral }); } catch (followUpError) {
-                        logger.warn(`[Semantics Command] Failed to send follow-up pagination error: ${followUpError.message}`);
-                    }
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord })
+                    });
+                } catch (err) {
+                    logger.error(`[Semantics Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[Semantics Command] Pagination collector ended for "${word}"`);
-                const timedOutRow = createActionRow(currentPageIndex, pages.length, true);
-                message.edit({ components: [timedOutRow] }).catch(editError => {
-                    if (editError.code !== 10008) {
-                        logger.error(`[Semantics Command] Error disabling buttons: ${editError}`);
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Semantics Command] End error: ${err.message}`);
                     }
-                });
+                }
             });
         } catch (error) {
             logger.error(`[Semantics Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: '❌ Sorry, there was an unexpected error processing your request.',
-                    flags: MessageFlags.Ephemeral,
-                    embeds: [], components: []
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Sorry, there was an unexpected error processing your request.`
+                    )]
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {

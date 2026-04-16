@@ -1,45 +1,133 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    SectionBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
+import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import logger from '../utils/logger.js';
-import axios from 'axios';
+import { getBookId } from '../utils/bibleHelper.js';
 import 'dotenv/config';
 
-const MAX_NAME_LENGTH = 256;
-const MAX_VALUE_LENGTH = 1024;
-const MAX_RESULTS_FROM_API = 25;
-const ITEMS_PER_PAGE = 5;
+const RESULTS_PER_PAGE = 6;
+const MAX_RESULTS_FROM_API = 30;
+const MAX_CONTEXT_CHARS = 80;
+const MAX_TEXT_CHARS = 500;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const API_TIMEOUT_MS = 8000;
 
-function generateFooter(page = 0, maxPages = 1) {
-    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT}${pageText}`,
-        iconURL: process.env.EMBEDICONURL
-    };
+// Parses context strings like "Matthew 5:17", "1 Corinthians 13:4-7", etc.
+// Returns null for non-standard / non-parseable contexts.
+function parseContextRef(context) {
+    if (!context) return null;
+    const firstChunk = context.split(/[;,]/)[0].trim();
+    const match = firstChunk.match(/^([1-3]?\s*[A-Za-z]+(?:\s+[A-Za-z]+)*)\s+(\d+):(\d+)(?:-(\d+))?/);
+    if (!match) return null;
+    const bookId = getBookId(match[1].trim());
+    if (!bookId) return null;
+    const chapter = parseInt(match[2]);
+    const startVerse = parseInt(match[3]);
+    const endVerse = match[4] ? parseInt(match[4]) : startVerse;
+    if (isNaN(chapter) || isNaN(startVerse)) return null;
+    return { bookId, chapter, startVerse, endVerse };
 }
 
-const createComponents = (pageIdx, totalPages, isEnd = false) => {
-    return new ActionRowBuilder()
-        .addComponents(
+function truncate(text, max) {
+    if (!text) return '';
+    return text.length > max ? text.substring(0, max - 1) + '…' : text;
+}
+
+function buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const start = pageIdx * RESULTS_PER_PAGE;
+    const pageResults = results.slice(start, start + RESULTS_PER_PAGE);
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `## 📚 Topic Study: ${rawTopic}${pageInfo}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `*Relevant commentaries and insights. Tap ${pageResults.some(r => r.ref) ? 'Open on any entry to view its passage, or ' : ''}the Disclaimer button for AI-sourced caveats.*`
+        ));
+
+    pageResults.forEach((result, localIdx) => {
+        const globalIdx = start + localIdx;
+        const contextLabel = truncate(result.context || 'Context unavailable', MAX_CONTEXT_CHARS);
+        const body = truncate(result.text || 'Text unavailable', MAX_TEXT_CHARS);
+        const sectionText = `**${contextLabel}**\n${body}`;
+
+        const section = new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(sectionText));
+
+        if (result.ref) {
+            const customId = result.ref.endVerse > result.ref.startVerse
+                ? `openverse:bible:${result.ref.bookId}:${result.ref.chapter}:${result.ref.startVerse}:${result.ref.endVerse}`
+                : `openverse:bible:${result.ref.bookId}:${result.ref.chapter}:${result.ref.startVerse}`;
+            section.setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(customId)
+                    .setLabel('Open')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+            );
+        } else {
+            // Unparseable context — keep visual alignment with disabled button.
+            section.setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`topic:noop:${globalIdx}`)
+                    .setLabel('Open')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true)
+            );
+        }
+        container.addSectionComponents(section);
+    });
+
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${results.length} result${results.length === 1 ? '' : 's'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+    ));
+
+    const components = [container];
+
+    // Combined bottom row: pagination (if needed) + disclaimer
+    const rowButtons = [];
+    if (totalPages > 1) {
+        rowButtons.push(
             new ButtonBuilder()
                 .setCustomId('page_back')
-                .setEmoji('◀️')
+                .setEmoji({ name: '◀️' })
                 .setLabel('Previous')
                 .setStyle(ButtonStyle.Secondary)
-                .setDisabled(isEnd || pageIdx === 0),
+                .setDisabled(disableNav || pageIdx === 0),
             new ButtonBuilder()
                 .setCustomId('page_next')
-                .setEmoji('▶️')
+                .setEmoji({ name: '▶️' })
                 .setLabel('Next')
                 .setStyle(ButtonStyle.Secondary)
-                .setDisabled(isEnd || pageIdx >= totalPages - 1),
-            new ButtonBuilder()
-                .setStyle(ButtonStyle.Secondary)
-                .setLabel("💡 Disclaimer")
-                .setCustomId("bias_alert")
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
         );
-};
+    }
+    rowButtons.push(
+        new ButtonBuilder()
+            .setCustomId('bias_alert')
+            .setEmoji({ name: '💡' })
+            .setLabel('Disclaimer')
+            .setStyle(ButtonStyle.Secondary)
+    );
+    components.push(new ActionRowBuilder().addComponents(...rowButtons));
+
+    return components;
+}
 
 export default {
     data: new SlashCommandBuilder()
@@ -47,19 +135,25 @@ export default {
         .setDescription('Search commentaries related to a specific topic')
         .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
         .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
-        .addStringOption(option => option.setName('topic').setDescription('The topic to search commentaries for').setRequired(true).setMinLength(3).setMaxLength(100)),
+        .addStringOption(option =>
+            option.setName('topic')
+                .setDescription('The topic to search commentaries for')
+                .setRequired(true)
+                .setMinLength(3)
+                .setMaxLength(100)),
+
     async execute(interaction) {
-        await interaction.deferReply();
+        const rawTopic = interaction.options.getString('topic').trim();
+        const topic = swearWordFilter(rawTopic);
+
+        if (!topic) {
+            return interaction.reply({ content: 'Please provide a valid topic.', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawTopic = interaction.options.getString('topic').trim();
-            const topic = swearWordFilter(rawTopic);
-
-            if (!topic) {
-                return interaction.editReply({ content: 'Please provide a valid topic.', flags: MessageFlags.Ephemeral });
-            }
-
-            logger.info(`[Topic Command] Searching for topic: "${topic}"`);
+            logger.info(`[Topic Command] Searching: "${topic}"`);
 
             const options = {
                 method: 'GET',
@@ -77,130 +171,93 @@ export default {
                 const response = await axios.request({ ...options, signal: controller.signal });
                 clearTimeout(timeoutId);
                 apiResponseData = response.data;
-                logger.debug("[Topic Command] Raw API Response:", JSON.stringify(apiResponseData));
             } catch (apiError) {
-                logger.error(`[Topic Command] API request failed for topic "${topic}": ${apiError.message}`);
-                if (apiError.response) {
-                    logger.error(`[Topic Command] API Status: ${apiError.response.status}, Data: ${JSON.stringify(apiError.response.data)}`);
-                }
-                return interaction.editReply({ content: 'Sorry, failed to fetch commentary data from the source. Please try again later.', flags: MessageFlags.Ephemeral });
+                logger.error(`[Topic Command] API request failed: ${apiError.message}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Failed to fetch commentary data from the source. Please try again later.`
+                    )]
+                });
             }
 
             if (!apiResponseData || !Array.isArray(apiResponseData.results) || apiResponseData.results.length === 0) {
-                logger.warn(`[Topic Command] No results found or invalid format for topic "${topic}".`);
-                return await interaction.editReply({ content: `❌ No commentaries found related to "${topic}"!`, flags: MessageFlags.Ephemeral });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No commentaries found related to "${topic}"!`
+                    )]
+                });
             }
 
-            const fields = apiResponseData.results
+            const results = apiResponseData.results
                 .slice(0, MAX_RESULTS_FROM_API)
-                .map(result => {
-                    if (!result || typeof result.context !== 'string' || typeof result.text !== 'string') {
-                        logger.warn("[Topic Command] Skipping invalid result item:", result);
-                        return null;
-                    }
-                    const name = (result.context.trim() || "Context Unavailable").substring(0, MAX_NAME_LENGTH - (result.context.length > MAX_NAME_LENGTH ? 3 : 0)) + (result.context.length > MAX_NAME_LENGTH ? "..." : "");
-                    const value = (result.text.trim() || "Text Unavailable").substring(0, MAX_VALUE_LENGTH - 25) + (result.text.length > MAX_VALUE_LENGTH ? "..." : "") + "\n\n─────────────────────";
+                .map(r => ({
+                    context: r.context?.trim() || '',
+                    text: r.text?.trim() || '',
+                    ref: parseContextRef(r.context)
+                }))
+                .filter(r => r.context && r.text);
 
-                    if (!name || !value || name === "Context Unavailable" || value === "Text Unavailable") {
-                        logger.warn("[Topic Command] Skipping result item with empty name or value after processing:", result);
-                        return null;
-                    }
-
-                    return { name, value, inline: false };
-                })
-                .filter(field => field !== null);
-
-            if (fields.length === 0) {
-                logger.warn(`[Topic Command] No valid commentary results found for "${topic}" after filtering.`);
-                return await interaction.editReply({ content: `❌ No valid commentaries found related to "${topic}"!`, flags: MessageFlags.Ephemeral });
+            if (results.length === 0) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No valid commentaries found related to "${topic}"!`
+                    )]
+                });
             }
 
-            const pages = [];
-            for (let i = 0; i < fields.length; i += ITEMS_PER_PAGE) {
-                pages.push(fields.slice(i, i + ITEMS_PER_PAGE));
-            }
+            const totalPages = Math.ceil(results.length / RESULTS_PER_PAGE);
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            if (pages.length === 0) {
-                logger.error("[Topic Command] Failed to create pages from fields.");
-                return await interaction.editReply({ content: 'Error formatting results.', flags: MessageFlags.Ephemeral });
-            }
-
-            let currentPageIndex = 0;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`📚 Topic Study: ${rawTopic}`)
-                .setDescription('Here are some relevant commentaries and insights:')
-                .setURL(process.env.WEBSITE)
-                .setColor(embedColor)
-                .setFields(pages[currentPageIndex])
-                .setFooter(generateFooter(currentPageIndex, pages.length));
-
-            const message = await interaction.editReply({
-                embeds: [embed],
-                components: [createComponents(currentPageIndex, pages.length)]
+            await interaction.editReply({
+                flags,
+                components: buildTopicPage({ results, pageIdx, totalPages, rawTopic })
             });
 
-            if (pages.length <= 1) return;
+            if (totalPages <= 1) return;
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                time: COLLECTOR_TIMEOUT_MS
-            });
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
-                if (i.user.id !== interaction.user.id) {
-                    await i.reply({ content: '⚠️ You cannot use these buttons.', flags: MessageFlags.Ephemeral });
-                    return;
-                }
-
                 try {
-                    if (i.customId === 'bias_alert') {
-                        await i.reply({
-                            content: '⚠ Please note that these commentaries represent various theological perspectives and interpretations. Always compare with Scripture and use discernment.',
-                            flags: MessageFlags.Ephemeral
-                        });
-                        return;
-                    }
-
                     await i.deferUpdate();
-                    if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1);
-                        if (currentPageIndex >= pages.length) currentPageIndex = pages.length - 1;
-                    } else if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1);
-                        if (currentPageIndex < 0) currentPageIndex = 0;
-                    }
-
-                    embed.setFields(pages[currentPageIndex])
-                        .setFooter(generateFooter(currentPageIndex, pages.length));
-
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
                     await i.editReply({
-                        embeds: [embed],
-                        components: [createComponents(currentPageIndex, pages.length)]
+                        flags,
+                        components: buildTopicPage({ results, pageIdx, totalPages, rawTopic })
                     });
-                } catch (collectError) {
-                    logger.error(`[Topic Command] Error handling button interaction: ${collectError}`);
+                } catch (err) {
+                    logger.error(`[Topic Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[Topic Command] Pagination collector ended for topic "${topic}"`);
-                const finalComponents = createComponents(currentPageIndex, pages.length, true);
-                message.edit({ components: [finalComponents] }).catch(editError => {
-                    if (editError.code !== 10008) {
-                        logger.error(`[Topic Command] Error disabling buttons: ${editError}`);
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Topic Command] End error: ${err.message}`);
                     }
-                });
+                }
             });
         } catch (error) {
             logger.error(`[Topic Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: '❌ Sorry, there was an unexpected error processing your request.',
-                    flags: MessageFlags.Ephemeral,
-                    embeds: [], components: []
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Sorry, there was an unexpected error processing your request.`
+                    )]
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {

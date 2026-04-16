@@ -1,4 +1,14 @@
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import { createRequire } from 'node:module';
 import logger from '../utils/logger.js';
 import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
@@ -7,46 +17,65 @@ import 'dotenv/config';
 const require = createRequire(import.meta.url);
 const VOTDData = require('../../data/VOTD.json');
 
-const VERSE_FETCH_TIMEOUT_MS = 6000;
-
-function generateFooter(translation = "BSB") {
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()}`,
-        iconURL: process.env.EMBEDICONURL
-    };
-}
+const MAX_BODY_CHARS = 3800;
 
 function parseVOTDReference(refString) {
     if (!refString) return null;
-
-    const match = refString.match(/^([1-3]?\s*[\w\s]+)\s+(\d+):(\d+)(?:-(\d+))?$/i);
-
-    if (!match) {
-        logger.warn(`[parseVOTDReference] Could not parse reference string: ${refString}`);
-        return null;
-    }
-
-    const bookNameStr = match[1].trim();
-    const chapterStr = match[2];
-    const startVerseStr = match[3];
-    const endVerseStr = match[4];
-
-    const bookId = getBookId(bookNameStr);
-    if (!bookId) {
-        logger.warn(`[parseVOTDReference] Could not get bookId for book name: ${bookNameStr}`);
-        return null;
-    }
-
-    const chapter = parseInt(chapterStr);
-    const startVerse = parseInt(startVerseStr);
-    const endVerse = endVerseStr ? parseInt(endVerseStr) : startVerse;
-
-    if (isNaN(chapter) || isNaN(startVerse) || isNaN(endVerse)) {
-        logger.warn(`[parseVOTDReference] Failed to parse chapter/verse numbers in: ${refString}`);
-        return null;
-    }
-
+    const match = refString.match(/^([1-3]?\s*[\w\s]+?)\s+(\d+):(\d+)(?:-(\d+))?$/i);
+    if (!match) return null;
+    const bookId = getBookId(match[1].trim());
+    if (!bookId) return null;
+    const chapter = parseInt(match[2]);
+    const startVerse = parseInt(match[3]);
+    const endVerse = match[4] ? parseInt(match[4]) : startVerse;
+    if (isNaN(chapter) || isNaN(startVerse) || isNaN(endVerse)) return null;
     return { bookId, chapter, startVerse, endVerse };
+}
+
+function buildPassageOfTheDayResponse({ bookId, bookName, chapter, startVerse, endVerse, body, translation, dateString }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const rangeLabel = endVerse > startVerse
+        ? `${bookName} ${chapter}:${startVerse}-${endVerse}`
+        : `${bookName} ${chapter}:${startVerse}`;
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📅 Daily Passage — ${dateString}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### ${rangeLabel}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}`
+        ));
+
+    // Action row: Open passage (range-aware), plus per-verse chain actions on startVerse.
+    const openCustomId = endVerse > startVerse
+        ? `openverse:bible:${bookId}:${chapter}:${startVerse}:${endVerse}`
+        : `openverse:bible:${bookId}:${chapter}:${startVerse}`;
+
+    const actionRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(openCustomId)
+            .setLabel('Open')
+            .setEmoji({ name: '📖' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:commentary:${bookId}:${chapter}:${startVerse}`)
+            .setLabel('Commentary')
+            .setEmoji({ name: '📚' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:xref:${bookId}:${chapter}:${startVerse}`)
+            .setLabel('Cross-refs')
+            .setEmoji({ name: '🔗' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:parallel:${bookId}:${chapter}:${startVerse}`)
+            .setLabel('Parallel')
+            .setEmoji({ name: '📑' })
+            .setStyle(ButtonStyle.Secondary)
+    );
+
+    return [container, actionRow];
 }
 
 export default {
@@ -68,7 +97,7 @@ export default {
                 )),
 
     async execute(interaction, database) {
-        await interaction.deferReply();
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
             let translation = 'BSB';
@@ -88,76 +117,83 @@ export default {
             const referenceString = VOTDData?.[monthName]?.[dayOfMonth];
 
             if (!referenceString) {
-                logger.error(`[PassageOfTheDay Command] No reference found in VOTD.json for ${monthName} ${dayOfMonth}`);
-                return interaction.editReply({ content: 'Sorry, could not find today\'s passage in the schedule.', flags: MessageFlags.Ephemeral });
+                logger.error(`[PassageOfTheDay Command] No reference for ${monthName} ${dayOfMonth}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Couldn't find today's passage in the schedule.`
+                    )]
+                });
             }
 
-            logger.info(`[PassageOfTheDay Command] Today's reference from JSON: ${referenceString}`);
-
+            logger.info(`[PassageOfTheDay Command] Today's reference: ${referenceString}`);
             const parsedRef = parseVOTDReference(referenceString);
 
             if (!parsedRef) {
-                logger.error(`[PassageOfTheDay Command] Failed to parse reference string: ${referenceString}`);
-                return interaction.editReply({ content: 'Sorry, there was an error understanding today\'s passage reference.', flags: MessageFlags.Ephemeral });
+                logger.error(`[PassageOfTheDay Command] Failed to parse: ${referenceString}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Couldn't parse today's passage reference.`
+                    )]
+                });
             }
 
             const { bookId, chapter, startVerse, endVerse } = parsedRef;
             const bookName = numbersToBook.get(bookId);
 
-            let verseTextResult;
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), VERSE_FETCH_TIMEOUT_MS);
-                verseTextResult = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse, { signal: controller.signal });
-                clearTimeout(timeoutId);
+            const verses = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse);
+            if (!verses || verses.length === 0) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Couldn't fetch text for today's passage (${bookName} ${chapter}:${startVerse}-${endVerse}).`
+                    )]
+                });
+            }
 
-                if (!verseTextResult || verseTextResult.length === 0) {
-                    throw new Error('No verses returned from bibleWrapper');
+            verses.sort((a, b) => a.verse - b.verse);
+
+            let body = '';
+            let truncated = false;
+            for (const v of verses) {
+                const text = v[translation];
+                if (!text) continue;
+                const chunk = (body ? ' ' : '') + (startVerse === endVerse ? text : `**${v.verse}** ${text}`);
+                if (body.length + chunk.length > MAX_BODY_CHARS) {
+                    truncated = true;
+                    break;
                 }
-            } catch (fetchError) {
-                logger.error(`[PassageOfTheDay Command] Error fetching verse text for ${bookName} ${chapter}:${startVerse}-${endVerse}: ${fetchError}`);
-                return interaction.editReply({ content: 'Sorry, I couldn\'t fetch the text for today\'s passage.', flags: MessageFlags.Ephemeral });
+                body += chunk;
             }
-
-            let formattedVerseText = "";
-            let referenceDisplay = "";
-            if (startVerse === endVerse) {
-                referenceDisplay = `${bookName} ${chapter}:${startVerse}`;
-                formattedVerseText = verseTextResult[0]?.[translation] || '(Translation not available)';
-            } else {
-                referenceDisplay = `${bookName} ${chapter}:${startVerse}-${endVerse}`;
-                formattedVerseText = verseTextResult.map(v => `**${v.verse}** ${v[translation] || '(Translation missing)'}`).join(' ');
+            if (!body) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No text available for today's passage in ${translation.toUpperCase()}.`
+                    )]
+                });
             }
-
-            const MAX_DESC_LENGTH = 4000;
-            if (formattedVerseText.length > MAX_DESC_LENGTH) {
-                formattedVerseText = formattedVerseText.substring(0, MAX_DESC_LENGTH - 3) + '...';
-            }
+            if (truncated) body += '\n\n*Truncated.*';
 
             const dateString = today.toLocaleDateString('en-US', {
-                weekday: 'long',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
+                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
             });
 
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`📖 Daily Bible Passage - ${dateString}`)
-                .setDescription(`### ${referenceDisplay}\n\n*${formattedVerseText}*`)
-                .setColor(embedColor)
-                .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(translation));
-
-            await interaction.editReply({ embeds: [embed] });
+            await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildPassageOfTheDayResponse({
+                    bookId, bookName, chapter, startVerse, endVerse, body, translation, dateString
+                })
+            });
         } catch (error) {
             logger.error(`[PassageOfTheDay Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: '❌ Sorry, there was an unexpected error processing your request.',
-                    flags: MessageFlags.Ephemeral,
-                    embeds: [], components: []
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Sorry, there was an unexpected error processing your request.`
+                    )]
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
