@@ -1,18 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from '@discordjs/builders';
-import { books, bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
-
-logger.info('[Bible Command] Books Map contents:',
-    Array.from(books.entries())
-        .map(([abbr, id]) => `${abbr} -> ${id}`)
-        .join(', ')
-);
-
-logger.info('[Bible Command] NumbersToBook Map contents:',
-    Array.from(numbersToBook.entries())
-        .map(([id, name]) => `${id} -> ${name}`)
-        .join(', ')
-);
 
 export default {
     data: new SlashCommandBuilder()

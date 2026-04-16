@@ -98,6 +98,16 @@ export function toCommentaryBookCodes(bookId) {
     return alt ? [primary, alt] : [primary];
 }
 
+// Reverse map: commentary book code (primary OSIS3 uppercase or mixed-case alt) -> bookId
+const OSIS3_TO_BOOKID = Object.fromEntries([
+    ...Object.entries(BOOKID_TO_OSIS3).map(([id, code]) => [code, parseInt(id)]),
+    ...Object.entries(BOOKID_ALT_CODES).map(([id, code]) => [code, parseInt(id)]),
+]);
+
+export function fromCommentaryBookCode(code) {
+    return OSIS3_TO_BOOKID[code] ?? null;
+}
+
 export const COMMENTATORS = [
     { id: 'john-gill',              label: "John Gill" },
     { id: 'matthew-henry',          label: "Matthew Henry" },
@@ -243,6 +253,41 @@ class CategoriesWrapper {
 
 class CommentaryWrapper {
     constructor() { this.db = commentaryPromise; }
+
+    async searchProfiles(subject) {
+        const db = await this.db;
+
+        const exactResults = await db.all(
+            `SELECT p.id, p.subject, p.content, p.commentaryId,
+                    p.referenceBook, p.referenceChapter, p.referenceVerse,
+                    p.referenceEndChapter, p.referenceEndVerse,
+                    c.name AS commentaryName
+             FROM CommentaryProfile p
+             JOIN Commentary c ON c.id = p.commentaryId
+             WHERE LOWER(p.subject) = LOWER(?)
+             ORDER BY p.subject`,
+            [subject]
+        );
+
+        if (exactResults.length > 0) {
+            return { results: exactResults, matchType: 'exact' };
+        }
+
+        const fuzzyResults = await db.all(
+            `SELECT p.id, p.subject, p.content, p.commentaryId,
+                    p.referenceBook, p.referenceChapter, p.referenceVerse,
+                    p.referenceEndChapter, p.referenceEndVerse,
+                    c.name AS commentaryName
+             FROM CommentaryProfile p
+             JOIN Commentary c ON c.id = p.commentaryId
+             WHERE LOWER(p.subject) LIKE LOWER(?)
+             ORDER BY LENGTH(p.subject) ASC, p.subject
+             LIMIT 25`,
+            [`%${subject}%`]
+        );
+
+        return { results: fuzzyResults, matchType: 'fuzzy' };
+    }
 
     async getVerseCommentary(commentaryId, bookCodes, chapter, verse) {
         const db = await this.db;
