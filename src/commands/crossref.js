@@ -41,18 +41,19 @@ function buildCrossrefPage({ data, pageIdx, totalPages, disableNav = false }) {
 
     const components = [container];
 
-    for (const ref of pageRefs) {
+    pageRefs.forEach((ref, localIdx) => {
+        const globalIdx = start + localIdx;
         const section = new SectionBuilder()
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${ref.label}** — ${ref.text}`))
             .setButtonAccessory(
                 new ButtonBuilder()
-                    .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}`)
+                    .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}:${globalIdx}`)
                     .setLabel('Open')
                     .setEmoji({ name: '📖' })
                     .setStyle(ButtonStyle.Secondary)
             );
         components.push(section);
-    }
+    });
 
     const totalRefs = data.totalRefCount ?? data.refs.length;
     const footerSuffix = totalRefs > data.refs.length ? ` | ${data.refs.length} of ${totalRefs} shown` : '';

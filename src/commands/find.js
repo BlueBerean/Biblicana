@@ -106,18 +106,19 @@ function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disabl
 
     const components = [container];
 
-    for (const v of pageVerses) {
+    pageVerses.forEach((v, localIdx) => {
+        const globalIdx = start + localIdx;
         const section = new SectionBuilder()
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${v.rangeLabel}** — ${v.text}`))
             .setButtonAccessory(
                 new ButtonBuilder()
-                    .setCustomId(`openverse:bible:${v.bookId}:${v.chapter}:${v.startVerse}:${v.endVerse}`)
+                    .setCustomId(`openverse:bible:${v.bookId}:${v.chapter}:${v.startVerse}:${v.endVerse}:${globalIdx}`)
                     .setLabel('Open')
                     .setEmoji({ name: '📖' })
                     .setStyle(ButtonStyle.Secondary)
             );
         components.push(section);
-    }
+    });
 
     components.push(new TextDisplayBuilder().setContent(
         `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}`

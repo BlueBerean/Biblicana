@@ -342,12 +342,14 @@ async function handleParallel({ interaction, bookId, chapter, verse, translation
 export default {
     id: 'openverse',
     async execute(interaction, database) {
-        // customId format: `openverse:<action>:<bookId>:<chapter>:<startVerse>[:<endVerse>]`
-        // The optional 6th part encodes an end verse for range lookups (used by
-        // /crossref and /find when the referenced passage spans multiple verses).
-        // Other actions only care about startVerse.
+        // customId format: `openverse:<action>:<bookId>:<chapter>:<startVerse>[:<endVerse>[:<occurrenceIdx>]]`
+        // The optional 6th part encodes an end verse for range lookups.
+        // The optional 7th part is a free-form uniqueness suffix (used when the
+        // same verse ref appears multiple times in one message — e.g., duplicate
+        // Messianic prophecy refs in /propheciesofjesus, duplicate commentary
+        // contexts in /topic). The handler ignores it.
         const parts = interaction.customId.split(':');
-        if (parts.length < 5 || parts.length > 6) {
+        if (parts.length < 5 || parts.length > 7) {
             logger.warn(`[OpenVerse Button] Malformed customId: ${interaction.customId}`);
             return interaction.reply({ content: 'Invalid action.', flags: MessageFlags.Ephemeral });
         }

@@ -69,9 +69,9 @@ function buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav = f
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(sectionText));
 
         if (result.ref) {
-            const customId = result.ref.endVerse > result.ref.startVerse
-                ? `openverse:bible:${result.ref.bookId}:${result.ref.chapter}:${result.ref.startVerse}:${result.ref.endVerse}`
-                : `openverse:bible:${result.ref.bookId}:${result.ref.chapter}:${result.ref.startVerse}`;
+            // 7th part keeps custom_ids unique when the same context appears
+            // in multiple commentary results on the same page.
+            const customId = `openverse:bible:${result.ref.bookId}:${result.ref.chapter}:${result.ref.startVerse}:${result.ref.endVerse}:${globalIdx}`;
             section.setButtonAccessory(
                 new ButtonBuilder()
                     .setCustomId(customId)

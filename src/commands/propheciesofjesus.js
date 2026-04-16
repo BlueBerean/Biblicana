@@ -46,10 +46,11 @@ function truncate(text, max) {
     return text.length > max ? text.substring(0, max - 1) + '…' : text;
 }
 
-function buildOpenCustomId(ref) {
-    return ref.endVerse > ref.startVerse
-        ? `openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}`
-        : `openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}`;
+function buildOpenCustomId(ref, uniqueSuffix) {
+    // Always include endVerse + a uniqueness suffix as parts 6 and 7 so that
+    // prophecies referencing the same verse (common for Isaiah 53, Psalm 22,
+    // etc.) produce distinct customIds per row. Router ignores the 7th part.
+    return `openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}:${uniqueSuffix}`;
 }
 
 function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false }) {
@@ -79,7 +80,7 @@ function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false
         if (otParsed) {
             otSection.setButtonAccessory(
                 new ButtonBuilder()
-                    .setCustomId(buildOpenCustomId(otParsed))
+                    .setCustomId(buildOpenCustomId(otParsed, `ot${globalIdx}`))
                     .setLabel('Open OT')
                     .setEmoji({ name: '📖' })
                     .setStyle(ButtonStyle.Secondary)
@@ -107,7 +108,7 @@ function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false
             if (ntParsed) {
                 ntSection.setButtonAccessory(
                     new ButtonBuilder()
-                        .setCustomId(buildOpenCustomId(ntParsed))
+                        .setCustomId(buildOpenCustomId(ntParsed, `nt${globalIdx}`))
                         .setLabel('Open NT')
                         .setEmoji({ name: '📖' })
                         .setStyle(ButtonStyle.Secondary)

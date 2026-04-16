@@ -19,7 +19,7 @@ import 'dotenv/config';
 
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const VERSES_PER_PAGE = 8;
-const MAX_SHOWALL_CHARS_PER_PAGE = 3800;
+const TOPICS_PER_PAGE = 24;
 const MAX_VERSE_PREVIEW_LENGTH = 260;
 const MAX_FETCH_REFS = 200;
 
@@ -59,16 +59,25 @@ function buildNavRow(pageIdx, totalPages, disableNav = false) {
     );
 }
 
-function buildShowAllPage({ chunks, pageIdx, totalPages, disableNav = false }) {
+function buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav = false }) {
     const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+    const start = pageIdx * TOPICS_PER_PAGE;
+    const pageTopics = topics.slice(start, start + TOPICS_PER_PAGE);
+
+    // Bullet list, 2 columns via markdown list formatting
+    const body = pageTopics.map(t => `• ${t}`).join('\n');
+    const tailSuffix = (pageIdx === totalPages - 1 && moreCount > 0)
+        ? `\n\n**+${moreCount.toLocaleString()} More topics** — use \`/topicalindex topic:<name>\` to search any of them`
+        : '';
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor)
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📚 Available Bible Topics${pageInfo}`))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(chunks[pageIdx]))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`*Use \`/topicalindex topic:<name>\` to see verses for any of these topics.*`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(body + tailSuffix))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Showing ${pageTopics.length} of ${topics.length} classical topics${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
         ));
 
     const components = [container];
@@ -87,15 +96,14 @@ function buildTopicSearchPage({ topic, rawTopic, pageEntries, pageIdx, totalPage
             `*Tap any verse to open the full passage.*\n**Total references:** ${totalVerseCount}`
         ));
 
-    for (const entry of pageEntries) {
-        if (!entry) continue;
+    pageEntries.forEach((entry, localIdx) => {
+        if (!entry) return;
+        const globalIdx = localIdx; // unique within this page render — suffices for Discord uniqueness
         const section = new SectionBuilder()
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${entry.citation}** — ${entry.text}`));
 
         if (entry.bookId && entry.startVerse) {
-            const customId = entry.endVerse > entry.startVerse
-                ? `openverse:bible:${entry.bookId}:${entry.chapter}:${entry.startVerse}:${entry.endVerse}`
-                : `openverse:bible:${entry.bookId}:${entry.chapter}:${entry.startVerse}`;
+            const customId = `openverse:bible:${entry.bookId}:${entry.chapter}:${entry.startVerse}:${entry.endVerse}:${globalIdx}`;
             section.setButtonAccessory(
                 new ButtonBuilder()
                     .setCustomId(customId)
@@ -107,7 +115,7 @@ function buildTopicSearchPage({ topic, rawTopic, pageEntries, pageIdx, totalPage
             // Unresolvable ref (e.g. cross-book range) — keep Section visible with disabled button.
             section.setButtonAccessory(
                 new ButtonBuilder()
-                    .setCustomId(`topicalindex:noop:${Math.random().toString(36).slice(2, 8)}`)
+                    .setCustomId(`topicalindex:noop:${globalIdx}`)
                     .setLabel('Open')
                     .setEmoji({ name: '📖' })
                     .setStyle(ButtonStyle.Secondary)
@@ -115,7 +123,7 @@ function buildTopicSearchPage({ topic, rawTopic, pageEntries, pageIdx, totalPage
             );
         }
         container.addSectionComponents(section);
-    }
+    });
 
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
         `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}${totalPages > 1 ? ` | Page ${pageIdx + 1}/${totalPages}` : ''}`
@@ -211,16 +219,13 @@ export default {
                 logger.info('[TopicalIndex Command] Listing all topics.');
                 const totalCategories = await categoriesWrapper.totalCategoryCount();
                 const moreCount = Math.max(0, totalCategories - CLASSICAL_97_TOPICS.length);
-                const joined = [...CLASSICAL_97_TOPICS].sort().join(', \n');
-                const moreSuffix = moreCount > 0 ? `\n\n**+${moreCount.toLocaleString()} More**` : '';
-                const description = joined + moreSuffix;
-                const chunks = splitString(description, MAX_SHOWALL_CHARS_PER_PAGE);
-                const totalPages = chunks.length;
+                const topics = [...CLASSICAL_97_TOPICS].sort();
+                const totalPages = Math.ceil(topics.length / TOPICS_PER_PAGE);
                 let pageIdx = 0;
 
                 await interaction.editReply({
                     flags,
-                    components: buildShowAllPage({ chunks, pageIdx, totalPages })
+                    components: buildShowAllPage({ topics, moreCount, pageIdx, totalPages })
                 });
 
                 if (totalPages <= 1) return;
@@ -235,7 +240,7 @@ export default {
                         await i.deferUpdate();
                         if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
                         else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                        await i.editReply({ flags, components: buildShowAllPage({ chunks, pageIdx, totalPages }) });
+                        await i.editReply({ flags, components: buildShowAllPage({ topics, moreCount, pageIdx, totalPages }) });
                     } catch (err) {
                         logger.error(`[TopicalIndex Command] ShowAll pagination error: ${err.message}`);
                     }
@@ -245,7 +250,7 @@ export default {
                     try {
                         await interaction.editReply({
                             flags,
-                            components: buildShowAllPage({ chunks, pageIdx, totalPages, disableNav: true })
+                            components: buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav: true })
                         });
                     } catch (err) {
                         if (err.code !== 10008 && err.code !== 10062) {

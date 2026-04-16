@@ -1,6 +1,7 @@
 import {
     SlashCommandBuilder,
     ContainerBuilder,
+    SectionBuilder,
     TextDisplayBuilder,
     ActionRowBuilder,
     ButtonBuilder,
@@ -14,48 +15,60 @@ import { strongsWrapper } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import 'dotenv/config';
 
-const ITEMS_PER_PAGE = 5;
+const ITEMS_PER_PAGE_NO_NAV = 9;
+const ITEMS_PER_PAGE_WITH_NAV = 8;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const HEBREW_COLOR = 0x3498DB;
 const GREEK_COLOR = 0x9B59B6;
-const MAX_DEFINITION_CHARS = 800;
+const PREVIEW_LENGTH = 140;
 
-function buildDefinePage({ items, pageIdx, totalPages, lexiconId, rawWord, disableNav = false }) {
+function buildDefinePage({ items, pageIdx, itemsPerPage, totalPages, lexiconId, rawWord, disableNav = false }) {
     const accentColor = lexiconId === 'Greek' ? GREEK_COLOR : HEBREW_COLOR;
     const strongsPrefix = lexiconId === 'Greek' ? 'G' : 'H';
-    const start = pageIdx * ITEMS_PER_PAGE;
-    const pageItems = items.slice(start, start + ITEMS_PER_PAGE);
+    const start = pageIdx * itemsPerPage;
+    const pageItems = items.slice(start, start + itemsPerPage);
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
-
-    const entryLines = pageItems.map((item, idx) => {
-        const globalNum = start + idx + 1;
-        const strongsId = item.strongs ? `${strongsPrefix}${item.strongs}` : 'N/A';
-        const definition = lexiconId === 'Greek'
-            ? (item.definition || item.strong_def || 'No definition available.')
-            : (item.strong_def || 'No definition available.');
-        const shortDef = definition.length > MAX_DEFINITION_CHARS
-            ? definition.substring(0, MAX_DEFINITION_CHARS - 1) + '…'
-            : definition;
-
-        return [
-            `### ${globalNum}. ${strongsId}`,
-            `**Original:** ${item.unicode || 'N/A'}`,
-            `**Transliteration:** ${item.translit || item.xlit || 'N/A'}`,
-            '',
-            `**Definition:** ${shortDef}`,
-            '―――――――'
-        ].join('\n');
-    });
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor)
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `## 📚 ${lexiconId} Word Study — "${rawWord}"${pageInfo}`
         ))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(entryLines.join('\n\n')))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${lexiconId} Lexicon | ${items.length} result${items.length === 1 ? '' : 's'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+            `*Tap any entry for its full lexicon definition.*`
         ));
+
+    pageItems.forEach((item, localIdx) => {
+        const globalIdx = start + localIdx;
+        const strongsId = `${strongsPrefix}${item.strongs}`;
+        const translit = item.translit || item.xlit || 'N/A';
+        const unicode = item.unicode || '';
+        const definition = lexiconId === 'Greek'
+            ? (item.definition || item.strong_def || 'No definition available.')
+            : (item.strong_def || 'No definition available.');
+        const preview = definition.length > PREVIEW_LENGTH
+            ? definition.substring(0, PREVIEW_LENGTH - 1) + '…'
+            : definition;
+
+        const headline = `**${strongsId}** — \`${unicode || '—'}\` *(${translit})*`;
+        const body = `${headline}\n> ${preview}`;
+
+        const section = new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+            .setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`strongs:${lexiconId}:${strongsId}:${globalIdx}`)
+                    .setLabel('Full')
+                    .setEmoji({ name: '📚' })
+                    .setStyle(ButtonStyle.Secondary)
+            );
+
+        container.addSectionComponents(section);
+    });
+
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${lexiconId} Lexicon | ${items.length} result${items.length === 1 ? '' : 's'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+    ));
 
     const components = [container];
 
@@ -144,13 +157,15 @@ export default {
                 });
             }
 
-            const totalPages = Math.ceil(items.length / ITEMS_PER_PAGE);
+            const needsPagination = items.length > ITEMS_PER_PAGE_NO_NAV;
+            const itemsPerPage = needsPagination ? ITEMS_PER_PAGE_WITH_NAV : ITEMS_PER_PAGE_NO_NAV;
+            const totalPages = needsPagination ? Math.ceil(items.length / itemsPerPage) : 1;
             let pageIdx = 0;
             const flags = MessageFlags.IsComponentsV2;
 
             await interaction.editReply({
                 flags,
-                components: buildDefinePage({ items, pageIdx, totalPages, lexiconId, rawWord })
+                components: buildDefinePage({ items, pageIdx, itemsPerPage, totalPages, lexiconId, rawWord })
             });
 
             if (totalPages <= 1) return;
@@ -167,7 +182,7 @@ export default {
                     else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
                     await i.editReply({
                         flags,
-                        components: buildDefinePage({ items, pageIdx, totalPages, lexiconId, rawWord })
+                        components: buildDefinePage({ items, pageIdx, itemsPerPage, totalPages, lexiconId, rawWord })
                     });
                 } catch (err) {
                     logger.error(`[Define Command] Pagination error: ${err.message}`);
@@ -178,7 +193,7 @@ export default {
                 try {
                     await interaction.editReply({
                         flags,
-                        components: buildDefinePage({ items, pageIdx, totalPages, lexiconId, rawWord, disableNav: true })
+                        components: buildDefinePage({ items, pageIdx, itemsPerPage, totalPages, lexiconId, rawWord, disableNav: true })
                     });
                 } catch (err) {
                     if (err.code !== 10008 && err.code !== 10062) {
