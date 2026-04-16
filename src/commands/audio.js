@@ -9,6 +9,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
+import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
@@ -17,6 +18,8 @@ import { accentColor } from '../utils/theme.js';
 import 'dotenv/config';
 
 const HARDCODED_VERSION = 'kjv';
+const AUDIO_DOWNLOAD_TIMEOUT_MS = 30_000;
+const AUDIO_MAX_BYTES = 25 * 1024 * 1024; // Discord's base attachment cap
 
 async function fetchAudioNarration(bookId, chapter, version) {
     const params = {
@@ -130,7 +133,29 @@ export default {
                 });
             }
 
-            const audioAttachment = new AttachmentBuilder(audioUrl, {
+            // Download the MP3 ourselves via axios and pass the buffer to
+            // AttachmentBuilder. When you pass a URL string, discord.js fetches
+            // it using its bundled undici, which is unstable on Node <18.17
+            // (our prod droplet runs 18.13) and terminates mid-fetch. Going
+            // through axios (Node's native http) avoids that path entirely.
+            let audioBuffer;
+            try {
+                const audioResponse = await axios.get(audioUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: AUDIO_DOWNLOAD_TIMEOUT_MS,
+                    maxContentLength: AUDIO_MAX_BYTES,
+                    maxBodyLength: AUDIO_MAX_BYTES
+                });
+                audioBuffer = Buffer.from(audioResponse.data);
+                logger.info(`[Audio Command] Downloaded ${bookName} ${chapter}: ${audioBuffer.length} bytes`);
+            } catch (downloadError) {
+                logger.error(`[Audio Command] Download failed for ${bookName} ${chapter}: ${downloadError.message}`);
+                return interaction.editReply({
+                    content: `❌ The audio source was reachable but the MP3 download failed. The external audio server may be having issues — try again in a moment.`
+                });
+            }
+
+            const audioAttachment = new AttachmentBuilder(audioBuffer, {
                 name: `${bookName.replace(/ /g, '_')}_${chapter}_${HARDCODED_VERSION}.mp3`,
                 description: `Audio narration for ${bookName} chapter ${chapter}`
             });
