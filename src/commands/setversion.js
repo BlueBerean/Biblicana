@@ -1,8 +1,8 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const logger = require('../utils/logger');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import logger from '../utils/logger.js';
+import 'dotenv/config';
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('setversion')
         .setDescription('Set your preferred default Bible translation.')
@@ -41,10 +41,10 @@ module.exports = {
             let dbOperationSuccessful;
             if (userExists) {
                 logger.debug(`[SetVersion Command] Updating existing user ${userId}`);
-                dbOperationSuccessful = await database.updateUserValue(userId, { translation: translation });
+                dbOperationSuccessful = await database.updateUserValue(userId, { translation });
             } else {
                 logger.debug(`[SetVersion Command] Inserting new user ${userId}`);
-                dbOperationSuccessful = await database.setUserValue(userId, { id: userId, translation: translation });
+                dbOperationSuccessful = await database.setUserValue(userId, { id: userId, translation });
             }
 
             if (!dbOperationSuccessful && dbOperationSuccessful !== undefined) {
@@ -65,7 +65,6 @@ module.exports = {
 
             await interaction.reply({ embeds: [embed], ephemeral: true });
             logger.info(`[SetVersion Command] Successfully set default translation for ${userName} (${userId}) to ${translation}`);
-
         } catch (error) {
             logger.error(`[SetVersion Command] Error setting translation for ${userName} (${userId}) to ${translation}: ${error.message}`, error.stack);
             try {

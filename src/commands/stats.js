@@ -1,8 +1,7 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const logger = require('../utils/logger');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import logger from '../utils/logger.js';
+import 'dotenv/config';
 
-// Helper function to format uptime
 function formatUptime(ms) {
     const totalSeconds = Math.floor(ms / 1000);
     const days = Math.floor(totalSeconds / 86400);
@@ -16,35 +15,31 @@ function formatUptime(ms) {
     if (minutes > 0) uptimeString += `${minutes}m `;
     uptimeString += `${seconds}s`;
 
-    return uptimeString.trim() || '0s'; // Return '0s' if uptime is very short
+    return uptimeString.trim() || '0s';
 }
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('stats')
         .setDescription('Displays bot and server statistics.'),
     async execute(interaction) {
         try {
-            const client = interaction.client; // For easier access
+            const client = interaction.client;
 
-            // Basic stats
             const wsPing = client.ws.ping;
             const uptime = formatUptime(client.uptime);
             const memoryUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
 
-            // Shard/Guild/User counts (Note: These might be for the current shard only if sharded)
-            const shardCount = client.ws.shards?.size || 1; // Default to 1 if not sharded
+            const shardCount = client.ws.shards?.size || 1;
             const guildCount = client.guilds.cache.size;
-            // User count can be less accurate due to caching policies
-            const userCount = client.users.cache.size; // This counts cached users bot has seen
+            const userCount = client.users.cache.size;
 
-            // Use parseInt for safer color handling, provide a default
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR) : 0x0099FF;
 
             const embed = new EmbedBuilder()
                 .setTitle('📊 Bot Statistics')
                 .setColor(embedColor)
-                .setURL(process.env.WEBSITE) // Optional
+                .setURL(process.env.WEBSITE)
                 .setDescription(`Here are the current stats for ${client.user.username}:`)
                 .addFields(
                     { name: '💓 Ping', value: `~${wsPing}ms`, inline: true },
@@ -53,17 +48,14 @@ module.exports = {
                     { name: '🌐 Guilds', value: guildCount.toString(), inline: true },
                     { name: '👤 Cached Users', value: userCount.toString(), inline: true },
                     { name: '🧩 Shards', value: shardCount.toString(), inline: true }
-                    // Note: Guild/User count might be inaccurate if the bot is sharded.
-                    // A more accurate method uses client.shard.broadcastEval() but is more complex.
                 )
-                .setTimestamp() // Add timestamp
+                .setTimestamp()
                 .setFooter({
                     text: process.env.EMBEDFOOTERTEXT,
                     iconURL: process.env.EMBEDICONURL
                 });
 
             await interaction.reply({ embeds: [embed] });
-
         } catch (error) {
             logger.error(`[Stats Command] Error: ${error.message}`, error.stack);
             try {
@@ -72,10 +64,10 @@ module.exports = {
                     ephemeral: true
                 });
             } catch (replyError) {
-                if (replyError.code !== 10062 && replyError.code !== 40060) { // Avoid logging common expired interaction errors
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
                     logger.error(`[Stats Command] Failed to send error reply: ${replyError}`);
                 }
             }
         }
     }
-}
+};

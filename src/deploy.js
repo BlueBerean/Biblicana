@@ -1,12 +1,16 @@
-const fs = require('fs');
-const path = require('path');
-require('dotenv').config();
-const { Routes, REST } = require('discord.js');
-const logger = require('./utils/logger.js');
-const yargs = require('yargs/yargs');
-const { hideBin } = require('yargs/helpers');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import 'dotenv/config';
+import { Routes, REST } from 'discord.js';
+import yargs from 'yargs/yargs';
+import { hideBin } from 'yargs/helpers';
+import logger from './utils/logger.js';
 
-// Setup yargs for argument parsing
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Parse CLI args
 const argv = yargs(hideBin(process.argv))
     .option('global', {
         alias: 'g',
@@ -20,19 +24,19 @@ const argv = yargs(hideBin(process.argv))
     })
     .help()
     .alias('help', 'h')
-    .argv;
+    .parse();
 
 const commands = [];
-// Use path.join for robustness
-const commandsPath = path.join(__dirname, 'commands'); 
+const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 
-// Grab the SlashCommandBuilder#toJSON() output of each command's data for deployment
+// Dynamically import each command module (ESM uses async import)
 for (const file of commandFiles) {
     const filePath = path.join(commandsPath, file);
     try {
-        const command = require(filePath);
-        if (command.data?.toJSON) {
+        const moduleExports = await import(pathToFileURL(filePath).href);
+        const command = moduleExports.default;
+        if (command?.data?.toJSON) {
             commands.push(command.data.toJSON());
         } else {
             logger.warn(`[WARNING] Command at ${file} is missing 'data' or 'data.toJSON' method.`);
@@ -42,24 +46,19 @@ for (const file of commandFiles) {
     }
 }
 
-// Construct and prepare an instance of the REST module
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORDTOKEN);
 
-// and deploy your commands!
 (async () => {
     try {
         const clientId = process.env.CLIENTID;
         const guildId = process.env.GUILDID;
 
-        // Determine route based on --global flag
         const route = argv.global
             ? Routes.applicationCommands(clientId)
             : Routes.applicationGuildCommands(clientId, guildId);
 
-        // Determine body based on --rm flag
         const body = argv.rm ? [] : commands;
 
-        // Determine scope description for logging
         const scope = argv.global ? 'global' : 'local (guild)';
         const action = argv.rm ? 'removed' : 'reloaded';
 
@@ -68,9 +67,7 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORDTOKEN);
         await rest.put(route, { body });
 
         logger.info(`Successfully ${action} application (/) commands in ${scope} scope.`);
-
     } catch (error) {
-        // And of course, make sure you catch and log any errors!
         logger.error('Error during command deployment:', error);
     }
 })();

@@ -1,17 +1,16 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const axios = require('axios');
-const { getBookId, numbersToBook } = require('../utils/bibleHelper');
-const logger = require('../utils/logger');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import axios from 'axios';
+import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import logger from '../utils/logger.js';
+import 'dotenv/config';
 
 function generateFooter(page, maxPages) {
-    return { 
-        text: `${process.env.EMBEDFOOTERTEXT} | Page ${page + 1}/${maxPages}`, 
-        iconURL: process.env.EMBEDICONURL 
+    return {
+        text: `${process.env.EMBEDFOOTERTEXT} | Page ${page + 1}/${maxPages}`,
+        iconURL: process.env.EMBEDICONURL
     };
 }
 
-// Helper function to structure book sections and handle potentially missing data
 function getBookSections(bookInfo) {
     const formatArray = (arr, prefix = '• ') => Array.isArray(arr) && arr.length > 0 ? prefix + arr.join(`\n${prefix}`) : (arr || null);
     const formatKeyVerses = (arr) => Array.isArray(arr) && arr.length > 0 ? '• ' + arr.map(v => v.reference).join('\n• ') : (arr || null);
@@ -30,17 +29,17 @@ function getBookSections(bookInfo) {
         { title: 'Key Verses', content: formatKeyVerses(bookInfo.key_verses) },
         { title: 'Practical Application', content: bookInfo.practical_application },
         { title: 'Connection to Other Books', content: bookInfo.connection_to_other_books },
-        { title: 'Theological Significance', content: bookInfo.theological_introduction ? bookInfo.theological_introduction.split('\n')[0] : null }, // Assuming only first line is needed
+        { title: 'Theological Significance', content: bookInfo.theological_introduction ? bookInfo.theological_introduction.split('\n')[0] : null },
         { title: 'Cross References', content: formatArray(bookInfo.cross_references) },
         { title: 'Symbolism', content: formatArray(bookInfo.symbolism) }
-    ].filter(section => section.content && section.content.toString().trim()); // Filter out sections with no meaningful content
+    ].filter(section => section.content && section.content.toString().trim());
 }
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('bookinfo')
         .setDescription('Get detailed information about a book of the Bible')
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book you want to learn about')
                 .setRequired(true)),
@@ -54,9 +53,9 @@ module.exports = {
             const bookName = numbersToBook.get(bookId);
 
             if (!bookId) {
-                return interaction.editReply({ 
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`, 
-                    ephemeral: true 
+                return interaction.editReply({
+                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
+                    ephemeral: true
                 });
             }
 
@@ -77,56 +76,51 @@ module.exports = {
 
             const response = await axios.request(options);
             const bookInfo = response.data;
-            // logger.info('[BookInfo Command] API Response Received'); // Simplified logging
 
             if (!bookInfo) {
                 return interaction.editReply(`No information found for ${bookName}.`);
             }
 
-            // Process the book information using the helper function
             const sections = getBookSections(bookInfo);
 
             if (sections.length === 0) {
                 return interaction.editReply(`No detailed information available for ${bookName}.`);
             }
 
-            // Create pages from the sections
-            const maxChars = 4000; // Increased slightly, Discord embed description limit is 4096
+            const maxChars = 4000;
             const pages = [];
             let currentPage = '';
 
             for (const section of sections) {
-                // Ensure content is a string before calculating length
                 const contentString = Array.isArray(section.content) ? section.content.join('\n') : String(section.content);
                 const sectionText = `**${section.title}:**\n${contentString}\n\n`;
 
-                    if ((currentPage + sectionText).length > maxChars) {
-                    if (currentPage) { // Avoid pushing empty pages
+                if ((currentPage + sectionText).length > maxChars) {
+                    if (currentPage) {
                         pages.push(currentPage.trim());
                     }
-                        currentPage = sectionText;
-                    } else {
-                        currentPage += sectionText;
+                    currentPage = sectionText;
+                } else {
+                    currentPage += sectionText;
                 }
             }
 
-            if (currentPage) { // Add the last page if it has content
+            if (currentPage) {
                 pages.push(currentPage.trim());
             }
 
-            if (pages.length === 0) { // Double-check after processing
+            if (pages.length === 0) {
                 return interaction.editReply(`No processable information available for ${bookName}.`);
             }
 
             let currentPageIndex = 0;
 
-            // Use parseInt for safer color handling, provide a default
             const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR) : 0x0099FF;
 
             const embed = new EmbedBuilder()
                 .setTitle(`📖 Book Information - ${bookName}`)
                 .setDescription(pages[currentPageIndex])
-                .setColor(embedColor) // Use parsed color
+                .setColor(embedColor)
                 .setURL(process.env.WEBSITE)
                 .setFooter(generateFooter(currentPageIndex, pages.length));
 
@@ -150,69 +144,63 @@ module.exports = {
                         .setDisabled(isEnd || currentPageIndex === pages.length - 1)
                 );
 
-            const message = await interaction.editReply({ 
-                embeds: [embed], 
+            const message = await interaction.editReply({
+                embeds: [embed],
                 components: [createActionRow()]
             });
 
-            // Filter to ensure only the original command user can interact
             const filter = i => i.user.id === interaction.user.id;
 
             const collector = message.createMessageComponentCollector({
-                filter, // Apply the filter
-                time: 600000 // 10 minutes
+                filter,
+                time: 600000
             });
 
             collector.on('collect', async i => {
-                // No need to check i.user.id again due to the filter
                 try {
-                     await i.deferUpdate(); // Acknowledge the interaction quickly
+                    await i.deferUpdate();
 
-                if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1) % pages.length; // Cycle forward
-                } else if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length; // Cycle backward
+                    if (i.customId === 'page_next') {
+                        currentPageIndex = (currentPageIndex + 1) % pages.length;
+                    } else if (i.customId === 'page_back') {
+                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
                     }
 
-                embed.setDescription(pages[currentPageIndex])
-                     .setFooter(generateFooter(currentPageIndex, pages.length));
+                    embed.setDescription(pages[currentPageIndex])
+                        .setFooter(generateFooter(currentPageIndex, pages.length));
 
                     await i.editReply({ embeds: [embed], components: [createActionRow()] });
                 } catch (collectError) {
-                     logger.error(`[BookInfo Command] Error updating pagination: ${collectError}`);
-                     // Attempt to inform the user if possible, otherwise log it
-                     try {
-                         await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
-                     } catch (followUpError) {
+                    logger.error(`[BookInfo Command] Error updating pagination: ${collectError}`);
+                    try {
+                        await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                    } catch (followUpError) {
                         logger.error(`[BookInfo Command] Error sending follow-up after pagination error: ${followUpError}`);
-                     }
+                    }
                 }
             });
 
             collector.on('end', () => {
                 logger.info(`[BookInfo Command] Pagination collector ended for ${bookName} after timeout.`);
-                 // Edit the message to disable buttons after timeout
-                 const timedOutRow = createActionRow(true); // Pass true to disable buttons
-                 message.edit({ components: [timedOutRow] }).catch(editError => {
-                     logger.error(`[BookInfo Command] Error disabling buttons after timeout: ${editError}`);
-                 });
+                const timedOutRow = createActionRow(true);
+                message.edit({ components: [timedOutRow] }).catch(editError => {
+                    logger.error(`[BookInfo Command] Error disabling buttons after timeout: ${editError}`);
+                });
             });
-
         } catch (error) {
-            logger.error(`[BookInfo Command] Error: ${error.message}`, error.stack); // Log stack trace
-            // Check for specific Axios errors if needed (e.g., 404, 401)
+            logger.error(`[BookInfo Command] Error: ${error.message}`, error.stack);
             if (error.response) {
                 logger.error(`[BookInfo Command] API Error Status: ${error.response.status}`);
                 logger.error(`[BookInfo Command] API Error Data: ${JSON.stringify(error.response.data)}`);
             }
             try {
-            await interaction.editReply({ 
-                    content: 'Sorry, there was an error processing your request. The developers have been notified.', // More informative error
-                ephemeral: true 
-            });
+                await interaction.editReply({
+                    content: 'Sorry, there was an error processing your request. The developers have been notified.',
+                    ephemeral: true
+                });
             } catch (replyError) {
                 logger.error(`[BookInfo Command] Failed to send error reply: ${replyError}`);
             }
         }
     }
-}; 
+};

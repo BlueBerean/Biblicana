@@ -1,8 +1,8 @@
-const joi = require('joi');
+import joi from 'joi';
 
 const userModel = joi.object({
     id: joi.string().required(),
     translation: joi.string().default('BSB'),
 });
 
-module.exports = userModel;
+export default userModel;

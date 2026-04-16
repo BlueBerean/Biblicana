@@ -1,19 +1,19 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
-const axios = require('axios');
-const { getBookId, bibleWrapper, numbersToBook } = require('../utils/bibleHelper');
-const logger = require('../utils/logger');
-const swearWordFilter = require('../utils/filter');
-const splitString = require('../utils/splitString');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import axios from 'axios';
+import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
+import logger from '../utils/logger.js';
+import swearWordFilter from '../utils/filter.js';
+import splitString from '../utils/splitString.js';
+import 'dotenv/config';
 
 const MAX_CHARS_PER_PAGE = 4000;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 
 function generateFooter(topTranslation = "BSB", page, maxPages) {
     const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
-    return { 
-        text: `${process.env.EMBEDFOOTERTEXT} | Top Translation: ${topTranslation.toUpperCase()}${pageText}`, 
-        iconURL: process.env.EMBEDICONURL 
+    return {
+        text: `${process.env.EMBEDFOOTERTEXT} | Top Translation: ${topTranslation.toUpperCase()}${pageText}`,
+        iconURL: process.env.EMBEDICONURL
     };
 }
 
@@ -33,19 +33,19 @@ const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRo
             .setDisabled(isEnd || currentPage === totalPages - 1)
     );
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('parallel')
         .setDescription('View a verse in multiple parallel Bible translations')
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book name or abbreviation')
                 .setRequired(true))
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('chapter')
                 .setDescription('The chapter number')
                 .setRequired(true))
-        .addNumberOption(option => 
+        .addNumberOption(option =>
             option.setName('verse')
                 .setDescription('The verse number')
                 .setRequired(true)
@@ -211,7 +211,7 @@ module.exports = {
                     }
 
                     embed.setDescription(pages[currentPageIndex])
-                         .setFooter(generateFooter(primaryTranslation, currentPageIndex, pages.length));
+                        .setFooter(generateFooter(primaryTranslation, currentPageIndex, pages.length));
 
                     await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
                 } catch (collectError) {
@@ -231,7 +231,6 @@ module.exports = {
                     }
                 });
             });
-
         } catch (error) {
             logger.error(`[Parallel Command] Unhandled error: ${error.message}`, error.stack);
             try {
@@ -243,4 +242,4 @@ module.exports = {
             }
         }
     }
-}; 
+};

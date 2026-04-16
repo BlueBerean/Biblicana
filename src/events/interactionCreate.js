@@ -1,8 +1,8 @@
-const { Events, EmbedBuilder } = require('discord.js');
-const logger = require('../utils/logger');
+import { Events, EmbedBuilder } from 'discord.js';
+import logger from '../utils/logger.js';
 
-module.exports = {
-	name: Events.InteractionCreate,
+export default {
+    name: Events.InteractionCreate,
     async execute(interaction, database) {
         if (interaction.isCommand()) {
             const cooldown = await interaction.client.cooldowns.get(interaction.user.id);
@@ -26,7 +26,7 @@ module.exports = {
             }
 
             interaction.client.cooldowns.set(interaction.user.id, Date.now() + 3500);
-            
+
             const command = interaction.client.commands.get(interaction.commandName);
 
             if (!command) {
@@ -40,26 +40,24 @@ module.exports = {
                 logger.error(`[Error] Error executing ${interaction.commandName}`);
                 logger.error(error);
 
-                // Handle interaction timeout errors
                 if (error.code === 10062) {
                     logger.error('[Error] Interaction timed out');
                     return;
                 }
 
                 try {
-                    const errorResponse = { 
-                        content: 'There was an error executing this command!', 
-                        ephemeral: true 
+                    const errorResponse = {
+                        content: 'There was an error executing this command!',
+                        ephemeral: true
                     };
 
-                    // Check interaction state and respond appropriately
                     if (!interaction.replied && !interaction.deferred) {
                         await interaction.reply(errorResponse);
                     } else if (interaction.deferred) {
                         await interaction.editReply(errorResponse);
                     }
                 } catch (e) {
-                    if (e.code !== 10062) { // Ignore "Unknown Interaction" errors
+                    if (e.code !== 10062) {
                         logger.error('[Error] Could not send error message to user');
                         logger.error(e);
                     }
@@ -71,7 +69,7 @@ module.exports = {
             if (!button) {
                 if (interaction.replied) return;
 
-                if (interaction.customId == "page_next" || interaction.customId == "page_back") return; // These are handled in the individual commands
+                if (interaction.customId == "page_next" || interaction.customId == "page_back") return;
 
                 return interaction.reply(`No button matching ${interaction.customId} was found.`);
             }

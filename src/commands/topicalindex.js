@@ -1,21 +1,17 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const axios = require('axios');
-const logger = require('../utils/logger');
-const { bibleWrapper } = require('../utils/bibleHelper');
-const swearWordFilter = require('../utils/filter');
-const splitString = require('../utils/splitString');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import axios from 'axios';
+import logger from '../utils/logger.js';
+import { bibleWrapper } from '../utils/bibleHelper.js';
+import swearWordFilter from '../utils/filter.js';
+import splitString from '../utils/splitString.js';
+import 'dotenv/config';
 
-// --- Constants ---
-const API_TIMEOUT_MS = 8000; // 8 seconds timeout for API calls
-const COLLECTOR_TIMEOUT_MS = 600_000; // 10 minutes
-const ITEMS_PER_PAGE = 10; // Number of verses/topics per page
-const MAX_CHARS_PER_PAGE = 4000; // Embed description limit
-const MAX_VERSE_PREVIEW_LENGTH = 300; // Max length for verse text preview
+const API_TIMEOUT_MS = 8000;
+const COLLECTOR_TIMEOUT_MS = 600_000;
+const ITEMS_PER_PAGE = 10;
+const MAX_CHARS_PER_PAGE = 4000;
+const MAX_VERSE_PREVIEW_LENGTH = 300;
 
-// --- Helper Functions ---
-
-// Standard footer generation
 function generateFooter(page = 0, maxPages = 1, translation = null, totalCount = null) {
     const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
     const transText = translation ? ` | Translation: ${translation.toUpperCase()}` : '';
@@ -26,7 +22,6 @@ function generateFooter(page = 0, maxPages = 1, translation = null, totalCount =
     };
 }
 
-// Standard button row creation
 const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
     .addComponents(
         new ButtonBuilder()
@@ -43,16 +38,14 @@ const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRo
             .setDisabled(isEnd || currentPage >= totalPages - 1)
     );
 
-// Function to fetch and format verses for a given page of references
 async function formatVersesForPage(references, translation) {
     if (!references || references.length === 0) {
         return 'No verses for this page.';
     }
 
-    // Use Promise.allSettled for resilience when fetching multiple verses
     const verseFetchPromises = references.map(async (verseRef) => {
         const citation = verseRef?.citation || 'Invalid Reference';
-        const errorPrefix = `• ${citation}:`; // Define prefix for errors
+        const errorPrefix = `• ${citation}:`;
 
         if (!verseRef || !Array.isArray(verseRef.verseIds) || verseRef.verseIds.length === 0) {
             logger.warn(`[TopicalIndex Command] Invalid verse reference object: ${JSON.stringify(verseRef)}`);
@@ -63,7 +56,6 @@ async function formatVersesForPage(references, translation) {
         const lastVerseId = verseRef.verseIds[verseRef.verseIds.length - 1];
 
         try {
-            // Safely parse IDs
             const bookId = parseInt(firstVerseId.substring(0, 2));
             const chapter = parseInt(firstVerseId.substring(2, 5));
             const startVerseNum = parseInt(firstVerseId.substring(5));
@@ -73,46 +65,41 @@ async function formatVersesForPage(references, translation) {
                 throw new Error('Invalid parsed IDs');
             }
 
-            // Fetch verse data (no timeout here, handled by Promise.race if needed upstream)
             const versesData = await bibleWrapper.getVerses(bookId, chapter, startVerseNum, endVerseNum);
 
             if (!versesData || versesData.length === 0) {
                 throw new Error('Verse not found in DB');
             }
 
-            // Combine text, using preferred translation or fallback
             const verseText = versesData.map(v => v[translation] || v['BSB'] || v['KJV'] || '(Text unavailable)').join(' ');
             const truncatedText = verseText.length > MAX_VERSE_PREVIEW_LENGTH
                 ? verseText.substring(0, MAX_VERSE_PREVIEW_LENGTH - 3) + '...'
                 : verseText;
 
-            return `• **${citation}**: ${truncatedText}`; // Return formatted string
-
+            return `• **${citation}**: ${truncatedText}`;
         } catch (error) {
             logger.warn(`[TopicalIndex Command] Failed to fetch/format verse ${citation || firstVerseId}: ${error.message}`);
-            return `${errorPrefix} Error fetching text`; // Return formatted error string
+            return `${errorPrefix} Error fetching text`;
         }
     });
 
     const results = await Promise.allSettled(verseFetchPromises);
 
-    // Map results, handling fulfilled and rejected promises
     const formattedVerses = results.map(result =>
         result.status === 'fulfilled' ? result.value : '• Error processing verse reference.'
     );
 
-    return formattedVerses.join('\n\n'); // Join verses with double newline
+    return formattedVerses.join('\n\n');
 }
 
-// --- Command Export ---
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('topicalindex')
         .setDescription('Search the Bible by topic or view all topics')
         .addStringOption(option =>
             option.setName('topic')
                 .setDescription('The topic to search for (e.g., faith, love, hope)')
-                .setRequired(false) // Not required if showall is true
+                .setRequired(false)
                 .setMinLength(3)
                 .setMaxLength(100))
         .addBooleanOption(option =>
@@ -122,15 +109,14 @@ module.exports = {
         .addStringOption(option =>
             option.setName('translation')
                 .setDescription('Verse translation (defaults to your preference or BSB)')
-                .setRequired(false) // Optional
+                .setRequired(false)
                 .addChoices(
-                     { name: 'BSB', value: 'BSB' },
-                     { name: "NASB", value: "NASB" },
-                     { name: 'KJV', value: 'KJV' },
-                     { name: "NKJV", value: "NKJV" },
-                     { name: 'ASV', value: 'ASV' },
-                     { name: "AKJV", value: "AKJV" }
-                    // Add other supported choices
+                    { name: 'BSB', value: 'BSB' },
+                    { name: "NASB", value: "NASB" },
+                    { name: 'KJV', value: 'KJV' },
+                    { name: "NKJV", value: "NKJV" },
+                    { name: 'ASV', value: 'ASV' },
+                    { name: "AKJV", value: "AKJV" }
                 )),
 
     async execute(interaction, database) {
@@ -150,7 +136,6 @@ module.exports = {
 
             const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
 
-            // --- Handle Show All Topics ---
             if (showAll) {
                 logger.info("[TopicalIndex Command] Requesting all topics.");
                 const options = {
@@ -172,11 +157,11 @@ module.exports = {
                         throw new Error('Invalid or empty topic list received from API.');
                     }
 
-                    const allTopics = response.data.sort().join(', \n'); // Sort and join
-                    const pages = splitString(allTopics, MAX_CHARS_PER_PAGE); // Use splitString utility
+                    const allTopics = response.data.sort().join(', \n');
+                    const pages = splitString(allTopics, MAX_CHARS_PER_PAGE);
                     let currentPageIndex = 0;
 
-                    if (pages.length === 0) { // Safety check
+                    if (pages.length === 0) {
                         return interaction.editReply({ content: 'Failed to format the topic list.', ephemeral: true });
                     }
 
@@ -195,7 +180,6 @@ module.exports = {
                     if (pages.length <= 1) return;
 
                     const filter = i => i.user.id === interaction.user.id;
-                    // Pass ComponentType.Button if needed by your discord.js version
                     const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
                     collector.on('collect', async i => {
@@ -215,37 +199,33 @@ module.exports = {
                         message.edit({ components: [finalComponents] }).catch(e => { if (e.code !== 10008) logger.error(`[TopicalIndex Command - ShowAll] Error disabling components: ${e}`); });
                     });
 
-                    return; // End execution after handling showAll
-
+                    return;
                 } catch (apiError) {
                     logger.error(`[TopicalIndex Command - ShowAll] API request failed: ${apiError.message}`);
                     return interaction.editReply({ content: 'Sorry, failed to fetch the list of topics.', ephemeral: true });
                 }
             }
 
-            // --- Handle Topic Search ---
             logger.info(`[TopicalIndex Command] Searching for topic: "${topic}"`);
 
-            // Use translation logic again
-            let translation = 'BSB'; // Default
+            let translation = 'BSB';
             try {
-                 const userPref = await database.getUserValue(interaction.user.id); // Use database parameter
-                 if (userPref?.translation) translation = userPref.translation;
-             } catch (dbError) { logger.error(`[TopicalIndex Command] Failed to get user preference: ${dbError}`); }
-             translation = interaction.options.getString('translation') || translation; // Get selected option
+                const userPref = await database.getUserValue(interaction.user.id);
+                if (userPref?.translation) translation = userPref.translation;
+            } catch (dbError) { logger.error(`[TopicalIndex Command] Failed to get user preference: ${dbError}`); }
+            translation = interaction.options.getString('translation') || translation;
 
-            // Fetch references and count concurrently
             const apiHeaders = {
                 'x-rapidapi-key': process.env.RAPIDAPIKEY,
                 'x-rapidapi-host': 'iq-bible.p.rapidapi.com'
             };
-            const apiTimeout = API_TIMEOUT_MS; // Use constant
+            const apiTimeout = API_TIMEOUT_MS;
 
             const [topicResult, countResult] = await Promise.allSettled([
                 axios.request({
                     method: 'GET', url: 'https://iq-bible.p.rapidapi.com/GetTopic',
-                    params: { topic }, headers: apiHeaders, // Reuse headers
-                    timeout: apiTimeout // Add timeout directly
+                    params: { topic }, headers: apiHeaders,
+                    timeout: apiTimeout
                 }),
                 axios.request({
                     method: 'GET', url: 'https://iq-bible.p.rapidapi.com/GetTopicVerseCount',
@@ -254,19 +234,16 @@ module.exports = {
                 })
             ]);
 
-            // Validate topic response
             if (topicResult.status === 'rejected' || !topicResult.value?.data || !Array.isArray(topicResult.value.data) || topicResult.value.data.length === 0) {
                 const reason = topicResult.reason?.message || 'Invalid data or topic not found';
                 logger.warn(`[TopicalIndex Command] No topic references found or API error for "${topic}": ${reason}`);
-                // Check for 404 specifically if the API uses it for "not found"
                 if (topicResult.reason?.response?.status === 404) {
                     return interaction.editReply({ content: `❌ Topic "${topic}" not found. Use \`/topicalindex showall:true\` to see available topics.`, ephemeral: true });
                 }
                 return interaction.editReply({ content: `Error fetching topic references: ${reason}.`, ephemeral: true });
             }
-            const verseReferences = topicResult.value.data; // Array of { citation: "...", verseIds: ["..."] }
+            const verseReferences = topicResult.value.data;
 
-            // Get verse count (best effort)
             let verseCount = 'N/A';
             if (countResult.status === 'fulfilled' && countResult.value?.data) {
                 verseCount = countResult.value.data.toString();
@@ -274,35 +251,27 @@ module.exports = {
                 logger.warn(`[TopicalIndex Command] Failed to get verse count for "${topic}": ${countResult.reason?.message}`);
             }
 
-            // Paginate the references
             const totalPages = Math.ceil(verseReferences.length / ITEMS_PER_PAGE);
             let currentPageIndex = 0;
 
-            // Fetch and format verses for the first page
             const initialPageRefs = verseReferences.slice(0, ITEMS_PER_PAGE);
-            // Pass determined translation to the helper
             const initialPageContent = await formatVersesForPage(initialPageRefs, translation);
 
-            // Create initial embed
             const embed = new EmbedBuilder()
-                .setTitle(`📖 Bible Verses about "${rawTopic}"`) // Use raw topic
+                .setTitle(`📖 Bible Verses about "${rawTopic}"`)
                 .setDescription(initialPageContent)
                 .setColor(embedColor)
                 .addFields([{ name: 'Total Related Verses', value: verseCount, inline: true }])
-                // Pass determined translation to footer
                 .setFooter(generateFooter(currentPageIndex, totalPages, translation));
 
-            // Send initial response
             const message = await interaction.editReply({
                 embeds: [embed],
                 components: totalPages > 1 ? [createActionRow(currentPageIndex, totalPages)] : []
             });
 
-            if (totalPages <= 1) return; // No collector needed
+            if (totalPages <= 1) return;
 
-            // Setup collector for pagination
             const filter = i => i.user.id === interaction.user.id;
-            // Pass ComponentType.Button if needed by your discord.js version
             const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
@@ -312,29 +281,23 @@ module.exports = {
                     if (i.customId === 'page_back') newPageIndex--;
                     else if (i.customId === 'page_next') newPageIndex++;
 
-                    // Clamp page index
                     newPageIndex = Math.max(0, Math.min(newPageIndex, totalPages - 1));
 
-                    // Only refetch if page actually changed
                     if (newPageIndex !== currentPageIndex) {
                         currentPageIndex = newPageIndex;
                         const start = currentPageIndex * ITEMS_PER_PAGE;
                         const end = start + ITEMS_PER_PAGE;
                         const pageRefs = verseReferences.slice(start, end);
 
-                        // Fetch content for the new page using the chosen translation
                         const pageContent = await formatVersesForPage(pageRefs, translation);
 
                         embed.setDescription(pageContent)
-                             // Pass determined translation to footer
-                             .setFooter(generateFooter(currentPageIndex, totalPages, translation));
+                            .setFooter(generateFooter(currentPageIndex, totalPages, translation));
 
                         await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, totalPages)] });
                     }
                 } catch (collectError) {
                     logger.error(`[TopicalIndex Command - Search] Collector error: ${collectError}`);
-                    // Optional: notify user on error
-                    // try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch {}
                 }
             });
 
@@ -343,11 +306,9 @@ module.exports = {
                 const finalComponents = createActionRow(currentPageIndex, totalPages, true);
                 message.edit({ components: [finalComponents] }).catch(e => { if (e.code !== 10008) logger.error(`[TopicalIndex Command - Search] Error disabling components: ${e}`); });
             });
-
         } catch (error) {
             logger.error(`[TopicalIndex Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                // Ensure reply is sent even if initial defer failed somehow
                 if (!interaction.replied && !interaction.deferred) {
                     await interaction.reply({ content: '❌ Sorry, there was an unexpected error.', ephemeral: true });
                 } else {
@@ -360,4 +321,4 @@ module.exports = {
             }
         }
     }
-}; 
+};

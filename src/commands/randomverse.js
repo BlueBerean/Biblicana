@@ -1,16 +1,12 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const axios = require('axios');
-const { getBookId, numbersToBook, bibleWrapper } = require('../utils/bibleHelper');
-const logger = require('../utils/logger');
-const swearWordFilter = require('../utils/filter');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import axios from 'axios';
+import { getBookId, numbersToBook, bibleWrapper } from '../utils/bibleHelper.js';
+import logger from '../utils/logger.js';
+import swearWordFilter from '../utils/filter.js';
+import 'dotenv/config';
 
-// --- Constants ---
 const API_TIMEOUT_MS = 6000;
 
-// --- Helper Functions ---
-
-// Standard footer generation
 function generateFooter(translation = "BSB") {
     return {
         text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()}`,
@@ -18,10 +14,7 @@ function generateFooter(translation = "BSB") {
     };
 }
 
-// Removed unused createVerseEmbed function
-
-// --- Command Export ---
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('randomverse')
         .setDescription('Get a random Bible verse')
@@ -50,8 +43,7 @@ module.exports = {
         await interaction.deferReply();
 
         try {
-            // --- Determine Translation ---
-            let translation = 'BSB'; // Default
+            let translation = 'BSB';
             try {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
@@ -60,7 +52,6 @@ module.exports = {
             }
             translation = interaction.options.getString('translation') || translation;
 
-            // --- Handle Optional Filters ---
             let bookId = null;
             let chapter = null;
             const rawBookInput = interaction.options.getString('book');
@@ -76,21 +67,20 @@ module.exports = {
                     }
 
                     const chapterInput = interaction.options.getNumber('chapter');
-                    if (chapterInput !== null) { // Allow chapter 0 if API supports? Assuming 1+ based on setMinValue
-                        chapter = chapterInput; // Already validated by setMinValue(1)
-                        if (isNaN(chapter) || chapter < 1) { // Double check, should be redundant
+                    if (chapterInput !== null) {
+                        chapter = chapterInput;
+                        if (isNaN(chapter) || chapter < 1) {
                             return interaction.editReply({ content: 'Please provide a valid chapter number (1 or greater).', ephemeral: true });
                         }
                     }
                 }
             }
 
-            // --- Fetch Random Verse Reference from API ---
             const apiOptions = {
                 method: 'GET',
                 url: 'https://iq-bible.p.rapidapi.com/GetRandomVerse',
                 params: {
-                    versionId: 'kjv' // Always use KJV for getting the verse ID
+                    versionId: 'kjv'
                 },
                 headers: {
                     'x-rapidapi-key': process.env.RAPIDAPIKEY,
@@ -98,11 +88,10 @@ module.exports = {
                 }
             };
 
-            // Add filters if specified
             if (bookId) {
                 apiOptions.params.limitToBookId = bookId.toString().padStart(2, '0');
                 if (chapter) {
-                    apiOptions.params.limitToChapterId = chapter.toString().padStart(3, '0'); // Assuming API expects chapter padded
+                    apiOptions.params.limitToChapterId = chapter.toString().padStart(3, '0');
                 }
             }
 
@@ -111,7 +100,7 @@ module.exports = {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-                const response = await axios.request({...apiOptions, signal: controller.signal });
+                const response = await axios.request({ ...apiOptions, signal: controller.signal });
                 clearTimeout(timeoutId);
 
                 logger.debug("[RandomVerse Command] Raw API response:", JSON.stringify(response.data));
@@ -119,14 +108,12 @@ module.exports = {
                 if (!response.data || !Array.isArray(response.data) || response.data.length === 0) {
                     throw new Error('API response was empty or not an array');
                 }
-                randomVerseData = response.data[0]; // Take the first verse returned
+                randomVerseData = response.data[0];
 
-                // Validate essential fields from API
                 if (!randomVerseData || !randomVerseData.b || !randomVerseData.c || !randomVerseData.v) {
                     logger.error("[RandomVerse Command] API response missing required fields (b, c, v):", randomVerseData);
                     throw new Error('API response missing required reference fields');
                 }
-
             } catch (apiError) {
                 logger.error(`[RandomVerse Command] API request failed: ${apiError.message}`);
                 if (apiError.response) {
@@ -138,7 +125,6 @@ module.exports = {
                 return interaction.editReply({ content: userMessage, ephemeral: true });
             }
 
-            // --- Parse Reference & Fetch Text ---
             const parsedBookId = parseInt(randomVerseData.b);
             const parsedChapter = parseInt(randomVerseData.c);
             const parsedVerse = parseInt(randomVerseData.v);
@@ -162,18 +148,16 @@ module.exports = {
                 return interaction.editReply({ content: 'Verse reference found, but text could not be retrieved from database.', ephemeral: true });
             }
 
-            // --- Determine Final Text and Format Embed ---
             let verseText = verseDbResult[0][translation];
             let usedTranslation = translation;
 
-            // Fallback to KJV from API if preferred translation failed
             if (!verseText) {
                 logger.warn(`[RandomVerse Command] Translation ${translation} not found in DB for ${bookName} ${parsedChapter}:${parsedVerse}, falling back to KJV from API.`);
-                verseText = randomVerseData.t; // KJV text from the API response
-                usedTranslation = 'KJV'; // Indicate KJV was used
+                verseText = randomVerseData.t;
+                usedTranslation = 'KJV';
             }
 
-            if (!verseText) { // If even KJV fallback is missing
+            if (!verseText) {
                 logger.error(`[RandomVerse Command] No usable verse text found for ${bookName} ${parsedChapter}:${parsedVerse}`);
                 return interaction.editReply({ content: 'Could not find any text for the selected verse.', ephemeral: true });
             }
@@ -186,10 +170,9 @@ module.exports = {
                 .setDescription(`<**${parsedVerse}**> ${verseText}`)
                 .setColor(embedColor)
                 .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(usedTranslation)); // Show the translation actually used
+                .setFooter(generateFooter(usedTranslation));
 
             await interaction.editReply({ embeds: [embed] });
-
         } catch (error) {
             logger.error(`[RandomVerse Command] Unhandled error: ${error.message}`, error.stack);
             try {
@@ -205,4 +188,4 @@ module.exports = {
             }
         }
     }
-}; 
+};

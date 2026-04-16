@@ -1,21 +1,20 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('@discordjs/builders');
-const { books, bibleWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper.js');
-const logger = require('../utils/logger');
+import { SlashCommandBuilder, EmbedBuilder } from '@discordjs/builders';
+import { books, bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import logger from '../utils/logger.js';
 
-// Add this near the top of the file after imports
-logger.info('[Bible Command] Books Map contents:', 
+logger.info('[Bible Command] Books Map contents:',
     Array.from(books.entries())
         .map(([abbr, id]) => `${abbr} -> ${id}`)
         .join(', ')
 );
 
-logger.info('[Bible Command] NumbersToBook Map contents:', 
+logger.info('[Bible Command] NumbersToBook Map contents:',
     Array.from(numbersToBook.entries())
         .map(([id, name]) => `${id} -> ${name}`)
         .join(', ')
 );
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('bible')
         .setDescription('Find a specific verse in the bible')
@@ -46,23 +45,22 @@ module.exports = {
                 )),
     async execute(interaction, database) {
         await interaction.deferReply();
-        
+
         try {
             const defaultTranslation = await database.getUserValue(interaction.user.id);
             const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
 
-            const rawBook = interaction.options.getString('book').split(" ").join(""); // Remove spaces only
+            const rawBook = interaction.options.getString('book').split(" ").join("");
             logger.info(`[Bible Command] Raw book input: ${rawBook}`);
-            
-            // Use the imported getBookId function directly
+
             const bookid = getBookId(rawBook);
             logger.info(`[Bible Command] Book ID lookup result: ${bookid}`);
 
             if (!bookid) {
                 logger.warn(`[Bible Command] Could not find book ID for: ${rawBook}`);
-                return interaction.editReply({ 
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`, 
-                    ephemeral: true 
+                return interaction.editReply({
+                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
+                    ephemeral: true
                 });
             }
 
@@ -79,21 +77,18 @@ module.exports = {
             let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
 
             if (!verses.length > 0) {
-                return interaction.editReply({ 
-                    content: `I couldn't find any verses related to ${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}!`, 
-                    ephemeral: true 
+                return interaction.editReply({
+                    content: `I couldn't find any verses related to ${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse : ""}!`,
+                    ephemeral: true
                 });
             }
-            
+
             verses.sort((a, b) => a.verse - b.verse);
-            
-            // Empty string for response
+
             let response = "";
             for (let i = 0; i < verses.length; i++) {
-                // i starts at 0, so add to get the actual verse number
                 let number = i + startVerse;
 
-                // Add a space if not the first verse!
                 if (response.length > 1) {
                     response += " ";
                 }
@@ -107,25 +102,24 @@ module.exports = {
             }
 
             let embed = new EmbedBuilder()
-                .setTitle(`${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse :  ""}`)
+                .setTitle(`${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse : ""}`)
                 .setDescription(response)
                 .setColor(eval(process.env.EMBEDCOLOR))
                 .setURL(process.env.WEBSITE)
-                .setFooter({ 
-                    text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`, 
-                    iconURL: process.env.EMBEDICONURL 
+                .setFooter({
+                    text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`,
+                    iconURL: process.env.EMBEDICONURL
                 });
-            
-            return interaction.editReply({ embeds: [embed] });
 
+            return interaction.editReply({ embeds: [embed] });
         } catch (error) {
             logger.error(`[Bible Command] Error processing request: ${error.message}`);
             logger.error(error.stack);
-            
+
             try {
-                return interaction.editReply({ 
-                    content: 'Sorry, there was an error processing your request.', 
-                    ephemeral: true 
+                return interaction.editReply({
+                    content: 'Sorry, there was an error processing your request.',
+                    ephemeral: true
                 });
             } catch (e) {
                 logger.error(`[Bible Command] Could not send error message: ${e.message}`);

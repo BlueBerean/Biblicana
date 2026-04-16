@@ -1,7 +1,7 @@
-const { EmbedBuilder } = require('discord.js');
-require('dotenv').config();
+import { EmbedBuilder } from 'discord.js';
+import 'dotenv/config';
 
-module.exports = {
+export default {
     id: "bias_alert",
     async execute(interaction) {
         try {
@@ -17,7 +17,6 @@ module.exports = {
                 });
 
             await interaction.reply({ embeds: [embed], ephemeral: true });
-
         } catch (error) {
             try {
                 if (!interaction.replied) {
@@ -28,4 +27,4 @@ module.exports = {
             }
         }
     }
-}
+};

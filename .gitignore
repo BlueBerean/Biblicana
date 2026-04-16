@@ -5,3 +5,8 @@ config_old.json
 data/bible.db
 data/strongs.db
 data/books.json
+data/new_data
+data/dictionary.sqlite
+data/extrabiblical_data.sqlite
+data/person_places.db
+data/.DS_Store

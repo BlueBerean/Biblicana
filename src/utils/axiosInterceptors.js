@@ -1,5 +1,5 @@
-const axios = require('axios');
-const logger = require('./logger');
+import axios from 'axios';
+import logger from './logger.js';
 
 function setupAxiosInterceptors() {
     // Add request logging interceptor
@@ -47,4 +47,4 @@ function setupAxiosInterceptors() {
     });
 }
 
-module.exports = setupAxiosInterceptors; 
+export default setupAxiosInterceptors;

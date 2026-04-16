@@ -1,5 +1,6 @@
-const { Events, ActivityType } = require('discord.js');
-const logger = require('../utils/logger.js');
+import { Events, ActivityType } from 'discord.js';
+import logger from '../utils/logger.js';
+
 function setPresence(client) {
     client.user.setPresence({
         status: 'online',
@@ -9,9 +10,10 @@ function setPresence(client) {
         }],
     });
 }
-module.exports = {
-	name: Events.ClientReady,
-	once: true,
+
+export default {
+    name: Events.ClientReady,
+    once: true,
     async execute(client) {
         logger.info(`[Discord] Logged in as ${client.user.tag}`);
         setPresence(client);
@@ -19,6 +21,5 @@ module.exports = {
         setInterval(() => {
             setPresence(client);
         }, 3600000);
-
-	},
+    },
 };

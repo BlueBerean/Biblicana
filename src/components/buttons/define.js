@@ -1,6 +1,6 @@
-const { EmbedBuilder } = require('discord.js');
+import { EmbedBuilder } from 'discord.js';
 
-module.exports = {
+export default {
     id: "define_alert",
     execute(interaction) {
         const embed = new EmbedBuilder()
@@ -12,6 +12,6 @@ module.exports = {
                 iconURL: process.env.EMBEDICONURL
             });
 
-        return interaction.reply({ embeds: [embed], ephemeral: true })
+        return interaction.reply({ embeds: [embed], ephemeral: true });
     }
-}
+};

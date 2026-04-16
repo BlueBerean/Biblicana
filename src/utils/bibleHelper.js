@@ -1,11 +1,16 @@
-const path = require('path');
-const sqlite3 = require('sqlite3')
-const { open } = require('sqlite');
-const books = require('../../data/books.json');
-const logger = require('./logger');
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import path, { dirname } from 'node:path';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import logger from './logger.js';
+
+const require = createRequire(import.meta.url);
+const booksJson = require('../../data/books.json');
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Map: Abbreviation -> Book ID (Used by /find)
-const bookAbbreviations = new Map([
+export const bookAbbreviations = new Map([
     ['gen', 1], ['exo', 2], ['lev', 3], ['num', 4], ['deu', 5],
     ['jos', 6], ['jdg', 7], ['rut', 8], ['1sa', 9], ['2sa', 10],
     ['1ki', 11], ['2ki', 12], ['1ch', 13], ['2ch', 14], ['ezr', 15],
@@ -23,298 +28,173 @@ const bookAbbreviations = new Map([
 ]);
 
 const numSuperMap = new Map([
-    [0, '⁰'],
-    [1, '¹'],
-    [2, '²'],
-    [3, '³'],
-    [4, '⁴'],
-    [5, '⁵'],
-    [6, '⁶'],
-    [7, '⁷'],
-    [8, '⁸'],
-    [9, '⁹']
+    [0, '⁰'], [1, '¹'], [2, '²'], [3, '³'], [4, '⁴'],
+    [5, '⁵'], [6, '⁶'], [7, '⁷'], [8, '⁸'], [9, '⁹']
 ]);
 
 /**
- * 
  * @param {number} number Number to convert to superscript
  * @returns {string} The superscripted number
- * 
- * @example
- * numberToSuperScript(123) // returns ¹²³
+ * @example numberToSuperScript(123) // returns ¹²³
  */
-const numberToSuperScript = (number) => {
+export const numberToSuperScript = (number) => {
     let superScript = '';
-
     for (const digit of number.toString()) {
         superScript += numSuperMap.get(parseInt(digit));
     }
-
     return superScript;
-}
+};
 
-/*
-const booksToName = new Map([
-    ["gen", "Genesis"],
-    ["exo", "Exodus"],
-    ["lev", "Leviticus"],
-    ["num", "Numbers"],
-    ["deu", "Deuteronomy"],
-    ["jos", "Joshua"],
-    ["jdg", "Judges"],
-    ["rut", "Ruth"],
-    ["1sa", "1 Samuel"],
-    ["2sa", "2 Samuel"],
-    ["1ki", "1 Kings"],
-    ["2ki", "2 Kings"],
-    ["1ch", "1 Chronicles"],
-    ["2ch", "2 Chronicles"],
-    ["ezr", "Ezra"],
-    ["neh", "Nehemiah"],
-    ["est", "Esther"],
-    ["job", "Job"],
-    ["psa", "Psalms"],
-    ["pro", "Proverbs"],
-    ["ecc", "Ecclesiastes"],
-    ["sos", "Song of Solomon"],
-    ["isa", "Isaiah"],
-    ["jer", "Jeremiah"],
-    ["lam", "Lamentations"],
-    ["eze", "Ezekiel"],
-    ["dan", "Daniel"],
-    ["hos", "Hosea"],
-    ["joe", "Joel"],
-    ["amo", "Amos"],
-    ["oba", "Obadiah"],
-    ["jon", "Jonah"],
-    ["mic", "Micah"],
-    ["nah", "Nahum"],
-    ["hab", "Habakkuk"],
-    ["zep", "Zephaniah"],
-    ["hag", "Haggai"],
-    ["zec", "Zechariah"],
-    ["mal", "Malachi"],
-    ["mat", "Matthew"],
-    ["mar", "Mark"],
-    ["luk", "Luke"],
-    ["joh", "John"],
-    ["act", "Acts"],
-    ["rom", "Romans"],
-    ["1co", "1 Corinthians"],
-    ["2co", "2 Corinthians"],
-    ["gal", "Galatians"],
-    ["eph", "Ephesians"],
-    ["php", "Philippians"],
-    ["col", "Colossians"],
-    ["1th", "1 Thessalonians"],
-    ["2th", "2 Thessalonians"],
-    ["1ti", "1 Timothy"],
-    ["2ti", "2 Timothy"],
-    ["tit", "Titus"],
-    ["phm", "Philemon"],
-    ["heb", "Hebrews"],
-    ["jam", "James"],
-    ["1pe", "1 Peter"],
-    ["2pe", "2 Peter"],
-    ["1jo", "1 John"],
-    ["2jo", "2 John"],
-    ["3jo", "3 John"],
-    ["jde", "Jude"],
-    ["rev", "Revelation"]
-]);*/
-
-const bible = (async () => {
+const biblePromise = (async () => {
     const filePath = path.join(__dirname, '../..', 'data', 'bible.db');
-
-    const db = await open({
+    return open({
         filename: filePath,
         driver: sqlite3.Database,
         readOnly: true
     });
-
-    return db;
 })();
 
-const strongs = (async () => {
+const strongsPromise = (async () => {
     const filePath = path.join(__dirname, '../..', 'data', 'strongs.db');
-
-    const db = await open({
+    return open({
         filename: filePath,
         driver: sqlite3.Database,
         readOnly: true
     });
-
-    return db;
 })();
 
-class bibleWrapper {
+class BibleWrapper {
     constructor() {
-        this.db = bible;
+        this.db = biblePromise;
     }
 
-    /**
-     * (Use getVerses). This is to get a single verse from database. For most people you should use the getVerses method instead
-     * @param {*} book  The book to get verses from (Number)
-     * @param {*} chapter  The chapter to get verses from
-     * @param {*} startVerse  The start verse to get
-     * @param {*} table  The table to get verses from (default is bsb)
-     * @returns A array of text objects with the text of the verses
-     * @deprecated
-     */
-    async getVerse (book, chapter, verse) {
+    /** @deprecated Use getVerses. */
+    async getVerse(book, chapter, verse) {
         const db = await this.db;
-        const query = await db.get(`SELECT * FROM english WHERE book = ? AND chapter = ? AND verse = ?`, [book, chapter, verse]);
-
-        /*const replacementCharacterRegex = /�/g;
-
-        for (let i = 0; i < query.length; i++) {
-            query[i].text = query[i].text.replace(replacementCharacterRegex, '');
-        }*/
-
-        return query;
+        return db.get(
+            `SELECT * FROM english WHERE book = ? AND chapter = ? AND verse = ?`,
+            [book, chapter, verse]
+        );
     }
 
-        /**
-     *   Use this method to get a verse from the bible database
-     * @param {*} book  The book to get verses from (Number)
-     * @param {*} chapter  The chapter to get verses from
-     * @param {*} startVerse  The start verse to get
-     * @param {*} endVerse  The end verse to get
-     * @param {*} table  The table to get verses from (default is bsb)
-     * @returns A array of text objects with the text of the verses
-     */
-    async getVerses (book, chapter, startVerse, endVerse) {
+    async getVerses(book, chapter, startVerse, endVerse) {
         const db = await this.db;
-
-        const query = await db.all(`SELECT * FROM english WHERE bookID = ? AND chapter = ? AND verse BETWEEN ? AND ?`, [book, chapter, startVerse, endVerse]);
-        /*const replacementCharacterRegex = /�/g;
-    
-        for (let i = 0; i < query.length; i++) {
-            query[i].text = query[i].text.replace(replacementCharacterRegex, '');
-        }*/
-
-        return query;
+        return db.all(
+            `SELECT * FROM english WHERE bookID = ? AND chapter = ? AND verse BETWEEN ? AND ?`,
+            [book, chapter, startVerse, endVerse]
+        );
     }
 
-      /**
-   * 
-   * @param {*} book  (Number)
-   * @param {*} chapter 
-   * @param {*} verse 
-   * @returns 
-   */
-    async getInterlinearVerse (book, chapter, verse) {
+    async getInterlinearVerse(book, chapter, verse) {
         const db = await this.db;
-
-        const query = await db.get(`SELECT * FROM interlinear WHERE bookid = ? AND chapter = ? AND verse = ?`, [book, chapter, verse]);
-        
-        return query;
+        return db.get(
+            `SELECT * FROM interlinear WHERE bookid = ? AND chapter = ? AND verse = ?`,
+            [book, chapter, verse]
+        );
     }
-
 }
 
-class strongsWrapper {
+class StrongsWrapper {
     constructor() {
-        this.db = strongs;
+        this.db = strongsPromise;
     }
 
-    /**
-     * Use this method to get a word object from the strongs database using the unicode
-     * @param {*} language  The language to search for the word in (Hebrew or Greek)
-     * @param {*} unicode  The unicode to search for
-     * @returns  The word object
-     * @deprecated
-     */
-    async getStrongsUnicode (language, unicode) {
+    /** @deprecated */
+    async getStrongsUnicode(language, unicode) {
         const db = await this.db;
+        return db.get(`SELECT * FROM ${language} WHERE unicode = ?`, [unicode]);
+    }
 
-        const query = await db.get(`SELECT * FROM ${language} WHERE unicode = ?`, [unicode]);
-
+    async getStrongsEnglish(language, english) {
+        const db = await this.db;
+        const query = await db.all(
+            `SELECT * FROM ${language} WHERE kjvdef LIKE ?`,
+            [`%${english}%`]
+        );
+        if (query.length == 0) return null;
         return query;
     }
 
-    /**
-     * Use this method to get a word object from the strongs database using the english then it uses the closest match algorithm to find the closest match
-     * @param {*} language  The language to search for the word in (Hebrew or Greek)
-     * @param {*} english  The english to search for
-     * @returns  The word object
-     */
-    async getStrongsEnglish (language, english) {
-        const db = await this.db;
-
-        const query = await db.all(`SELECT * FROM ${language} WHERE kjvdef LIKE ?`, [`%${english}%`]);
-        if (query.length == 0) return null;
-        
-        return query; 
-    }
-
-    /**
-     * Use this method to get a word object from the strongs database using the strongs id
-     * @param {*} language  The language to search for the word in (Hebrew or Greek)
-     * @param {*} id  The strongs id to search for (e.g., "G3972" or "H853")
-     * @returns  The word object or undefined if not found
-     */
-    async getStrongsId (language, id) {
-        if (!id) return undefined; // Basic validation
+    async getStrongsId(language, id) {
+        if (!id) return undefined;
 
         const db = await this.db;
-        const normalizedLanguage = language.toLowerCase(); // Use lowercase for table name check
-        const tableName = normalizedLanguage === 'greek' ? 'Greek' : 'Hebrew'; // Adjust if table names are capitalized
+        const normalizedLanguage = language.toLowerCase();
+        const tableName = normalizedLanguage === 'greek' ? 'Greek' : 'Hebrew';
 
         try {
-            // Attempt 1: Query with the full ID (e.g., "G3972")
             logger.debug(`[Strongs Wrapper] Attempting lookup for ID: ${id} in table: ${tableName}`);
             let result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [id]);
 
             if (result) {
                 logger.debug(`[Strongs Wrapper] Found match for full ID: ${id}`);
                 return result;
-            } else {
-                logger.debug(`[Strongs Wrapper] No match for full ID: ${id}. Checking number part.`);
-                // Attempt 2: Query with only the number part (e.g., "3972")
-                const numberPart = id.substring(1); // Remove the first character (G/H)
-                if (numberPart && !isNaN(numberPart)) {
-                    logger.debug(`[Strongs Wrapper] Attempting lookup for number: ${numberPart} in table: ${tableName}`);
-                    result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [numberPart]);
-                    if (result) {
-                        logger.debug(`[Strongs Wrapper] Found match for number part: ${numberPart}`);
-                        return result;
-                    } else {
-                        logger.debug(`[Strongs Wrapper] No match for number part: ${numberPart}`);
-                    }
-                }
             }
 
-            // If both attempts fail
+            logger.debug(`[Strongs Wrapper] No match for full ID: ${id}. Checking number part.`);
+            const numberPart = id.substring(1);
+            if (numberPart && !isNaN(numberPart)) {
+                logger.debug(`[Strongs Wrapper] Attempting lookup for number: ${numberPart} in table: ${tableName}`);
+                result = await db.get(`SELECT * FROM ${tableName} WHERE strongs = ?`, [numberPart]);
+                if (result) {
+                    logger.debug(`[Strongs Wrapper] Found match for number part: ${numberPart}`);
+                    return result;
+                }
+                logger.debug(`[Strongs Wrapper] No match for number part: ${numberPart}`);
+            }
+
             logger.warn(`[Strongs Wrapper] No definition found for ${id} (or number part) in ${tableName}`);
             return undefined;
-
         } catch (error) {
             logger.error(`[Strongs Wrapper] Database error querying ${tableName} for ${id}: ${error.message}`);
-            return undefined; // Return undefined on error to prevent crashes
+            return undefined;
         }
     }
-
 }
 
-// Helper function to do case-insensitive map lookup
-function getBookId(bookName) {
+/** A map representing a list of book abbreviations (from books.json) */
+export const books = new Map(Object.entries(booksJson));
+
+/** A map representing a list of book numbers to names */
+export const numbersToBook = new Map([
+    [1, 'Genesis'], [2, 'Exodus'], [3, 'Leviticus'], [4, 'Numbers'],
+    [5, 'Deuteronomy'], [6, 'Joshua'], [7, 'Judges'], [8, 'Ruth'],
+    [9, '1 Samuel'], [10, '2 Samuel'], [11, '1 Kings'], [12, '2 Kings'],
+    [13, '1 Chronicles'], [14, '2 Chronicles'], [15, 'Ezra'], [16, 'Nehemiah'],
+    [17, 'Esther'], [18, 'Job'], [19, 'Psalms'], [20, 'Proverbs'],
+    [21, 'Ecclesiastes'], [22, 'Song of Solomon'], [23, 'Isaiah'], [24, 'Jeremiah'],
+    [25, 'Lamentations'], [26, 'Ezekiel'], [27, 'Daniel'], [28, 'Hosea'],
+    [29, 'Joel'], [30, 'Amos'], [31, 'Obadiah'], [32, 'Jonah'],
+    [33, 'Micah'], [34, 'Nahum'], [35, 'Habakkuk'], [36, 'Zephaniah'],
+    [37, 'Haggai'], [38, 'Zechariah'], [39, 'Malachi'], [40, 'Matthew'],
+    [41, 'Mark'], [42, 'Luke'], [43, 'John'], [44, 'Acts'],
+    [45, 'Romans'], [46, '1 Corinthians'], [47, '2 Corinthians'], [48, 'Galatians'],
+    [49, 'Ephesians'], [50, 'Philippians'], [51, 'Colossians'], [52, '1 Thessalonians'],
+    [53, '2 Thessalonians'], [54, '1 Timothy'], [55, '2 Timothy'], [56, 'Titus'],
+    [57, 'Philemon'], [58, 'Hebrews'], [59, 'James'], [60, '1 Peter'],
+    [61, '2 Peter'], [62, '1 John'], [63, '2 John'], [64, '3 John'],
+    [65, 'Jude'], [66, 'Revelation']
+]);
+
+/** Singleton wrapper instances (DB connections) */
+export const strongsWrapper = new StrongsWrapper();
+export const bibleWrapper = new BibleWrapper();
+
+// Case-insensitive book name lookup with fuzzy matching
+export function getBookId(bookName) {
     if (!bookName) return null;
-    
-    // Normalize input: lowercase and handle spaces consistently
+
     const lowercaseInput = bookName.toLowerCase().trim();
     const noSpaceInput = lowercaseInput.replace(/\s+/g, '');
     const normalizedInput = lowercaseInput.replace(/\s+/g, ' ');
-    
+
     logger.info(`[Book Lookup] Input variations:
         Original: "${bookName}"
         Lowercase: "${lowercaseInput}"
         No Space: "${noSpaceInput}"
         Normalized: "${normalizedInput}"`);
 
-    // Try common abbreviations first since it's more reliable
     const commonAbbreviations = {
-        // Old Testament
         'gen': 1, 'genesis': 1,
         'exo': 2, 'exodus': 2,
         'lev': 3, 'leviticus': 3,
@@ -354,8 +234,6 @@ function getBookId(bookName) {
         'hag': 37, 'haggai': 37,
         'zec': 38, 'zech': 38, 'zechariah': 38,
         'mal': 39, 'malachi': 39,
-        
-        // New Testament
         'mat': 40, 'matt': 40, 'matthew': 40,
         'mrk': 41, 'mk': 41, 'mar': 41, 'mark': 41,
         'luk': 42, 'lk': 42, 'luke': 42,
@@ -385,7 +263,6 @@ function getBookId(bookName) {
         'rev': 66, 'rv': 66, 'revelation': 66
     };
 
-    // Add additional logging for Peter-specific debugging
     if (lowercaseInput.includes('peter') || lowercaseInput.includes('pet')) {
         logger.info(`[Book Lookup] Peter-related input detected:
             Input: ${lowercaseInput}
@@ -396,35 +273,32 @@ function getBookId(bookName) {
             Normalized Match: ${commonAbbreviations[normalizedInput]}`);
     }
 
-    // Try all input variations in common abbreviations
-    const commonId = commonAbbreviations[lowercaseInput] || 
-                    commonAbbreviations[noSpaceInput] || 
-                    commonAbbreviations[normalizedInput];
-    
+    const commonId = commonAbbreviations[lowercaseInput] ||
+                     commonAbbreviations[noSpaceInput] ||
+                     commonAbbreviations[normalizedInput];
+
     if (commonId) {
         logger.info(`[Book Lookup] Found in common abbreviations:
-            Matched Input: ${commonId === commonAbbreviations[lowercaseInput] ? lowercaseInput : 
+            Matched Input: ${commonId === commonAbbreviations[lowercaseInput] ? lowercaseInput :
                            commonId === commonAbbreviations[noSpaceInput] ? noSpaceInput : normalizedInput}
             ID: ${commonId}`);
         return commonId;
-    } else {
-        logger.info(`[Book Lookup] Not found in common abbreviations. Tried:
-            Lowercase: ${lowercaseInput} -> ${commonAbbreviations[lowercaseInput]}
-            No Space: ${noSpaceInput} -> ${commonAbbreviations[noSpaceInput]}
-            Normalized: ${normalizedInput} -> ${commonAbbreviations[normalizedInput]}`);
     }
 
-    // Try Map lookup with case-insensitive comparison
-    for (const [key, value] of module.exports.books) {
-        if (key.toLowerCase() === lowercaseInput || 
-            key.toLowerCase() === noSpaceInput || 
+    logger.info(`[Book Lookup] Not found in common abbreviations. Tried:
+        Lowercase: ${lowercaseInput} -> ${commonAbbreviations[lowercaseInput]}
+        No Space: ${noSpaceInput} -> ${commonAbbreviations[noSpaceInput]}
+        Normalized: ${normalizedInput} -> ${commonAbbreviations[normalizedInput]}`);
+
+    for (const [key, value] of books) {
+        if (key.toLowerCase() === lowercaseInput ||
+            key.toLowerCase() === noSpaceInput ||
             key.toLowerCase() === normalizedInput) {
             logger.info(`[Book Lookup] Found in books Map: ${value}`);
             return parseInt(value);
         }
     }
 
-    // Try fuzzy matching for common misspellings
     const fuzzyMatches = {
         'revelations': 66,
         'revalation': 66,
@@ -439,67 +313,15 @@ function getBookId(bookName) {
         return fuzzyId;
     }
 
-    // Try numbersToBook Map with case-insensitive comparison
-    const numbersToBookMap = module.exports.numbersToBook;
-    for (const [id, name] of numbersToBookMap.entries()) {
-        if (name.toLowerCase() === lowercaseInput || 
-            name.toLowerCase() === noSpaceInput || 
+    for (const [id, name] of numbersToBook.entries()) {
+        if (name.toLowerCase() === lowercaseInput ||
+            name.toLowerCase() === noSpaceInput ||
             name.toLowerCase() === normalizedInput) {
             logger.info(`[Book Lookup] Found in numbersToBook: ${id}`);
             return id;
         }
     }
-    
+
     logger.warn(`[Book Lookup] No match found for book: "${lowercaseInput}"`);
     return null;
-}
-
-/**
- * A list of client methods!
- */
-module.exports = {
-    /**
-     * A function for converting numbers into superscript (even multiple digit ones!)
-     */
-    numberToSuperScript: numberToSuperScript,
-
-    /**
-     * A map representing a list of book abbreviations
-     */
-    books: new Map(Object.entries(books)),
-
-    /**
-     * A map representing a list of book abbreviations to book IDs
-     */
-    bookAbbreviations: bookAbbreviations,
-
-    /**
-     * A map representing a list of book numbers
-    **/
-    numbersToBook: new Map([
-        [1, 'Genesis'], [2, 'Exodus'], [3, 'Leviticus'], [4, 'Numbers'],
-        [5, 'Deuteronomy'], [6, 'Joshua'], [7, 'Judges'], [8, 'Ruth'],
-        [9, '1 Samuel'], [10, '2 Samuel'], [11, '1 Kings'], [12, '2 Kings'],
-        [13, '1 Chronicles'], [14, '2 Chronicles'], [15, 'Ezra'], [16, 'Nehemiah'],
-        [17, 'Esther'], [18, 'Job'], [19, 'Psalms'], [20, 'Proverbs'],
-        [21, 'Ecclesiastes'], [22, 'Song of Solomon'], [23, 'Isaiah'], [24, 'Jeremiah'],
-        [25, 'Lamentations'], [26, 'Ezekiel'], [27, 'Daniel'], [28, 'Hosea'],
-        [29, 'Joel'], [30, 'Amos'], [31, 'Obadiah'], [32, 'Jonah'],
-        [33, 'Micah'], [34, 'Nahum'], [35, 'Habakkuk'], [36, 'Zephaniah'],
-        [37, 'Haggai'], [38, 'Zechariah'], [39, 'Malachi'], [40, 'Matthew'],
-        [41, 'Mark'], [42, 'Luke'], [43, 'John'], [44, 'Acts'],
-        [45, 'Romans'], [46, '1 Corinthians'], [47, '2 Corinthians'], [48, 'Galatians'],
-        [49, 'Ephesians'], [50, 'Philippians'], [51, 'Colossians'], [52, '1 Thessalonians'],
-        [53, '2 Thessalonians'], [54, '1 Timothy'], [55, '2 Timothy'], [56, 'Titus'],
-        [57, 'Philemon'], [58, 'Hebrews'], [59, 'James'], [60, '1 Peter'],
-        [61, '2 Peter'], [62, '1 John'], [63, '2 John'], [64, '3 John'],
-        [65, 'Jude'], [66, 'Revelation']
-    ]),
-
-    // instantiate in order to maintain state and not have to open a new connection every time
-    strongsWrapper: new strongsWrapper(),
-
-    bibleWrapper: new bibleWrapper(), 
-
-    getBookId,
 }

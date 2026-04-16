@@ -1,7 +1,7 @@
-const joi = require('joi');
+import joi from 'joi';
 
 const guildModel = joi.object({
     id: joi.string().required(),
 });
 
-module.exports = guildModel;
+export default guildModel;

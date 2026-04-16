@@ -1,9 +1,9 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
-const axios = require('axios');
-const logger = require('../utils/logger');
-const swearWordFilter = require('../utils/filter');
-const splitString = require('../utils/splitString');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import axios from 'axios';
+import logger from '../utils/logger.js';
+import swearWordFilter from '../utils/filter.js';
+import splitString from '../utils/splitString.js';
+import 'dotenv/config';
 
 const MAX_CHARS_PER_PAGE = 4000;
 const COLLECTOR_TIMEOUT_MS = 600_000;
@@ -13,7 +13,7 @@ function generateFooter(page, maxPages) {
     const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
     return {
         text: `${process.env.EMBEDFOOTERTEXT}${pageText}`,
-            iconURL: process.env.EMBEDICONURL 
+        iconURL: process.env.EMBEDICONURL
     };
 }
 
@@ -40,7 +40,7 @@ function formatRelationType(type) {
 }
 
 function getRelationEmoji(type) {
-    switch(type.toLowerCase()) {
+    switch (type.toLowerCase()) {
         case 'synonyms': return '🟢';
         case 'antonyms': return '🔴';
         case 'related_terms': return '🔵';
@@ -50,11 +50,11 @@ function getRelationEmoji(type) {
     }
 }
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('semantics')
         .setDescription('Find semantic relations for a Biblical word or concept')
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('word')
                 .setDescription('The word you want to find semantic relations for')
                 .setRequired(true)
@@ -87,7 +87,7 @@ module.exports = {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-                const response = await axios.request({...options, signal: controller.signal });
+                const response = await axios.request({ ...options, signal: controller.signal });
                 clearTimeout(timeoutId);
                 apiResponseData = response.data;
                 logger.debug("[Semantics Command] Raw API Response:", JSON.stringify(apiResponseData));
@@ -142,8 +142,8 @@ module.exports = {
                 .setURL(process.env.WEBSITE)
                 .setFooter(generateFooter(currentPageIndex, pages.length));
 
-            const message = await interaction.editReply({ 
-                embeds: [embed], 
+            const message = await interaction.editReply({
+                embeds: [embed],
                 components: pages.length > 1 ? [createActionRow(currentPageIndex, pages.length)] : []
             });
 
@@ -163,10 +163,10 @@ module.exports = {
                         currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
                     } else if (i.customId === 'page_next') {
                         currentPageIndex = (currentPageIndex + 1) % pages.length;
-                }
+                    }
 
                     embed.setDescription(pages[currentPageIndex])
-                         .setFooter(generateFooter(currentPageIndex, pages.length));
+                        .setFooter(generateFooter(currentPageIndex, pages.length));
 
                     await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
                 } catch (collectError) {
@@ -186,15 +186,14 @@ module.exports = {
                     }
                 });
             });
-
         } catch (error) {
             logger.error(`[Semantics Command] Unhandled error: ${error.message}`, error.stack);
             try {
-            await interaction.editReply({ 
+                await interaction.editReply({
                     content: '❌ Sorry, there was an unexpected error processing your request.',
                     ephemeral: true,
                     embeds: [], components: []
-            });
+                });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
                     logger.error(`[Semantics Command] Failed to send final error reply: ${replyError}`);
@@ -202,4 +201,4 @@ module.exports = {
             }
         }
     }
-}; 
+};

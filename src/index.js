@@ -1,16 +1,20 @@
-require('dotenv').config();
-const fs = require('node:fs');
-const path = require('node:path');
-const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
-const { postgresConfig } = require('./config.js'); // Import config
-const DatabaseHandler = require('./database/redisPGHandler.js'); // Renamed variable
-const logger = require('./utils/logger.js');
-const setupAxiosInterceptors = require('./utils/axiosInterceptors');
+import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Client, Collection, GatewayIntentBits, Partials } from 'discord.js';
+import { postgresConfig } from './config.js';
+import DatabaseHandler from './database/redisPGHandler.js';
+import logger from './utils/logger.js';
+import setupAxiosInterceptors from './utils/axiosInterceptors.js';
 
-// Wrap main logic in an async function to allow top-level await
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 async function startBot() {
-    // Helper function to load modules (commands, events, buttons)
-    function loadModules(client, directory, requiredProperties, registerModule, database = null) {
+    // Helper to dynamically load modules (commands, events, buttons) via ESM import().
+    // Each module file is expected to `export default { ... }`; we unwrap `.default` after import.
+    async function loadModules(client, directory, requiredProperties, registerModule, database = null) {
         const modulePath = path.join(__dirname, directory);
         let moduleFiles;
         try {
@@ -23,7 +27,12 @@ async function startBot() {
         for (const file of moduleFiles) {
             const filePath = path.join(modulePath, file);
             try {
-                const module = require(filePath);
+                const moduleExports = await import(pathToFileURL(filePath).href);
+                const module = moduleExports.default;
+                if (!module) {
+                    logger.warn(`[WARNING] The module at ${file} has no default export.`);
+                    continue;
+                }
                 const missingProps = requiredProperties.filter(prop => !module[prop]);
 
                 if (missingProps.length > 0) {
@@ -32,21 +41,19 @@ async function startBot() {
                 }
 
                 registerModule(client, module, file, database);
-
             } catch (error) {
                 logger.error(`Error loading module at ${filePath}:`, error);
             }
         }
     }
 
-    const database = new DatabaseHandler(postgresConfig)
+    const database = new DatabaseHandler(postgresConfig);
 
-    // Initialize database connection asynchronously
     try {
         await database.initialize();
     } catch (error) {
         logger.error('Failed to initialize database:', error);
-        process.exit(1); // Exit if database connection fails
+        process.exit(1);
     }
 
     const client = new Client({
@@ -54,30 +61,28 @@ async function startBot() {
         partials: [Partials.Channel],
     });
 
-    client.commands = new Collection(); 
+    client.commands = new Collection();
     client.buttons = new Collection();
-    client.cooldowns = new Collection(); // A timeout for users to prevent spamming commands
+    client.cooldowns = new Collection();
 
     // Load Events
-    loadModules(
+    await loadModules(
         client,
         'events',
         ['name', 'execute'],
         (client, event, fileName, db) => {
-            const register = (...args) => event.execute(...args, db); // Pass database to event handlers that need it
+            const register = (...args) => event.execute(...args, db);
             if (event.once) {
                 client.once(event.name, register);
             } else {
                 client.on(event.name, register);
             }
-            // Note: We don't log every loaded event by default anymore, adjust if needed.
-            // logger.debug(`[Event] Loaded ${event.name}`);
         },
-        database // Pass the database instance specifically for events
+        database
     );
 
     // Load Commands
-    loadModules(
+    await loadModules(
         client,
         'commands',
         ['data', 'execute'],
@@ -86,15 +91,15 @@ async function startBot() {
                 client.commands.set(command.data.name, command);
                 logger.debug(`[Command] Loaded ${command.data.name}`);
             } else {
-                 logger.warn(`[WARNING] The command at ${fileName} has 'data' but is missing a 'name' property.`);
+                logger.warn(`[WARNING] The command at ${fileName} has 'data' but is missing a 'name' property.`);
             }
         }
     );
 
     // Load Buttons
-    loadModules(
+    await loadModules(
         client,
-        path.join('components', 'buttons'), // Handle nested path
+        path.join('components', 'buttons'),
         ['id', 'execute'],
         (client, button) => {
             client.buttons.set(button.id, button);
@@ -102,10 +107,8 @@ async function startBot() {
         }
     );
 
-    // Call the setup function for Axios interceptors
     setupAxiosInterceptors();
 
-    // Log in to Discord with your client's token
     try {
         await client.login(process.env.DISCORDTOKEN);
         logger.info('[Bot] Client logged in successfully.');
@@ -115,6 +118,4 @@ async function startBot() {
     }
 }
 
-// Start the bot
 startBot();
-

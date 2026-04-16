@@ -1,19 +1,15 @@
-const { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder } = require('discord.js');
-const { bibleWrapper, strongsWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper.js');
-const logger = require('../utils/logger');
-const swearWordFilter = require('../utils/filter');
-require('dotenv').config();
+import { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder } from 'discord.js';
+import { bibleWrapper, strongsWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import logger from '../utils/logger.js';
+import swearWordFilter from '../utils/filter.js';
+import 'dotenv/config';
 
-// --- Constants ---
-const VERSE_FETCH_TIMEOUT_MS = 6000; // Slightly increased
-const STRONGS_FETCH_TIMEOUT_MS = 5000; // Timeout per Strong's number
-const COLLECTOR_TIMEOUT_MS = 600_000; // 10 minutes
-const STRONGS_PAGE_CHAR_LIMIT = 1000; // Limit for Strong's field value (actual limit 1024)
-const EMBED_FIELD_VALUE_LIMIT = 1024; // Discord limit
+const VERSE_FETCH_TIMEOUT_MS = 6000;
+const STRONGS_FETCH_TIMEOUT_MS = 5000;
+const COLLECTOR_TIMEOUT_MS = 600_000;
+const STRONGS_PAGE_CHAR_LIMIT = 1000;
+const EMBED_FIELD_VALUE_LIMIT = 1024;
 
-// --- Helper Functions ---
-
-// Standard footer generation
 function generateFooter(textPrefix, page, maxPages) {
     const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
     return {
@@ -22,7 +18,6 @@ function generateFooter(textPrefix, page, maxPages) {
     };
 }
 
-// Standard button row creation
 const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
     .addComponents(
         new ButtonBuilder()
@@ -39,8 +34,7 @@ const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRo
             .setDisabled(isEnd || currentPage === totalPages - 1)
     );
 
-// --- Command Export ---
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('interlinear')
         .setDescription('Get an interlinear view of a specific Bible verse')
@@ -56,12 +50,11 @@ module.exports = {
             option.setName('verse')
                 .setDescription('Verse number')
                 .setRequired(true)
-                .setMinValue(1)) // Add min value validation
+                .setMinValue(1))
         .addStringOption(option =>
             option.setName('translation')
                 .setDescription('Parallel translation (defaults to your preference or BSB)')
                 .addChoices(
-                    // Full list of choices
                     { name: 'BSB', value: 'BSB' },
                     { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
@@ -84,7 +77,6 @@ module.exports = {
         await interaction.deferReply();
 
         try {
-            // --- Input Validation and Setup ---
             const rawBookInput = interaction.options.getString('book').trim();
             const chapterInput = interaction.options.getString('chapter');
             const verseInput = interaction.options.getNumber('verse');
@@ -94,7 +86,6 @@ module.exports = {
             if (isNaN(chapter) || chapter < 1) {
                 return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
             }
-            // verseInput validated by .setMinValue(1)
 
             const bookId = getBookId(rawBook);
             const bookName = numbersToBook.get(bookId);
@@ -103,8 +94,7 @@ module.exports = {
                 return interaction.editReply({ content: `Invalid book: "${rawBook}". Use names like Genesis, John, 1 Corinthians, or abbreviations like gen, jn, 1co.`, ephemeral: true });
             }
 
-            // Determine translation
-            let translation = 'BSB'; // Default
+            let translation = 'BSB';
             try {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
@@ -115,7 +105,6 @@ module.exports = {
 
             logger.info(`[Interlinear Command] Request: ${bookName} ${chapter}:${verseInput} (${translation})`);
 
-            // --- Fetch Interlinear and English Data ---
             let interlinearDataJson;
             let englishVerseData;
             try {
@@ -136,13 +125,11 @@ module.exports = {
                 interlinearDataJson = interlinearResult.value.data;
                 englishVerseData = englishResult.value;
                 logger.info(`[Interlinear Command] Fetched interlinear and English data.`);
-
             } catch (fetchError) {
                 logger.error(`[Interlinear Command] Error fetching data: ${fetchError.message}`);
                 return interaction.editReply({ content: `Sorry, I couldn't fetch the required verse data (${fetchError.message}). Please check the reference or try again later.`, ephemeral: true });
             }
 
-            // --- Parse Interlinear Data ---
             let interlinearItems;
             try {
                 interlinearItems = JSON.parse(interlinearDataJson);
@@ -151,18 +138,16 @@ module.exports = {
                 }
             } catch (parseError) {
                 logger.error(`[Interlinear Command] Error parsing interlinear JSON: ${parseError.message}`);
-                // logger.debug(`[Interlinear Command] Raw JSON string: ${interlinearDataJson}`); // Keep for debugging if needed
                 return interaction.editReply({ content: 'Sorry, there was an error processing the interlinear data format from the source.', ephemeral: true });
             }
 
-            // --- Process Interlinear and Strong's Data ---
             let originalVerseText = "";
             let transliterationText = "";
-            const strongsEntries = []; // Array to hold { number: 'H123', word: '...', translit: '...', def: '...' }
-            let languageType = ''; // 'Hebrew' or 'Greek' - determined by first valid entry
+            const strongsEntries = [];
+            let languageType = '';
 
             const strongsProcessingPromises = interlinearItems.map(async (item) => {
-                if (!item || typeof item.number !== 'string' || !item.number) return; // Skip invalid items
+                if (!item || typeof item.number !== 'string' || !item.number) return;
 
                 originalVerseText += `${item.word || ''} | `;
                 transliterationText += `${item.text || ''} | `;
@@ -178,7 +163,6 @@ module.exports = {
                 const strongsId = `${char}${numbers}`;
 
                 try {
-                    // Log the request being made
                     logger.debug(`[Interlinear Command] Requesting Strongs: ${strongsId} (Lexicon: ${currentLexicon})`);
 
                     const fetchTimeout = (ms, reason = `Strongs ${strongsId} timeout`) => new Promise((_, reject) => setTimeout(() => reject(new Error(reason)), ms));
@@ -187,13 +171,11 @@ module.exports = {
                         fetchTimeout(STRONGS_FETCH_TIMEOUT_MS)
                     ]);
 
-                    // Log the raw response data
                     logger.debug(`[Interlinear Command] Received Strongs data for ${strongsId}: ${JSON.stringify(strongsData)}`);
 
                     const translit = currentLexicon === "Greek" ? (strongsData?.translit) : (strongsData?.xlit);
                     const definition = strongsData?.strong_def || "No definition found.";
 
-                    // Log if definition specifically is missing
                     if (!strongsData?.strong_def) {
                         logger.warn(`[Interlinear Command] strong_def missing for ${strongsId}. Raw data: ${JSON.stringify(strongsData)}`);
                     }
@@ -205,7 +187,6 @@ module.exports = {
                         def: definition
                     });
                 } catch (strongsError) {
-                    // Ensure the specific error for this ID is logged clearly
                     logger.warn(`[Interlinear Command] Failed Strongs fetch for ${strongsId}: ${strongsError.message}`);
                     strongsEntries.push({
                         number: strongsId,
@@ -216,25 +197,21 @@ module.exports = {
                 }
             });
 
-            // Wait for all Strong's fetches (or timeouts)
             await Promise.allSettled(strongsProcessingPromises);
             logger.info(`[Interlinear Command] Processed ${strongsEntries.length} Strong's entries.`);
 
-            // --- Format Output ---
             const englishVerseText = englishVerseData[0]?.[translation] || `(${translation.toUpperCase()} translation not available)`;
 
-            // Safely slice text for fields
-            const sliceField = (text) => text.slice(0, EMBED_FIELD_VALUE_LIMIT - 10); // Leave buffer
-            const formattedOriginal = `\\\`\\\`\\\`${sliceField(originalVerseText.slice(0, -3))}\\\`\\\`\\\``; // Remove trailing ' | '
-            const formattedTranslit = `\\\`\\\`\\\`${sliceField(transliterationText.slice(0, -3))}\\\`\\\`\\\``;
+            const sliceField = (text) => text.slice(0, EMBED_FIELD_VALUE_LIMIT - 10);
+            const formattedOriginal = `\`\`\`${sliceField(originalVerseText.slice(0, -3))}\`\`\``;
+            const formattedTranslit = `\`\`\`${sliceField(transliterationText.slice(0, -3))}\`\`\``;
             const translitDirection = languageType === "Hebrew" ? "(Right to Left)" : "(Left to Right)";
 
-            // Paginate Strong's definitions
             const strongsPages = [];
             let currentPageText = "";
             for (const item of strongsEntries) {
                 const entry = `• **${item.number}** - ${item.word} (${item.translit})\n  ${item.def}`;
-                const potentialLength = currentPageText ? currentPageText.length + entry.length + 2 : entry.length; // +2 for \n\n
+                const potentialLength = currentPageText ? currentPageText.length + entry.length + 2 : entry.length;
 
                 if (currentPageText && potentialLength > STRONGS_PAGE_CHAR_LIMIT) {
                     strongsPages.push(currentPageText);
@@ -249,9 +226,8 @@ module.exports = {
             const totalStrongsPages = strongsPages.length;
             let currentStrongsPage = 0;
 
-            // --- Create Embed ---
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF; // Base 16 for hex
-            const baseFooterText = `${process.env.EMBEDFOOTERTEXT} • ${bookName} ${chapter}:${verseInput}`; // Base footer
+            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            const baseFooterText = `${process.env.EMBEDFOOTERTEXT} • ${bookName} ${chapter}:${verseInput}`;
 
             const embed = new EmbedBuilder()
                 .setTitle(`Interlinear: ${bookName} ${chapter}:${verseInput} (${translation.toUpperCase()})`)
@@ -265,23 +241,22 @@ module.exports = {
                 .setURL(process.env.WEBSITE)
                 .setFooter(generateFooter(baseFooterText, currentStrongsPage, totalStrongsPages));
 
-            // --- Send Response and Handle Pagination ---
             const message = await interaction.editReply({
                 embeds: [embed],
                 components: totalStrongsPages > 1 ? [createActionRow(currentStrongsPage, totalStrongsPages)] : []
             });
 
-            if (totalStrongsPages <= 1) return; // No collector needed
+            if (totalStrongsPages <= 1) return;
 
             const filter = i => i.user.id === interaction.user.id;
             const collector = message.createMessageComponentCollector({
                 filter,
-                        componentType: ComponentType.Button, 
+                componentType: ComponentType.Button,
                 time: COLLECTOR_TIMEOUT_MS
-                    });
+            });
 
-                    collector.on('collect', async i => {
-                        try {
+            collector.on('collect', async i => {
+                try {
                     await i.deferUpdate();
                     if (i.customId === 'page_back') {
                         currentStrongsPage = (currentStrongsPage - 1 + totalStrongsPages) % totalStrongsPages;
@@ -289,12 +264,9 @@ module.exports = {
                         currentStrongsPage = (currentStrongsPage + 1) % totalStrongsPages;
                     }
 
-                    // Update the Strong's field value and footer
-                    // Ensure the field exists before trying to modify it
                     if (embed.data.fields && embed.data.fields.length > 2) {
                         embed.data.fields[2].value = strongsPages[currentStrongsPage];
                     } else {
-                        // Fallback or error handling if fields structure is unexpected
                         logger.error("[Interlinear Command] Embed fields structure incorrect during pagination.");
                         embed.spliceFields(2, 1, { name: "📚 Strong's Definitions", value: strongsPages[currentStrongsPage], inline: false });
                     }
@@ -309,22 +281,18 @@ module.exports = {
 
             collector.on('end', () => {
                 logger.info(`[Interlinear Command] Pagination collector ended for ${bookName} ${chapter}:${verseInput}`);
-                const timedOutRow = createActionRow(currentStrongsPage, totalStrongsPages, true); // Disable buttons
+                const timedOutRow = createActionRow(currentStrongsPage, totalStrongsPages, true);
                 message.edit({ components: [timedOutRow] }).catch(editError => {
-                    // Ignore error if message was deleted
                     if (editError.code !== 10008) {
                         logger.error(`[Interlinear Command] Error disabling buttons: ${editError}`);
                     }
                 });
             });
-
         } catch (error) {
             logger.error(`[Interlinear Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                // Ensure we reply, even if deferred
-                await interaction.editReply({ content: 'An unexpected error occurred. Please try again later.', embeds: [], components: [] }); // Clear components on error
+                await interaction.editReply({ content: 'An unexpected error occurred. Please try again later.', embeds: [], components: [] });
             } catch (replyError) {
-                // Ignore specific errors if interaction is no longer valid
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
                     logger.error(`[Interlinear Command] Failed to send final error reply: ${replyError}`);
                 }

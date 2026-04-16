@@ -1,26 +1,24 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const logger = require('../utils/logger');
-const { bibleWrapper, numbersToBook, getBookId } = require('../utils/bibleHelper');
-const VOTDData = require('../../data/VOTD.json');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { createRequire } from 'node:module';
+import logger from '../utils/logger.js';
+import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import 'dotenv/config';
 
-// --- Constants ---
-// Keep potentially useful constants if needed later, like timeouts for fetches
+const require = createRequire(import.meta.url);
+const VOTDData = require('../../data/VOTD.json');
+
 const VERSE_FETCH_TIMEOUT_MS = 6000;
 
 function generateFooter(translation = "BSB") {
-    return { 
-        text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()}`, 
-        iconURL: process.env.EMBEDICONURL 
+    return {
+        text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()}`,
+        iconURL: process.env.EMBEDICONURL
     };
 }
 
-// Function to parse reference string (e.g., "John 3:16", "1 Cor 13:4-7")
 function parseVOTDReference(refString) {
     if (!refString) return null;
 
-    // Regex to capture book name, chapter, start verse, and optional end verse
-    // Allows for spaces and numbers in book names (e.g., "1 Corinthians")
     const match = refString.match(/^([1-3]?\s*[\w\s]+)\s+(\d+):(\d+)(?:-(\d+))?$/i);
 
     if (!match) {
@@ -31,7 +29,7 @@ function parseVOTDReference(refString) {
     const bookNameStr = match[1].trim();
     const chapterStr = match[2];
     const startVerseStr = match[3];
-    const endVerseStr = match[4]; // Might be undefined
+    const endVerseStr = match[4];
 
     const bookId = getBookId(bookNameStr);
     if (!bookId) {
@@ -41,7 +39,7 @@ function parseVOTDReference(refString) {
 
     const chapter = parseInt(chapterStr);
     const startVerse = parseInt(startVerseStr);
-    const endVerse = endVerseStr ? parseInt(endVerseStr) : startVerse; // Default end to start if not present
+    const endVerse = endVerseStr ? parseInt(endVerseStr) : startVerse;
 
     if (isNaN(chapter) || isNaN(startVerse) || isNaN(endVerse)) {
         logger.warn(`[parseVOTDReference] Failed to parse chapter/verse numbers in: ${refString}`);
@@ -51,7 +49,7 @@ function parseVOTDReference(refString) {
     return { bookId, chapter, startVerse, endVerse };
 }
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName('passageoftheday')
         .setDescription('Get the Bible passage selected for today')
@@ -71,8 +69,7 @@ module.exports = {
         await interaction.deferReply();
 
         try {
-            // --- Determine Translation ---
-            let translation = 'BSB'; // Default
+            let translation = 'BSB';
             try {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
@@ -81,11 +78,10 @@ module.exports = {
             }
             translation = interaction.options.getString('translation') || translation;
 
-            // --- Get Today's Reference from VOTD.json ---
             const today = new Date();
             const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
             const monthName = monthNames[today.getMonth()];
-            const dayOfMonth = today.getDate().toString(); // Get day as string for JSON key
+            const dayOfMonth = today.getDate().toString();
 
             const referenceString = VOTDData?.[monthName]?.[dayOfMonth];
 
@@ -96,7 +92,6 @@ module.exports = {
 
             logger.info(`[PassageOfTheDay Command] Today's reference from JSON: ${referenceString}`);
 
-            // --- Parse Reference ---
             const parsedRef = parseVOTDReference(referenceString);
 
             if (!parsedRef) {
@@ -105,12 +100,10 @@ module.exports = {
             }
 
             const { bookId, chapter, startVerse, endVerse } = parsedRef;
-            const bookName = numbersToBook.get(bookId); // We already validated bookId in parse function
+            const bookName = numbersToBook.get(bookId);
 
-            // --- Fetch Verse Text ---
             let verseTextResult;
             try {
-                // Add a timeout for safety
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), VERSE_FETCH_TIMEOUT_MS);
                 verseTextResult = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse, { signal: controller.signal });
@@ -124,7 +117,6 @@ module.exports = {
                 return interaction.editReply({ content: 'Sorry, I couldn\'t fetch the text for today\'s passage.', ephemeral: true });
             }
 
-            // --- Format Verse Text and Reference ---
             let formattedVerseText = "";
             let referenceDisplay = "";
             if (startVerse === endVerse) {
@@ -132,17 +124,14 @@ module.exports = {
                 formattedVerseText = verseTextResult[0]?.[translation] || '(Translation not available)';
             } else {
                 referenceDisplay = `${bookName} ${chapter}:${startVerse}-${endVerse}`;
-                // Combine verses with verse numbers
                 formattedVerseText = verseTextResult.map(v => `**${v.verse}** ${v[translation] || '(Translation missing)'}`).join(' ');
             }
 
-            // Limit length just in case
-            const MAX_DESC_LENGTH = 4000; // Keep under 4096 limit
+            const MAX_DESC_LENGTH = 4000;
             if (formattedVerseText.length > MAX_DESC_LENGTH) {
                 formattedVerseText = formattedVerseText.substring(0, MAX_DESC_LENGTH - 3) + '...';
             }
 
-            // --- Create Embed ---
             const dateString = today.toLocaleDateString('en-US', {
                 weekday: 'long',
                 year: 'numeric',
@@ -159,16 +148,14 @@ module.exports = {
                 .setURL(process.env.WEBSITE)
                 .setFooter(generateFooter(translation));
 
-            // --- Send Reply ---
             await interaction.editReply({ embeds: [embed] });
-
         } catch (error) {
             logger.error(`[PassageOfTheDay Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
                     content: '❌ Sorry, there was an unexpected error processing your request.',
                     ephemeral: true,
-                    embeds: [], components: [] // Clear potentially broken reply
+                    embeds: [], components: []
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
@@ -177,4 +164,4 @@ module.exports = {
             }
         }
     }
-}; 
+};

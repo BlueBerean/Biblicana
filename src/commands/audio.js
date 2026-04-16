@@ -1,24 +1,22 @@
-const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } = require('discord.js');
-const axios = require('axios');
-const { getBookId, numbersToBook } = require('../utils/bibleHelper');
-const logger = require('../utils/logger');
-const swearWordFilter = require('../utils/filter');
-require('dotenv').config();
+import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import axios from 'axios';
+import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import logger from '../utils/logger.js';
+import swearWordFilter from '../utils/filter.js';
+import 'dotenv/config';
 
-// Constants
 const API_TIMEOUT_MS = 15000;
 const HARDCODED_VERSION = 'kjv';
 
-// Helper functions
 function createAudioCommand() {
     const command = new SlashCommandBuilder()
         .setName('audio')
         .setDescription('Get audio narration for a Bible chapter (KJV only)')
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book name or abbreviation')
                 .setRequired(true))
-        .addStringOption(option => 
+        .addStringOption(option =>
             option.setName('chapter')
                 .setDescription('The chapter number')
                 .setRequired(true));
@@ -37,14 +35,14 @@ function createAudioEmbed(bookName, chapter, audioUrl) {
         )
         .setColor(embedColor)
         .setURL(process.env.WEBSITE)
-        .setFooter({ 
-            text: process.env.EMBEDFOOTERTEXT, 
-            iconURL: process.env.EMBEDICONURL 
+        .setFooter({
+            text: process.env.EMBEDFOOTERTEXT,
+            iconURL: process.env.EMBEDICONURL
         })
-        .addFields({ 
-            name: 'Format', 
+        .addFields({
+            name: 'Format',
             value: 'MP3',
-            inline: true 
+            inline: true
         });
 }
 
@@ -86,7 +84,7 @@ async function fetchAudioNarration(bookId, chapter, version) {
     }
 }
 
-module.exports = {
+export default {
     data: createAudioCommand(),
 
     async execute(interaction) {
@@ -150,12 +148,11 @@ module.exports = {
 
             const embed = createAudioEmbed(bookName, chapter, audioUrl);
 
-            await interaction.editReply({ 
+            await interaction.editReply({
                 embeds: [embed],
                 files: [audioAttachment]
             });
             logger.info(`[Audio Command] Successfully sent audio for ${bookName} ${chapter}`);
-
         } catch (error) {
             const bookDisplay = bookName || rawBookInput || 'the specified book';
             const chapterDisplay = chapter || chapterInput || 'the specified chapter';
@@ -181,4 +178,4 @@ module.exports = {
             }
         }
     }
-}; 
+};

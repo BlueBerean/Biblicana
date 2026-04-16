@@ -1,17 +1,16 @@
-const pg = require('pg');
-const Redis = require('ioredis');
-const logger = require('../utils/logger.js');
-const userModel = require('./schemas/user.js');
-const guildModel = require('./schemas/guild.js');
-const axios = require('axios');
+import pg from 'pg';
+import Redis from 'ioredis';
+import axios from 'axios';
+import logger from '../utils/logger.js';
+import userModel from './schemas/user.js';
+import guildModel from './schemas/guild.js';
 
 /**
- * This is a wrapper for the RedisPGClient class, it is used to make it easier to use the RedisPGClient class
- * @param {Object} postgresConfig - The postgres configuration
- * @param {Object} redisConfig - The redis configuration (optional)
- * @param {Number} redisExpiry - The expiry time for redis keys (optional)
- * 
-*/
+ * Wrapper for RedisPGClient — unified Redis + Postgres interface.
+ * @param {Object} postgresConfig - Postgres connection config
+ * @param {Object} [redisConfig] - Redis connection config (optional)
+ * @param {Number} [redisExpiry] - Redis key expiry seconds (optional)
+ */
 class RedisPGWrapper {
     constructor(postgresConfig, redisConfig, redisExpiry) {
         this.RedisPGClient = new RedisPGClient(postgresConfig, redisConfig, redisExpiry);
@@ -55,13 +54,6 @@ class RedisPGWrapper {
         return this.RedisPGClient.deleteValue(`guild:${id}`);
     }
 
-    /**
-     * 
-     * @param {*} key  The key to use, use this format: "user:1"
-     * @param {} value  The value to set
-     * @param {} schema  The schema to use to validate the value
-     * @returns {Boolean} - Returns true if the value was set, false if it wasn't
-    */
     async updateValue(key, value, schema) {
         const originalValue = await this.RedisPGClient.getValue(key);
 
@@ -75,37 +67,17 @@ class RedisPGWrapper {
         return this.validateAndSetValue(key, replacedValue, schema);
     }
 
-    /**
-     * Use this function to validate and set a value in the database
-     * @param {String} key - The key to use, use this format: "user:1"
-     * @param {Object} value - The value to set
-     * @param {Object} schema - The schema to use to validate the value
-     * @returns {Boolean} - Returns true if the value was set, false if it wasn't
-     * 
-    */
     async validateAndSetValue(key, value, schema) {
-        const { error } = schema.validate(value); // Validate, if there is not error, update the value
+        const { error } = schema.validate(value);
 
         if (error) {
             logger.error('[Error] Error validating user:', error);
             return false;
         }
 
-        // If the value is valid, it will always have a id property
         return this.RedisPGClient.setValue(key, value);
     }
 
-    /**
-     * This is a helper function to fill properties in an object
-     * @param {Object} originalValue - The original object
-     * @param {Object} newValue - The new object    
-     * @returns {Object} - Returns the original object with the new properties
-     * @example
-     * const originalValue = { id: "1", name: "test" };
-     * const newValue = { name: "test2" };
-     * const filledObject = fillProperties(originalValue, newValue);
-     * console.log(filledObject); // { id: "1", name: "test2" }
-    */
     fillProperties(originalValue, newValue) {
         let filledObject = originalValue;
         for (const key in newValue) {
@@ -121,14 +93,11 @@ class RedisPGWrapper {
     }
 }
 
-
-class RedisPGClient { 
+class RedisPGClient {
     constructor(postgresConfig, redisConfig = null, redisExpiry = 21600) {
         this.pgClient = new pg.Pool(postgresConfig);
-
         this.redisClient = new Redis(redisConfig);
 
-        // Add RapidAPI configuration
         this.rapidApiKey = process.env.RAPIDAPIKEY;
         this.rapidApiHost = 'uncovered-treasure-v1.p.rapidapi.com';
 
@@ -137,15 +106,11 @@ class RedisPGClient {
         });
 
         this.expiry = redisExpiry;
-        
     }
 
     async initialize() {
-        // Perform async initialization tasks here
         logger.debug('[Database] Initializing Database Handler...');
         await this.createTables();
-        // Add Redis connection check/wait if necessary in the future
-        // Example: await this.redisClient.ping(); 
         logger.info('[Database] Database Handler Initialized.');
     }
 
@@ -155,7 +120,7 @@ class RedisPGClient {
                 CREATE TABLE IF NOT EXISTS guilddata (
                     id varchar(255) PRIMARY KEY,
                     data JSONB NOT NULL
-                ); 
+                );
 
                 CREATE TABLE IF NOT EXISTS userdata (
                     id varchar(255) PRIMARY KEY,
@@ -169,12 +134,6 @@ class RedisPGClient {
         }
     }
 
-    /**
-     * Get Strong's definition from RapidAPI
-     * @param {String} language - 'Hebrew' or 'Greek'
-     * @param {String} strongsId - The Strong's number
-     * @returns {Object} - The Strong's definition
-     */
     async getStrongsDefinition(language, strongsId) {
         try {
             const options = {
@@ -187,14 +146,13 @@ class RedisPGClient {
             };
 
             const response = await axios.request(options);
-            logger.debug('[API Response]', response.data); // Log the response
+            logger.debug('[API Response]', response.data);
 
             if (!response.data) {
                 logger.error('[Error] No data in API response');
                 return null;
             }
 
-            // Check if response has the expected structure
             if (!response.data.language) {
                 logger.error('[Error] Response missing language property:', response.data);
                 return null;
@@ -210,12 +168,6 @@ class RedisPGClient {
         }
     }
 
-    /**
-     * Search Strong's concordance by English word
-     * @param {String} language - 'Hebrew' or 'Greek' 
-     * @param {String} word - English word to search
-     * @returns {Array} - Matching Strong's entries
-     */
     async searchStrongsByEnglish(language, word) {
         try {
             const options = {
@@ -228,22 +180,20 @@ class RedisPGClient {
             };
 
             const response = await axios.request(options);
-            logger.debug('[API Response]', response.data); // Log the response
+            logger.debug('[API Response]', response.data);
 
             if (!response.data) {
                 logger.error('[Error] No data in API response');
                 return null;
             }
 
-            // Check if response has the expected structure
             if (!response.data.results) {
                 logger.error('[Error] Response missing results property:', response.data);
                 return null;
             }
 
-            // Filter results by language if specified
             if (language) {
-                return response.data.results.filter(entry => 
+                return response.data.results.filter(entry =>
                     entry.language && entry.language.toLowerCase() === language.toLowerCase()
                 );
             }
@@ -254,20 +204,13 @@ class RedisPGClient {
         }
     }
 
-    // Generic functions
-    /**
-     * Use this function to get a value from the database
-     * @param {String} key - The key to use, use this format: "user:1"
-     * @returns {Object} - Returns the value if it exists, null if it doesn't
-     * 
-    */
     async getValue(key) {
         const cachedValue = await this.redisClient.get(key);
         if (cachedValue) {
             return JSON.parse(cachedValue);
         }
 
-        const query = `SELECT * FROM ${key.split(':')[0]}data WHERE id = $1`; // Key is in the format "user:1", so we split it and get the first part
+        const query = `SELECT * FROM ${key.split(':')[0]}data WHERE id = $1`;
         const { rows } = await this.pgClient.query(query, [key]);
 
         if (rows.length > 0) {
@@ -279,12 +222,6 @@ class RedisPGClient {
         return null;
     }
 
-    /**
-     * Use this function to set a value in the database
-     * @param {Object} value - The value to set
-     * @param {String} key - The key to use, use this format: "user:1"
-     * @returns {Boolean} - Returns true if the value was set, false if it wasn't
-    */
     async setValue(key, value) {
         await this.setValueRedis(key, value);
 
@@ -299,22 +236,11 @@ class RedisPGClient {
         return false;
     }
 
-    /** 
-    * Use this function to set a value in the redis database
-    * @param {Object} value - The value to set
-    * @param {String} key - The key to use, use this format: "user:1"
-    */
     async setValueRedis(key, value) {
-        await this.redisClient.set(key, JSON.stringify(value))
-
+        await this.redisClient.set(key, JSON.stringify(value));
         this.redisClient.expire(key, this.expiry);
     }
 
-    /**
-     * Use this function to delete a value from the redis database and the postgres database
-     * @param {String} key - The key to use, use this format: "user:1"
-     * @returns {Boolean} - Returns true if the value was deleted, false if it wasn't
-     */
     async deleteValue(key) {
         const query = `DELETE FROM ${key.split(':')[0]}data WHERE id = $1`;
         const res = await this.pgClient.query(query, [key]);
@@ -341,9 +267,8 @@ class RedisPGClient {
     async close() {
         await this.redisClient.quit();
         await this.pgClient.end();
-
         logger.info('[Database] Disconnected from Redis and MongoDB');
     }
 }
 
-module.exports = RedisPGWrapper;
+export default RedisPGWrapper;
