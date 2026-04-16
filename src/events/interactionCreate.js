@@ -80,7 +80,7 @@ export default {
             }
 
             try {
-                await button.execute(interaction);
+                await button.execute(interaction, database);
             } catch (error) {
                 logger.error(`[Error] Error executing ${interaction.customId}`);
                 logger.error(error);

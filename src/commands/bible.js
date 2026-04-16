@@ -1,6 +1,43 @@
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
+
+const MAX_BODY_CHARS = 3800;
+
+function buildVerseActionRow(bookId, chapter, verse) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`openverse:interlinear:${bookId}:${chapter}:${verse}`)
+            .setLabel('Interlinear')
+            .setEmoji({ name: '📖' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:commentary:${bookId}:${chapter}:${verse}`)
+            .setLabel('Commentary')
+            .setEmoji({ name: '📚' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:xref:${bookId}:${chapter}:${verse}`)
+            .setLabel('Cross-refs')
+            .setEmoji({ name: '🔗' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:parallel:${bookId}:${chapter}:${verse}`)
+            .setLabel('Parallel')
+            .setEmoji({ name: '📑' })
+            .setStyle(ButtonStyle.Secondary)
+    );
+}
 
 export default {
     data: new SlashCommandBuilder()
@@ -33,83 +70,111 @@ export default {
                     { name: "WEB", value: "WEB" },
                     { name: "YLT", value: "YLT" },
                 )),
+
     async execute(interaction, database) {
-        await interaction.deferReply();
+        const rawBook = interaction.options.getString('book').split(" ").join("");
+        logger.info(`[Bible Command] Raw book input: ${rawBook}`);
+
+        const bookId = getBookId(rawBook);
+        logger.info(`[Bible Command] Book ID lookup result: ${bookId}`);
+
+        if (!bookId) {
+            logger.warn(`[Bible Command] Could not find book ID for: ${rawBook}`);
+            return interaction.reply({
+                content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        const chapter = interaction.options.getString('chapter');
+        const startVerse = interaction.options.getNumber('startverse');
+        const endVerse = interaction.options.getNumber('endverse') || startVerse;
+
+        if (startVerse > endVerse) {
+            return interaction.reply({
+                content: 'The start verse cannot be greater than the end verse.',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
             const defaultTranslation = await database.getUserValue(interaction.user.id);
             const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
+            const bookName = numbersToBook.get(bookId);
+            const rangeLabel = endVerse !== startVerse
+                ? `${bookName} ${chapter}:${startVerse}-${endVerse}`
+                : `${bookName} ${chapter}:${startVerse}`;
 
-            const rawBook = interaction.options.getString('book').split(" ").join("");
-            logger.info(`[Bible Command] Raw book input: ${rawBook}`);
+            logger.info(`[Bible Command] Looking up ${bookId} (${bookName}) ${chapter}:${startVerse}-${endVerse} in ${translation}`);
 
-            const bookid = getBookId(rawBook);
-            logger.info(`[Bible Command] Book ID lookup result: ${bookid}`);
+            const verses = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse, translation);
 
-            if (!bookid) {
-                logger.warn(`[Bible Command] Could not find book ID for: ${rawBook}`);
+            if (!verses || verses.length === 0) {
                 return interaction.editReply({
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            const chapter = interaction.options.getString('chapter');
-            const startVerse = interaction.options.getNumber('startverse');
-            const endVerse = interaction.options.getNumber('endverse') || startVerse;
-
-            logger.info(`[Bible Command] Looking up book ${bookid} (${numbersToBook.get(bookid)}) ${chapter}:${startVerse}-${endVerse} in ${translation}`);
-
-            if (startVerse > endVerse) {
-                return interaction.editReply({ content: 'The start verse cannot be greater than the end verse', flags: MessageFlags.Ephemeral });
-            }
-
-            let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
-
-            if (!verses.length > 0) {
-                return interaction.editReply({
-                    content: `I couldn't find any verses related to ${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse : ""}!`,
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ I couldn't find any verses for ${rangeLabel}!`)]
                 });
             }
 
             verses.sort((a, b) => a.verse - b.verse);
 
-            let response = "";
+            let body = '';
+            let truncated = false;
             for (let i = 0; i < verses.length; i++) {
-                let number = i + startVerse;
+                const verseNum = verses[i].verse;
+                const text = verses[i][translation];
+                if (!text) continue;
 
-                if (response.length > 1) {
-                    response += " ";
-                }
-
-                if (response.length + verses[i][translation].length > 1900) {
-                    response = "**The response was too long! Please try again with a smaller range of verses. Here is all I can post:**\n\n" + response;
+                const nextChunk = (body ? ' ' : '') + `**${verseNum}** ${text}`;
+                if (body.length + nextChunk.length > MAX_BODY_CHARS) {
+                    truncated = true;
                     break;
                 }
-
-                response += "<**" + number + "**> " + verses[i][translation];
+                body += nextChunk;
             }
 
-            let embed = new EmbedBuilder()
-                .setTitle(`${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse : ""}`)
-                .setDescription(response)
-                .setColor(eval(process.env.EMBEDCOLOR))
-                .setURL(process.env.WEBSITE)
-                .setFooter({
-                    text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`,
-                    iconURL: process.env.EMBEDICONURL
+            if (!body) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ No text available for ${rangeLabel} in ${translation.toUpperCase()}.`)]
                 });
+            }
 
-            return interaction.editReply({ embeds: [embed] });
+            if (truncated) {
+                body += '\n\n*Truncated — try a smaller range.*';
+            }
+
+            const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+            const footer = `${process.env.EMBEDFOOTERTEXT || ''} | Translation: ${translation.toUpperCase()}`.trim();
+
+            const container = new ContainerBuilder()
+                .setAccentColor(accentColor)
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${rangeLabel}`))
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${footer}`));
+
+            const components = [container];
+
+            // Only attach action buttons for single-verse lookups — range lookups
+            // have no single verse to run commentary/crossref/etc. against.
+            if (startVerse === endVerse) {
+                components.push(buildVerseActionRow(bookId, chapter, startVerse));
+            }
+
+            return interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components
+            });
         } catch (error) {
             logger.error(`[Bible Command] Error processing request: ${error.message}`);
             logger.error(error.stack);
 
             try {
                 return interaction.editReply({
-                    content: 'Sorry, there was an error processing your request.',
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ Sorry, there was an error processing your request.`)]
                 });
             } catch (e) {
                 logger.error(`[Bible Command] Could not send error message: ${e.message}`);
