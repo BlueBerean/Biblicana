@@ -1,38 +1,195 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    SectionBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
+import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
-function generateFooter(page, maxPages) {
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT} | Page ${page + 1}/${maxPages}`,
-        iconURL: process.env.EMBEDICONURL
-    };
+const MAX_PROSE_CHARS = 3500;
+const REFS_PER_PAGE = 8;
+const COLLECTOR_TIMEOUT_MS = 600_000;
+
+// Parses "Genesis 1:1", "1 Samuel 7:12", "Psalm 22:1-5", etc.
+// Returns null when unparseable so the button can be disabled.
+function parseBookVerseRef(refStr) {
+    if (!refStr) return null;
+    const firstChunk = String(refStr).split(/[;,]/)[0].trim();
+    const match = firstChunk.match(/^([1-3]?\s*[A-Za-z]+(?:\s+[A-Za-z]+)*)\s+(\d+):(\d+)(?:-(\d+))?/);
+    if (!match) return null;
+    const bookId = getBookId(match[1].trim());
+    if (!bookId) return null;
+    const chapter = parseInt(match[2]);
+    const startVerse = parseInt(match[3]);
+    const endVerse = match[4] ? parseInt(match[4]) : startVerse;
+    if (isNaN(chapter) || isNaN(startVerse)) return null;
+    return { bookId, chapter, startVerse, endVerse };
 }
 
-function getBookSections(bookInfo) {
-    const formatArray = (arr, prefix = '• ') => Array.isArray(arr) && arr.length > 0 ? prefix + arr.join(`\n${prefix}`) : (arr || null);
-    const formatKeyVerses = (arr) => Array.isArray(arr) && arr.length > 0 ? '• ' + arr.map(v => v.reference).join('\n• ') : (arr || null);
+// Build an array of "pages" — each page is either a prose chunk or a slice of
+// verse-ref Sections. All paginate uniformly through one nav row.
+function buildPages(bookInfo) {
+    const pages = [];
 
-    return [
-        { title: 'Introduction', content: bookInfo.introduction },
-        { title: 'Summary', content: bookInfo.summary },
-        { title: 'Author & Date', content: bookInfo.author && bookInfo.date ? `${bookInfo.author}\nDate: ${bookInfo.date}` : (bookInfo.author || bookInfo.date || null) },
-        { title: 'Genre & Language', content: bookInfo.genre || (bookInfo.original_language && bookInfo.original_language_meaning) ? `Genre: ${bookInfo.genre || 'N/A'}\nOriginal Language: ${bookInfo.original_language || 'N/A'} (${bookInfo.original_language_meaning || 'N/A'})` : null },
-        { title: 'Structure', content: bookInfo.structure },
-        { title: 'Historical Context', content: bookInfo.historical_context },
-        { title: 'Purpose', content: bookInfo.purpose },
-        { title: 'Audience', content: bookInfo.audience },
-        { title: 'Major Characters', content: formatArray(bookInfo.major_characters) },
-        { title: 'Themes', content: formatArray(bookInfo.themes) },
-        { title: 'Key Verses', content: formatKeyVerses(bookInfo.key_verses) },
-        { title: 'Practical Application', content: bookInfo.practical_application },
-        { title: 'Connection to Other Books', content: bookInfo.connection_to_other_books },
-        { title: 'Theological Significance', content: bookInfo.theological_introduction ? bookInfo.theological_introduction.split('\n')[0] : null },
-        { title: 'Cross References', content: formatArray(bookInfo.cross_references) },
-        { title: 'Symbolism', content: formatArray(bookInfo.symbolism) }
-    ].filter(section => section.content && section.content.toString().trim());
+    const addProseSection = (title, text) => {
+        if (!text) return;
+        const chunks = splitString(String(text), MAX_PROSE_CHARS);
+        chunks.forEach((chunk, idx) => {
+            pages.push({
+                type: 'prose',
+                title,
+                chunk,
+                chunkIdx: idx,
+                totalChunks: chunks.length
+            });
+        });
+    };
+
+    const addRefsSection = (title, refs) => {
+        if (!Array.isArray(refs) || refs.length === 0) return;
+        const formatted = refs
+            .map(r => typeof r === 'string' ? r : (r?.reference || null))
+            .filter(Boolean)
+            .map(label => ({ label, parsed: parseBookVerseRef(label) }));
+        if (formatted.length === 0) return;
+
+        for (let i = 0; i < formatted.length; i += REFS_PER_PAGE) {
+            const slice = formatted.slice(i, i + REFS_PER_PAGE);
+            pages.push({
+                type: 'refs',
+                title,
+                refs: slice,
+                chunkIdx: Math.floor(i / REFS_PER_PAGE),
+                totalChunks: Math.ceil(formatted.length / REFS_PER_PAGE)
+            });
+        }
+    };
+
+    const formatArrayProse = (arr) => Array.isArray(arr) && arr.length > 0
+        ? arr.map(x => `• ${x}`).join('\n')
+        : null;
+
+    addProseSection('Introduction', bookInfo.introduction);
+    addProseSection('Summary', bookInfo.summary);
+
+    const authorDate = bookInfo.author && bookInfo.date
+        ? `**Author:** ${bookInfo.author}\n**Date:** ${bookInfo.date}`
+        : (bookInfo.author || bookInfo.date || null);
+    addProseSection('Author & Date', authorDate);
+
+    if (bookInfo.genre || (bookInfo.original_language && bookInfo.original_language_meaning)) {
+        const parts = [];
+        if (bookInfo.genre) parts.push(`**Genre:** ${bookInfo.genre}`);
+        if (bookInfo.original_language) {
+            parts.push(`**Original Language:** ${bookInfo.original_language}${bookInfo.original_language_meaning ? ` (${bookInfo.original_language_meaning})` : ''}`);
+        }
+        addProseSection('Genre & Language', parts.join('\n'));
+    }
+
+    addProseSection('Structure', bookInfo.structure);
+    addProseSection('Historical Context', bookInfo.historical_context);
+    addProseSection('Purpose', bookInfo.purpose);
+    addProseSection('Audience', bookInfo.audience);
+    addProseSection('Major Characters', formatArrayProse(bookInfo.major_characters));
+    addProseSection('Themes', formatArrayProse(bookInfo.themes));
+
+    // Ref-based sections become clickable Sections.
+    addRefsSection('📖 Key Verses', bookInfo.key_verses);
+
+    addProseSection('Practical Application', bookInfo.practical_application);
+    addProseSection('Connection to Other Books', bookInfo.connection_to_other_books);
+    addProseSection(
+        'Theological Significance',
+        bookInfo.theological_introduction ? bookInfo.theological_introduction.split('\n')[0] : null
+    );
+
+    addRefsSection('🔗 Cross References', bookInfo.cross_references);
+
+    addProseSection('Symbolism', formatArrayProse(bookInfo.symbolism));
+
+    return pages;
+}
+
+function buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const page = pages[pageIdx];
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+    const chunkSuffix = page.totalChunks > 1 ? ` (${page.chunkIdx + 1}/${page.totalChunks})` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `## 📖 ${bookName}${pageInfo}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `### ${page.title}${chunkSuffix}`
+        ));
+
+    if (page.type === 'prose') {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(page.chunk));
+    } else if (page.type === 'refs') {
+        page.refs.forEach((entry, localIdx) => {
+            const section = new SectionBuilder()
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${entry.label}**`));
+
+            if (entry.parsed) {
+                const r = entry.parsed;
+                const customId = `openverse:bible:${r.bookId}:${r.chapter}:${r.startVerse}:${r.endVerse}:${pageIdx}-${localIdx}`;
+                section.setButtonAccessory(
+                    new ButtonBuilder()
+                        .setCustomId(customId)
+                        .setLabel('Open')
+                        .setEmoji({ name: '📖' })
+                        .setStyle(ButtonStyle.Secondary)
+                );
+            } else {
+                section.setButtonAccessory(
+                    new ButtonBuilder()
+                        .setCustomId(`bookinfo:noop:${pageIdx}-${localIdx}`)
+                        .setLabel('Open')
+                        .setEmoji({ name: '📖' })
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true)
+                );
+            }
+            container.addSectionComponents(section);
+        });
+    }
+
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${bookName}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+    ));
+
+    const components = [container];
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+
+    return components;
 }
 
 export default {
@@ -47,21 +204,21 @@ export default {
                 .setRequired(true)),
 
     async execute(interaction) {
-        await interaction.deferReply();
+        const rawBook = interaction.options.getString('book');
+        const bookId = getBookId(rawBook);
+        const bookName = numbersToBook.get(bookId);
+
+        if (!bookId) {
+            return interaction.reply({
+                content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawBook = interaction.options.getString('book');
-            const bookId = getBookId(rawBook);
-            const bookName = numbersToBook.get(bookId);
-
-            if (!bookId) {
-                return interaction.editReply({
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            logger.info(`[BookInfo Command] Looking up information for book: ${bookName} (ID: ${bookId})`);
+            logger.info(`[BookInfo Command] Looking up book: ${bookName} (ID: ${bookId})`);
 
             const options = {
                 method: 'GET',
@@ -80,125 +237,70 @@ export default {
             const bookInfo = response.data;
 
             if (!bookInfo) {
-                return interaction.editReply(`No information found for ${bookName}.`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ No information found for ${bookName}.`)]
+                });
             }
 
-            const sections = getBookSections(bookInfo);
-
-            if (sections.length === 0) {
-                return interaction.editReply(`No detailed information available for ${bookName}.`);
-            }
-
-            const maxChars = 4000;
-            const pages = [];
-            let currentPage = '';
-
-            for (const section of sections) {
-                const contentString = Array.isArray(section.content) ? section.content.join('\n') : String(section.content);
-                const sectionText = `**${section.title}:**\n${contentString}\n\n`;
-
-                if ((currentPage + sectionText).length > maxChars) {
-                    if (currentPage) {
-                        pages.push(currentPage.trim());
-                    }
-                    currentPage = sectionText;
-                } else {
-                    currentPage += sectionText;
-                }
-            }
-
-            if (currentPage) {
-                pages.push(currentPage.trim());
-            }
-
+            const pages = buildPages(bookInfo);
             if (pages.length === 0) {
-                return interaction.editReply(`No processable information available for ${bookName}.`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ No detailed information available for ${bookName}.`)]
+                });
             }
 
-            let currentPageIndex = 0;
+            const totalPages = pages.length;
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR) : 0x0099FF;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`📖 Book Information - ${bookName}`)
-                .setDescription(pages[currentPageIndex])
-                .setColor(embedColor)
-                .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(currentPageIndex, pages.length));
-
-            if (pages.length === 1) {
-                return interaction.editReply({ embeds: [embed] });
-            }
-
-            const createActionRow = (isEnd = false) => new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('page_back')
-                        .setEmoji('◀️')
-                        .setLabel('Previous')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(isEnd || currentPageIndex === 0),
-                    new ButtonBuilder()
-                        .setCustomId('page_next')
-                        .setEmoji('▶️')
-                        .setLabel('Next')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(isEnd || currentPageIndex === pages.length - 1)
-                );
-
-            const message = await interaction.editReply({
-                embeds: [embed],
-                components: [createActionRow()]
+            await interaction.editReply({
+                flags,
+                components: buildBookInfoPage({ bookName, pages, pageIdx, totalPages })
             });
 
-            const filter = i => i.user.id === interaction.user.id;
+            if (totalPages <= 1) return;
 
-            const collector = message.createMessageComponentCollector({
-                filter,
-                time: 600000
-            });
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-
-                    if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1) % pages.length;
-                    } else if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
-                    }
-
-                    embed.setDescription(pages[currentPageIndex])
-                        .setFooter(generateFooter(currentPageIndex, pages.length));
-
-                    await i.editReply({ embeds: [embed], components: [createActionRow()] });
-                } catch (collectError) {
-                    logger.error(`[BookInfo Command] Error updating pagination: ${collectError}`);
-                    try {
-                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
-                    } catch (followUpError) {
-                        logger.error(`[BookInfo Command] Error sending follow-up after pagination error: ${followUpError}`);
-                    }
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildBookInfoPage({ bookName, pages, pageIdx, totalPages })
+                    });
+                } catch (err) {
+                    logger.error(`[BookInfo Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[BookInfo Command] Pagination collector ended for ${bookName} after timeout.`);
-                const timedOutRow = createActionRow(true);
-                message.edit({ components: [timedOutRow] }).catch(editError => {
-                    logger.error(`[BookInfo Command] Error disabling buttons after timeout: ${editError}`);
-                });
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[BookInfo Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
             logger.error(`[BookInfo Command] Error: ${error.message}`, error.stack);
-            if (error.response) {
-                logger.error(`[BookInfo Command] API Error Status: ${error.response.status}`);
-                logger.error(`[BookInfo Command] API Error Data: ${JSON.stringify(error.response.data)}`);
-            }
             try {
                 await interaction.editReply({
-                    content: 'Sorry, there was an error processing your request. The developers have been notified.',
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Sorry, there was an error processing your request.`
+                    )]
                 });
             } catch (replyError) {
                 logger.error(`[BookInfo Command] Failed to send error reply: ${replyError}`);

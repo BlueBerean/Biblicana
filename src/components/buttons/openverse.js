@@ -64,7 +64,65 @@ async function handleBible({ interaction, bookId, chapter, startVerse, endVerse,
     await renderBibleEphemeral({ interaction, bookId, chapter, startVerse, endVerse, translation });
 }
 
+// Opens a full chapter as a verse range (1..200). bibleRenderer truncates long
+// chapter bodies — typical chapters are 20-50 verses and fit comfortably.
+async function handleChapter({ interaction, bookId, chapter, translation }) {
+    await renderBibleEphemeral({
+        interaction,
+        bookId,
+        chapter,
+        startVerse: 1,
+        endVerse: 200,
+        translation
+    });
+}
+
 // --- Commentary (with fallback chain + commentator dropdown) -------------
+
+// Chapter-level commentary path. Tyndale is OT-by-verse only so skip; Keil
+// is OT-only. Fall through the remaining commentators in order.
+async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter, bookName }) {
+    const isNT = bookId > 39;
+    const ordered = [
+        'jamieson-fausset-brown',
+        'john-gill',
+        'matthew-henry',
+        'adam-clarke',
+        'keil-delitzsch'
+    ].filter(id => !(id === 'keil-delitzsch' && isNT));
+
+    let found = null;
+    for (const id of ordered) {
+        const row = await commentaryWrapper.getChapterCommentary(id, bookCodes, chapter);
+        if (row?.introduction) {
+            found = { commentatorId: id, text: row.introduction };
+            break;
+        }
+    }
+
+    if (!found) {
+        return interaction.reply({
+            content: `No chapter-level introduction available for ${bookName} ${chapter} from any commentator.`,
+            flags: MessageFlags.Ephemeral
+        });
+    }
+
+    const commentator = COMMENTATORS.find(c => c.id === found.commentatorId);
+    const truncated = found.text.length > COMMENTARY_MAX_CHARS;
+    const body = truncated ? found.text.substring(0, COMMENTARY_MAX_CHARS - 3) + '...' : found.text;
+    const hint = truncated
+        ? `\n\n*Truncated. Run \`/commentary book:${bookName} chapter:${chapter} commentator:${found.commentatorId}\` for the full text.*`
+        : '';
+
+    const embed = new EmbedBuilder()
+        .setColor(baseEmbedColor())
+        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter} (chapter intro)`)
+        .setDescription(body + hint)
+        .setURL(process.env.WEBSITE)
+        .setFooter(standardFooter(commentator.label));
+
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+}
 
 async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId = 'jamieson-fausset-brown' }) {
     const bookCodes = toCommentaryBookCodes(bookId);
@@ -123,6 +181,13 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
             content: `Commentary isn't supported for ${bookName}.`,
             flags: MessageFlags.Ephemeral
         });
+    }
+
+    // verse=0 sentinel means "chapter-level commentary" (used by /audio and
+    // future callers that want the chapter introduction rather than a verse note).
+    const isChapterLevel = verse === 0;
+    if (isChapterLevel) {
+        return handleChapterCommentary({ interaction, bookId, bookCodes, chapter, bookName });
     }
 
     const result = await fetchCommentaryWithFallback({ bookId, chapter, verse });
@@ -371,6 +436,8 @@ export default {
             switch (action) {
                 case 'bible':
                     return await handleBible({ interaction, bookId, chapter, startVerse, endVerse, translation });
+                case 'chapter':
+                    return await handleChapter({ interaction, bookId, chapter, translation });
                 case 'interlinear':
                     return await handleInterlinear({ interaction, bookId, chapter, verse: startVerse, translation });
                 case 'commentary':
