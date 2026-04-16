@@ -3,7 +3,6 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -81,7 +80,7 @@ function truncate(text, max) {
 }
 
 function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
-    const { name, structured } = displayName(person.unique_name);
+    const { name } = displayName(person.unique_name);
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
     const facts = [];
@@ -135,22 +134,9 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
     ));
 
     const components = [container];
-
-    // Action row — Open passage if the encoded reference is resolvable.
-    if (structured) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
-                .setLabel('Open passage')
-                .setEmoji({ name: '📖' })
-                .setStyle(ButtonStyle.Secondary)
-        ));
-    }
-
     if (totalPages > 1) {
         components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
-
     return components;
 }
 

@@ -21,7 +21,12 @@ import 'dotenv/config';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PROPHECIES_PER_PAGE = 5;
+// Hard cap on Sections per page. Each Section with a button costs ~3 toward
+// Discord's 40-component tree cap; overhead (container + header + footer +
+// nav row + 2 nav buttons) eats ~6, so ~11 sections per page is the safe max.
+// We pack 9 to leave room for edge cases.
+const MAX_SECTIONS_PER_PAGE = 9;
+const MAX_REFS_PER_FIELD = 3;  // Cap wild multi-ref strings to keep per-prophecy section count bounded
 const MAX_DESCRIPTION_CHARS = 350;
 
 // Parse ONE ref chunk like "Isaiah 7:14" or "Genesis 22:1-14". Returns null if unparseable.
@@ -39,12 +44,44 @@ function parseSingleRef(chunk) {
 
 // Parse a refs field that may contain multiple refs separated by ; or ,
 // (e.g., "Gal 4:4-5; Matt 1:18"). Returns an array of parsed refs, skipping
-// any unparseable chunks. Empty array if nothing valid.
+// any unparseable chunks. Capped at MAX_REFS_PER_FIELD so pathologically
+// long fields can't blow the 40-component page budget.
 function parseAllVerseRefs(refStr) {
     if (!refStr) return [];
     return refStr.split(/[;,]/)
         .map(chunk => parseSingleRef(chunk))
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, MAX_REFS_PER_FIELD);
+}
+
+// How many Sections a prophecy will occupy on a page — one per OT ref (or 1
+// fallback if none parse) plus one per NT ref when the NT field is present.
+function sectionsFor(p) {
+    const otCount = parseAllVerseRefs(p['OT Reference']).length || 1;
+    const hasNt = p['NT Fulfillment'] && p['NT Fulfillment'] !== 'N/A';
+    const ntCount = hasNt ? (parseAllVerseRefs(p['NT Fulfillment']).length || 1) : 0;
+    return otCount + ntCount;
+}
+
+// Greedy packer: each page fills up to MAX_SECTIONS_PER_PAGE sections, then
+// spills into the next. Produces pages of varying prophecy-counts depending
+// on how dense each prophecy's reference set is.
+function packPages(prophecies) {
+    const pages = [];
+    let current = [];
+    let currentSections = 0;
+    prophecies.forEach((p, globalIdx) => {
+        const needed = sectionsFor(p);
+        if (current.length > 0 && currentSections + needed > MAX_SECTIONS_PER_PAGE) {
+            pages.push(current);
+            current = [];
+            currentSections = 0;
+        }
+        current.push({ prophecy: p, globalIdx });
+        currentSections += needed;
+    });
+    if (current.length > 0) pages.push(current);
+    return pages;
 }
 
 function truncate(text, max) {
@@ -59,9 +96,8 @@ function buildOpenCustomId(ref, uniqueSuffix) {
     return `openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}:${uniqueSuffix}`;
 }
 
-function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false }) {
-    const start = pageIdx * PROPHECIES_PER_PAGE;
-    const pageProphecies = prophecies.slice(start, start + PROPHECIES_PER_PAGE);
+function buildProphecyPage({ pages, totalProphecyCount, pageIdx, totalPages, disableNav = false }) {
+    const pageItems = pages[pageIdx];
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
@@ -70,8 +106,7 @@ function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false
             `## 📜 Prophecies Fulfilled in Jesus${pageInfo}`
         ));
 
-    pageProphecies.forEach((p, localIdx) => {
-        const globalIdx = start + localIdx;
+    pageItems.forEach(({ prophecy: p, globalIdx }) => {
         const otRef = p['OT Reference'];
         const ntRef = p['NT Fulfillment'];
         const description = p.Description || '';
@@ -154,7 +189,7 @@ function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false
 
     const pageSuffix = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        footerLine(`${prophecies.length} prophecies total${pageSuffix}`)
+        footerLine(`${totalProphecyCount} prophecies total${pageSuffix}`)
     ));
 
     const components = [container];
@@ -199,12 +234,15 @@ export default {
             });
         }
 
-        const totalPages = Math.ceil(prophecies.length / PROPHECIES_PER_PAGE);
+        const pages = packPages(prophecies);
+        const totalPages = pages.length;
+        const totalProphecyCount = prophecies.length;
+        logger.info(`[PropheciesOfJesus Command] Packed ${totalProphecyCount} prophecies into ${totalPages} pages`);
 
         try {
             const message = await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildProphecyPage({ prophecies, pageIdx: 0, totalPages })
+                components: buildProphecyPage({ pages, totalProphecyCount, pageIdx: 0, totalPages })
             });
 
             if (totalPages <= 1) return;
@@ -213,7 +251,7 @@ export default {
                 interaction, message, totalPages,
                 logLabel: '[PropheciesOfJesus Command]',
                 render: (pageIdx, { disableNav }) =>
-                    buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav })
+                    buildProphecyPage({ pages, totalProphecyCount, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
             logger.error(`[PropheciesOfJesus Command] Unhandled error: ${error.message}`, error.stack);

@@ -70,7 +70,7 @@ function buildMapsLink(lonlat) {
 }
 
 function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
-    const { name, structured } = displayName(place.unique_name);
+    const { name } = displayName(place.unique_name);
     const displayTitle = place.openbible_name || name;
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
@@ -95,15 +95,8 @@ function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
 
     const components = [container];
 
-    // Row 1 — in-app action buttons (Secondary style, route through existing handlers).
+    // In-app action buttons (Secondary style, route through existing handlers).
     const actionButtons = [];
-    if (structured) {
-        actionButtons.push(new ButtonBuilder()
-            .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
-            .setLabel('Open passage')
-            .setEmoji({ name: '📖' })
-            .setStyle(ButtonStyle.Secondary));
-    }
     const strongs = parseStrongs(place.uStrong);
     if (strongs) {
         actionButtons.push(new ButtonBuilder()

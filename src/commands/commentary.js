@@ -206,10 +206,11 @@ export default {
             // If the user explicitly picked an unavailable commentator for this
             // mode (Keil on NT, Tyndale on chapter), surface directly.
             if (!available.some(c => c.id === preferredId)) {
+                const scope = isChapterLevel ? ' chapter-level' : '';
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
                     components: [new TextDisplayBuilder().setContent(
-                        `❌ ${preferred.label} isn't available for this ${isChapterLevel ? 'chapter-level' : ''} request.`
+                        `❌ ${preferred.label} isn't available for this${scope} request.`
                     )]
                 });
             }
