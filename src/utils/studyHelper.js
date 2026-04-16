@@ -135,8 +135,11 @@ class FathersWrapper {
                    LEFT JOIN father_meta m ON m.name = c.father_name COLLATE NOCASE
                    WHERE c.book IN (${placeholders}) AND c.location_start <= ? AND c.location_end >= ?`;
         if (fatherFilter) {
-            sql += ` AND c.father_name LIKE ?`;
-            params.push(`%${fatherFilter}%`);
+            // Escape LIKE wildcards so a user filter of '%' or '_' doesn't bypass
+            // the filter by matching everything. Pair with ESCAPE '\\'.
+            const escaped = fatherFilter.replace(/[\\%_]/g, ch => `\\${ch}`);
+            sql += ` AND c.father_name LIKE ? ESCAPE '\\'`;
+            params.push(`%${escaped}%`);
         }
         sql += ` ORDER BY c.father_name LIMIT 50`;
         return db.all(sql, params);

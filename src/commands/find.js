@@ -11,7 +11,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import axios from 'axios';
-import swearWordFilter from '../utils/filter.js';
+import swearWordFilter, { escapeMarkdown } from '../utils/filter.js';
 import { numbersToBook, bibleWrapper, bookAbbreviations } from '../utils/bibleHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector } from '../utils/paginationHelper.js';
@@ -105,7 +105,7 @@ function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disabl
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔍 Verses about "${topic}"${pageInfo}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔍 Verses about "${escapeMarkdown(topic)}"${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`*AI-suggested passages. Tap Open on any verse for full exploration.*`));
 
     const components = [container];

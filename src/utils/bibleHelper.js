@@ -203,19 +203,16 @@ export const numbersToBook = new Map([
 export const strongsWrapper = new StrongsWrapper();
 export const bibleWrapper = new BibleWrapper();
 
-// Case-insensitive book name lookup with fuzzy matching
+// Case-insensitive book name lookup with fuzzy matching.
+// Called on every book-referencing command, sometimes 200+ times per invocation
+// (e.g., /topicalindex resolving a topic's references). Must stay quiet in prod;
+// only the final "not found" path logs, at warn level.
 export function getBookId(bookName) {
     if (!bookName) return null;
 
     const lowercaseInput = bookName.toLowerCase().trim();
     const noSpaceInput = lowercaseInput.replace(/\s+/g, '');
     const normalizedInput = lowercaseInput.replace(/\s+/g, ' ');
-
-    logger.info(`[Book Lookup] Input variations:
-        Original: "${bookName}"
-        Lowercase: "${lowercaseInput}"
-        No Space: "${noSpaceInput}"
-        Normalized: "${normalizedInput}"`);
 
     const commonAbbreviations = {
         'gen': 1, 'genesis': 1,
@@ -286,38 +283,14 @@ export function getBookId(bookName) {
         'rev': 66, 'rv': 66, 'revelation': 66
     };
 
-    if (lowercaseInput.includes('peter') || lowercaseInput.includes('pet')) {
-        logger.info(`[Book Lookup] Peter-related input detected:
-            Input: ${lowercaseInput}
-            No Space: ${noSpaceInput}
-            Normalized: ${normalizedInput}
-            Direct Match: ${commonAbbreviations[lowercaseInput]}
-            No Space Match: ${commonAbbreviations[noSpaceInput]}
-            Normalized Match: ${commonAbbreviations[normalizedInput]}`);
-    }
-
     const commonId = commonAbbreviations[lowercaseInput] ||
                      commonAbbreviations[noSpaceInput] ||
                      commonAbbreviations[normalizedInput];
-
-    if (commonId) {
-        logger.info(`[Book Lookup] Found in common abbreviations:
-            Matched Input: ${commonId === commonAbbreviations[lowercaseInput] ? lowercaseInput :
-                           commonId === commonAbbreviations[noSpaceInput] ? noSpaceInput : normalizedInput}
-            ID: ${commonId}`);
-        return commonId;
-    }
-
-    logger.info(`[Book Lookup] Not found in common abbreviations. Tried:
-        Lowercase: ${lowercaseInput} -> ${commonAbbreviations[lowercaseInput]}
-        No Space: ${noSpaceInput} -> ${commonAbbreviations[noSpaceInput]}
-        Normalized: ${normalizedInput} -> ${commonAbbreviations[normalizedInput]}`);
+    if (commonId) return commonId;
 
     for (const [key, value] of books) {
-        if (key.toLowerCase() === lowercaseInput ||
-            key.toLowerCase() === noSpaceInput ||
-            key.toLowerCase() === normalizedInput) {
-            logger.info(`[Book Lookup] Found in books Map: ${value}`);
+        const k = key.toLowerCase();
+        if (k === lowercaseInput || k === noSpaceInput || k === normalizedInput) {
             return parseInt(value);
         }
     }
@@ -329,18 +302,11 @@ export function getBookId(bookName) {
         'revelatons': 66,
         'revalations': 66
     };
-
-    const fuzzyId = fuzzyMatches[lowercaseInput];
-    if (fuzzyId) {
-        logger.info(`[Book Lookup] Found fuzzy match: ${fuzzyId}`);
-        return fuzzyId;
-    }
+    if (fuzzyMatches[lowercaseInput]) return fuzzyMatches[lowercaseInput];
 
     for (const [id, name] of numbersToBook.entries()) {
-        if (name.toLowerCase() === lowercaseInput ||
-            name.toLowerCase() === noSpaceInput ||
-            name.toLowerCase() === normalizedInput) {
-            logger.info(`[Book Lookup] Found in numbersToBook: ${id}`);
+        const n = name.toLowerCase();
+        if (n === lowercaseInput || n === noSpaceInput || n === normalizedInput) {
             return id;
         }
     }

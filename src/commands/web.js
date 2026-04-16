@@ -119,7 +119,11 @@ export default {
             logger.info(`[Web Command] Processing query: "${query}"`);
 
             // Intent check — does this question align with Christian teaching context?
+            // Starts in an "unknown" state so an OpenAI outage or timeout falls
+            // through to the explicit "couldn't verify" branch below rather than
+            // bypassing the doctrinal filter.
             let shouldAnswer = false;
+            let intentVerified = false;
             try {
                 const intent_check = await axios.post('https://api.openai.com/v1/chat/completions', {
                     model: INTENT_MODEL,
@@ -145,9 +149,18 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                 });
                 const intentResponse = intent_check.data.choices[0]?.message?.content?.trim().toLowerCase();
                 shouldAnswer = intentResponse === 'true';
+                intentVerified = true;
             } catch (intentError) {
                 logger.error(`[Web Command] Intent check failed: ${intentError.message}`);
-                shouldAnswer = true; // Fail open
+            }
+
+            if (!intentVerified) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `⚠️ I couldn't verify your question against the content filter right now. Please try again in a moment.`
+                    )]
+                });
             }
 
             if (!shouldAnswer) {

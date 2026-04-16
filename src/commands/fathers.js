@@ -14,7 +14,7 @@ import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
-import swearWordFilter from '../utils/filter.js';
+import swearWordFilter, { escapeMarkdown } from '../utils/filter.js';
 import 'dotenv/config';
 
 const MAX_TEXT_LENGTH = 3500;
@@ -134,7 +134,7 @@ export default {
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
                     components: [new TextDisplayBuilder().setContent(
-                        `❌ No commentary found for **${canonicalBookName} ${chapter}:${verse}**${fatherFilter ? ' from fathers matching "' + fatherFilter + '"' : ''}. Some books (especially minor prophets) have sparse coverage.`
+                        `❌ No commentary found for **${canonicalBookName} ${chapter}:${verse}**${fatherFilter ? ' from fathers matching "' + escapeMarkdown(fatherFilter) + '"' : ''}. Some books (especially minor prophets) have sparse coverage.`
                     )]
                 });
             }
