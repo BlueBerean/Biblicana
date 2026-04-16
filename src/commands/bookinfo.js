@@ -36,14 +36,16 @@ function parseBookVerseRef(refStr) {
     return { bookId, chapter, startVerse, endVerse };
 }
 
-// Build an array of "pages" — each page is either a prose chunk or a slice of
-// verse-ref Sections. All paginate uniformly through one nav row.
+// Group related sections into a small number of logical pages. Each prose
+// page auto-splits via splitString if it runs long. Key Verses and Cross
+// References are their own clickable pages.
 function buildPages(bookInfo) {
     const pages = [];
 
-    const addProseSection = (title, text) => {
-        if (!text) return;
-        const chunks = splitString(String(text), MAX_PROSE_CHARS);
+    const addProseGroup = (title, parts) => {
+        const combined = parts.filter(Boolean).join('\n\n');
+        if (!combined) return;
+        const chunks = splitString(combined, MAX_PROSE_CHARS);
         chunks.forEach((chunk, idx) => {
             pages.push({
                 type: 'prose',
@@ -75,47 +77,62 @@ function buildPages(bookInfo) {
         }
     };
 
-    const formatArrayProse = (arr) => Array.isArray(arr) && arr.length > 0
+    const bulletList = (arr) => Array.isArray(arr) && arr.length > 0
         ? arr.map(x => `• ${x}`).join('\n')
         : null;
 
-    addProseSection('Introduction', bookInfo.introduction);
-    addProseSection('Summary', bookInfo.summary);
-
-    const authorDate = bookInfo.author && bookInfo.date
-        ? `**Author:** ${bookInfo.author}\n**Date:** ${bookInfo.date}`
-        : (bookInfo.author || bookInfo.date || null);
-    addProseSection('Author & Date', authorDate);
-
-    if (bookInfo.genre || (bookInfo.original_language && bookInfo.original_language_meaning)) {
-        const parts = [];
-        if (bookInfo.genre) parts.push(`**Genre:** ${bookInfo.genre}`);
-        if (bookInfo.original_language) {
-            parts.push(`**Original Language:** ${bookInfo.original_language}${bookInfo.original_language_meaning ? ` (${bookInfo.original_language_meaning})` : ''}`);
-        }
-        addProseSection('Genre & Language', parts.join('\n'));
+    // Page 1 — About: Introduction + Summary + Author/Date + Genre/Language
+    const aboutParts = [];
+    if (bookInfo.introduction) aboutParts.push(`**Introduction**\n${bookInfo.introduction}`);
+    if (bookInfo.summary) aboutParts.push(`**Summary**\n${bookInfo.summary}`);
+    if (bookInfo.author || bookInfo.date) {
+        const ad = [];
+        if (bookInfo.author) ad.push(`*Author:* ${bookInfo.author}`);
+        if (bookInfo.date) ad.push(`*Date:* ${bookInfo.date}`);
+        aboutParts.push(`**Author & Date**\n${ad.join('\n')}`);
     }
+    if (bookInfo.genre || bookInfo.original_language) {
+        const gl = [];
+        if (bookInfo.genre) gl.push(`*Genre:* ${bookInfo.genre}`);
+        if (bookInfo.original_language) {
+            gl.push(`*Original Language:* ${bookInfo.original_language}${bookInfo.original_language_meaning ? ` (${bookInfo.original_language_meaning})` : ''}`);
+        }
+        aboutParts.push(`**Genre & Language**\n${gl.join('\n')}`);
+    }
+    addProseGroup('About', aboutParts);
 
-    addProseSection('Structure', bookInfo.structure);
-    addProseSection('Historical Context', bookInfo.historical_context);
-    addProseSection('Purpose', bookInfo.purpose);
-    addProseSection('Audience', bookInfo.audience);
-    addProseSection('Major Characters', formatArrayProse(bookInfo.major_characters));
-    addProseSection('Themes', formatArrayProse(bookInfo.themes));
+    // Page 2 — Context: Structure + Historical Context + Purpose + Audience
+    const contextParts = [];
+    if (bookInfo.structure) contextParts.push(`**Structure**\n${bookInfo.structure}`);
+    if (bookInfo.historical_context) contextParts.push(`**Historical Context**\n${bookInfo.historical_context}`);
+    if (bookInfo.purpose) contextParts.push(`**Purpose**\n${bookInfo.purpose}`);
+    if (bookInfo.audience) contextParts.push(`**Audience**\n${bookInfo.audience}`);
+    addProseGroup('Context', contextParts);
 
-    // Ref-based sections become clickable Sections.
+    // Page 3 — Themes & People: Themes + Major Characters
+    const themesParts = [];
+    const themesText = bulletList(bookInfo.themes);
+    if (themesText) themesParts.push(`**Themes**\n${themesText}`);
+    const charactersText = bulletList(bookInfo.major_characters);
+    if (charactersText) themesParts.push(`**Major Characters**\n${charactersText}`);
+    addProseGroup('Themes & People', themesParts);
+
+    // Page 4 — Key Verses (clickable)
     addRefsSection('📖 Key Verses', bookInfo.key_verses);
 
-    addProseSection('Practical Application', bookInfo.practical_application);
-    addProseSection('Connection to Other Books', bookInfo.connection_to_other_books);
-    addProseSection(
-        'Theological Significance',
-        bookInfo.theological_introduction ? bookInfo.theological_introduction.split('\n')[0] : null
-    );
-
+    // Page 5 — Cross References (clickable)
     addRefsSection('🔗 Cross References', bookInfo.cross_references);
 
-    addProseSection('Symbolism', formatArrayProse(bookInfo.symbolism));
+    // Page 6 — Application: Practical Application + Connections + Theological + Symbolism
+    const applicationParts = [];
+    if (bookInfo.practical_application) applicationParts.push(`**Practical Application**\n${bookInfo.practical_application}`);
+    if (bookInfo.connection_to_other_books) applicationParts.push(`**Connection to Other Books**\n${bookInfo.connection_to_other_books}`);
+    if (bookInfo.theological_introduction) {
+        applicationParts.push(`**Theological Significance**\n${bookInfo.theological_introduction.split('\n')[0]}`);
+    }
+    const symbolismText = bulletList(bookInfo.symbolism);
+    if (symbolismText) applicationParts.push(`**Symbolism**\n${symbolismText}`);
+    addProseGroup('Application & Significance', applicationParts);
 
     return pages;
 }

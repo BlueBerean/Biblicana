@@ -12,20 +12,21 @@ import {
 import axios from 'axios';
 import { setTimeout as wait } from 'node:timers/promises';
 import logger from '../utils/logger.js';
+import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
 const INTENT_MODEL = 'gpt-4o-mini';
 const SUMMARY_MODEL = 'gpt-4o-mini';
 const INTENT_MAX_TOKENS = 10;
 const INTENT_TEMPERATURE = 0.1;
-const SUMMARY_MAX_TOKENS = 500;
+const SUMMARY_MAX_TOKENS = 1500;
 const SUMMARY_TEMPERATURE = 0.7;
 const TAVILY_MAX_RESULTS = 5;
 const TAVILY_RATE_LIMIT_MS = 1000;
 const TAVILY_RETRY_DELAY_MS = 5000;
 const TAVILY_MAX_RETRIES = 1;
-const MAX_ANSWER_CHARS = 3800;
-const TRUNCATION_SUFFIX = '\n\n*[Response truncated due to length]*';
+const MAX_CHARS_PER_PAGE = 3500;
+const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_BUTTON_LABEL = 80;
 
 const rateLimit = {
@@ -48,15 +49,16 @@ function truncateLabel(text, max = MAX_BUTTON_LABEL) {
     return text.length > max ? text.substring(0, max - 1) + '…' : text;
 }
 
-function buildWebAnswerResponse({ query, answer, usedSources }) {
+function buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources, disableNav = false }) {
     const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🌐 ${truncateLabel(query, 180)}`))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(answer))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🌐 ${truncateLabel(query, 180)}${pageInfo}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(chunks[pageIdx]))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | AI-assisted answer from web sources`
+            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | AI-assisted answer from web sources${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
         ));
 
     const components = [container];
@@ -73,6 +75,23 @@ function buildWebAnswerResponse({ query, answer, usedSources }) {
             })
         );
         components.push(linkRow);
+    }
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
     }
 
     return components;
@@ -224,18 +243,18 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                     messages: [
                         {
                             role: 'system',
-                            content: `You are a concise Christian apologetics research assistant providing factual, evidence-based info from a Protestant perspective.
+                            content: `You are a thorough Christian apologetics research assistant providing factual, evidence-based info from a Protestant perspective.
 Guidelines:
 - Salvation is through Christ alone (John 14:6). Scripture is the ultimate authority. Avoid non-biblical traditions. Redirect non-Protestant views respectfully to biblical sources. Emphasize unity in Christ.
-- Response must be under 300 words total (strict maximum). Aim for approximately: 50 words introduction, 200 words main content, 50 words conclusion.
-- Format: Start with a single '## Title Derived from User Query'. Use bullet points sparingly. No extra spacing.
-- Requirements: Base your answer EXCLUSIVELY on the provided Sources. Do not add outside knowledge. If sources don't cover an aspect, state that. Cite sources using ONLY (SourceName) where SourceName is the name provided after 'Source ' in the user prompt (e.g., (christianity.com), (gotquestions.org)). Cite ALL evidence/facts. Ensure conclusion ends with proper punctuation. Keep paragraphs short. Only referenced sources will be listed. Adhere to doctrinal guidelines, especially for denominational questions.`
+- Target 500–800 words. Use bullet points generously where they aid comprehension (evidence lists, enumerated arguments, distinctions between viewpoints, step-by-step reasoning, historical timelines). Use prose for narrative explanation.
+- Format: Start with a single '## Title Derived from User Query'. Use '### Subsection Heading' for major sections when the answer has multiple distinct parts. Use bullet lists for enumerable items.
+- Requirements: Base your answer EXCLUSIVELY on the provided Sources. Do not add outside knowledge. If sources don't cover an aspect, state that explicitly. Cite sources using ONLY (SourceName) where SourceName is the name provided after 'Source ' in the user prompt (e.g., (christianity.com), (gotquestions.org)). Cite ALL evidence/facts. Only referenced sources will be listed. Adhere to doctrinal guidelines, especially for denominational questions.`
                         },
                         {
                             role: 'user',
                             content: `Query: "${query}"
 
-Based *only* on the provided sources below, provide a compact, evidence-focused answer (under 300 words, follow ALL system guidelines strictly).
+Based *only* on the provided sources below, provide a thorough, evidence-focused answer (500–800 words, follow ALL system guidelines).
 
 Focus on:
 • Historical evidence and dates
@@ -243,6 +262,9 @@ Focus on:
 • Biblical references (if applicable in sources)
 • Specific names and places
 • Verifiable facts
+• Multiple viewpoints when sources present them
+
+Use bullet lists for enumerable items. Cite every claim.
 
 Sources:
 ${sourcesForGPT}`
@@ -279,18 +301,55 @@ ${sourcesForGPT}`
                 return match;
             });
 
-            if (finalAnswer.length > MAX_ANSWER_CHARS) {
-                finalAnswer = finalAnswer.substring(0, MAX_ANSWER_CHARS - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
-            }
-
             const usedSources = Array.from(usedSourceNames).sort().map(name => ({
                 name,
                 info: sourceMap.get(name)
             }));
 
+            // Paginate if the answer exceeds one page. splitString breaks at
+            // word/paragraph boundaries so markdown citations stay intact.
+            const chunks = splitString(finalAnswer, MAX_CHARS_PER_PAGE);
+            const totalPages = chunks.length;
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
+
             await interaction.editReply({
-                flags: MessageFlags.IsComponentsV2,
-                components: buildWebAnswerResponse({ query, answer: finalAnswer, usedSources })
+                flags,
+                components: buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources })
+            });
+
+            if (totalPages <= 1) return;
+
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
+
+            collector.on('collect', async i => {
+                try {
+                    await i.deferUpdate();
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources })
+                    });
+                } catch (err) {
+                    logger.error(`[Web Command] Pagination error: ${err.message}`);
+                }
+            });
+
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Web Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
             logger.error(`[Web Command] Unhandled error: ${error.message}`, error.stack);

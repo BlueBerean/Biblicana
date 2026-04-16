@@ -79,11 +79,27 @@ async function handleChapter({ interaction, bookId, chapter, translation }) {
 
 // --- Commentary (with fallback chain + commentator dropdown) -------------
 
-// Chapter-level commentary path. Tyndale is OT-by-verse only so skip; Keil
-// is OT-only. Fall through the remaining commentators in order.
+function buildChapterCommentaryEmbed({ commentator, text, bookName, chapter }) {
+    const truncated = text.length > COMMENTARY_MAX_CHARS;
+    const body = truncated ? text.substring(0, COMMENTARY_MAX_CHARS - 3) + '...' : text;
+    const hint = truncated
+        ? `\n\n*Truncated. Run \`/commentary book:${bookName} chapter:${chapter} commentator:${commentator.id}\` for the full text.*`
+        : '';
+
+    return new EmbedBuilder()
+        .setColor(baseEmbedColor())
+        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter} (chapter intro)`)
+        .setDescription(body + hint)
+        .setURL(process.env.WEBSITE)
+        .setFooter(standardFooter(commentator.label));
+}
+
+// Chapter-level commentary path. Tyndale has no chapter intros (skip); Keil is
+// OT-only. Fall through remaining commentators in order and also expose a
+// SelectMenu so the user can swap commentators without leaving the reply.
 async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter, bookName }) {
     const isNT = bookId > 39;
-    const ordered = [
+    const availableIds = [
         'jamieson-fausset-brown',
         'john-gill',
         'matthew-henry',
@@ -92,7 +108,7 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
     ].filter(id => !(id === 'keil-delitzsch' && isNT));
 
     let found = null;
-    for (const id of ordered) {
+    for (const id of availableIds) {
         const row = await commentaryWrapper.getChapterCommentary(id, bookCodes, chapter);
         if (row?.introduction) {
             found = { commentatorId: id, text: row.introduction };
@@ -107,21 +123,71 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
         });
     }
 
-    const commentator = COMMENTATORS.find(c => c.id === found.commentatorId);
-    const truncated = found.text.length > COMMENTARY_MAX_CHARS;
-    const body = truncated ? found.text.substring(0, COMMENTARY_MAX_CHARS - 3) + '...' : found.text;
-    const hint = truncated
-        ? `\n\n*Truncated. Run \`/commentary book:${bookName} chapter:${chapter} commentator:${found.commentatorId}\` for the full text.*`
-        : '';
+    const available = COMMENTATORS.filter(c => availableIds.includes(c.id));
+    let currentId = found.commentatorId;
+    const current = COMMENTATORS.find(c => c.id === currentId);
 
-    const embed = new EmbedBuilder()
-        .setColor(baseEmbedColor())
-        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter} (chapter intro)`)
-        .setDescription(body + hint)
-        .setURL(process.env.WEBSITE)
-        .setFooter(standardFooter(commentator.label));
+    await interaction.reply({
+        embeds: [buildChapterCommentaryEmbed({ commentator: current, text: found.text, bookName, chapter })],
+        components: [buildCommentarySelect({ availableCommentators: available, currentId })],
+        flags: MessageFlags.Ephemeral
+    });
 
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    try {
+        const message = await interaction.fetchReply();
+        const filter = i => i.user.id === interaction.user.id && i.customId === 'cmtr_select';
+        const collector = message.createMessageComponentCollector({
+            filter,
+            componentType: ComponentType.StringSelect,
+            time: COLLECTOR_TIMEOUT_MS
+        });
+
+        collector.on('collect', async i => {
+            try {
+                await i.deferUpdate();
+                const pickedId = i.values[0];
+                const picked = COMMENTATORS.find(c => c.id === pickedId);
+                if (!picked) return;
+
+                const row = await commentaryWrapper.getChapterCommentary(pickedId, bookCodes, chapter);
+                if (!row?.introduction) {
+                    const noDataEmbed = new EmbedBuilder()
+                        .setColor(baseEmbedColor())
+                        .setTitle(`📚 ${picked.label}: ${bookName} ${chapter} (chapter intro)`)
+                        .setDescription(`*${picked.label} doesn't have a chapter-level introduction for **${bookName} ${chapter}**. Pick another commentator from the dropdown.*`)
+                        .setURL(process.env.WEBSITE)
+                        .setFooter(standardFooter(picked.label));
+                    await i.editReply({
+                        embeds: [noDataEmbed],
+                        components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
+                    });
+                    return;
+                }
+
+                currentId = pickedId;
+                await i.editReply({
+                    embeds: [buildChapterCommentaryEmbed({ commentator: picked, text: row.introduction, bookName, chapter })],
+                    components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
+                });
+            } catch (err) {
+                logger.error(`[OpenVerse ChapterCommentary] Collector error: ${err.message}`);
+            }
+        });
+
+        collector.on('end', async () => {
+            try {
+                await interaction.editReply({
+                    components: [buildCommentarySelect({ availableCommentators: available, currentId, disabled: true })]
+                });
+            } catch (err) {
+                if (err.code !== 10008 && err.code !== 10062) {
+                    logger.error(`[OpenVerse ChapterCommentary] End error: ${err.message}`);
+                }
+            }
+        });
+    } catch (err) {
+        logger.error(`[OpenVerse ChapterCommentary] Setup error: ${err.message}`);
+    }
 }
 
 async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId = 'jamieson-fausset-brown' }) {
