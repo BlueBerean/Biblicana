@@ -9,4 +9,7 @@ data/new_data
 data/dictionary.sqlite
 data/extrabiblical_data.sqlite
 data/person_places.db
+data/cross-references.sqlite
+data/categories.sqlite
+data/clean_commentary.db
 data/.DS_Store

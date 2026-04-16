@@ -20,6 +20,93 @@ const dictionaryPromise = (async () => {
     return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
 })();
 
+const crossRefPromise = (async () => {
+    const filePath = path.join(__dirname, '../..', 'data', 'cross-references.sqlite');
+    return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
+})();
+
+const categoriesPromise = (async () => {
+    const filePath = path.join(__dirname, '../..', 'data', 'categories.sqlite');
+    return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
+})();
+
+const commentaryPromise = (async () => {
+    const filePath = path.join(__dirname, '../..', 'data', 'clean_commentary.db');
+    return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
+})();
+
+// TSK cross_references.source_book uses Roman numerals ("I Samuel", "II Kings")
+// and "Revelation of John" instead of the Arabic numerals numbersToBook provides.
+// Target column uses Arabic, so only source-side lookups need conversion.
+const TSK_SOURCE_BOOK_OVERRIDES = {
+    '1 Samuel': 'I Samuel',
+    '2 Samuel': 'II Samuel',
+    '1 Kings': 'I Kings',
+    '2 Kings': 'II Kings',
+    '1 Chronicles': 'I Chronicles',
+    '2 Chronicles': 'II Chronicles',
+    '1 Corinthians': 'I Corinthians',
+    '2 Corinthians': 'II Corinthians',
+    '1 Thessalonians': 'I Thessalonians',
+    '2 Thessalonians': 'II Thessalonians',
+    '1 Timothy': 'I Timothy',
+    '2 Timothy': 'II Timothy',
+    '1 Peter': 'I Peter',
+    '2 Peter': 'II Peter',
+    '1 John': 'I John',
+    '2 John': 'II John',
+    '3 John': 'III John',
+    'Revelation': 'Revelation of John',
+};
+
+export function toTSKSourceBook(canonicalName) {
+    return TSK_SOURCE_BOOK_OVERRIDES[canonicalName] || canonicalName;
+}
+
+// Map numbersToBook id -> 3-letter uppercase bookId used by clean_commentary.db.
+// (OSIS-like convention.)
+const BOOKID_TO_OSIS3 = {
+    1: 'GEN', 2: 'EXO', 3: 'LEV', 4: 'NUM', 5: 'DEU',
+    6: 'JOS', 7: 'JDG', 8: 'RUT', 9: '1SA', 10: '2SA',
+    11: '1KI', 12: '2KI', 13: '1CH', 14: '2CH', 15: 'EZR',
+    16: 'NEH', 17: 'EST', 18: 'JOB', 19: 'PSA', 20: 'PRO',
+    21: 'ECC', 22: 'SNG', 23: 'ISA', 24: 'JER', 25: 'LAM',
+    26: 'EZK', 27: 'DAN', 28: 'HOS', 29: 'JOL', 30: 'AMO',
+    31: 'OBA', 32: 'JON', 33: 'MIC', 34: 'NAM', 35: 'HAB',
+    36: 'ZEP', 37: 'HAG', 38: 'ZEC', 39: 'MAL', 40: 'MAT',
+    41: 'MRK', 42: 'LUK', 43: 'JHN', 44: 'ACT', 45: 'ROM',
+    46: '1CO', 47: '2CO', 48: 'GAL', 49: 'EPH', 50: 'PHP',
+    51: 'COL', 52: '1TH', 53: '2TH', 54: '1TI', 55: '2TI',
+    56: 'TIT', 57: 'PHM', 58: 'HEB', 59: 'JAS', 60: '1PE',
+    61: '2PE', 62: '1JN', 63: '2JN', 64: '3JN', 65: 'JUD',
+    66: 'REV',
+};
+
+// Four books also have mixed-case codes used by one commentator
+// (same book, different code — query both to match either)
+const BOOKID_ALT_CODES = {
+    26: 'Ezek',
+    34: 'Nah',
+    50: 'Phil',
+    57: 'Phlm',
+};
+
+export function toCommentaryBookCodes(bookId) {
+    const primary = BOOKID_TO_OSIS3[bookId];
+    if (!primary) return [];
+    const alt = BOOKID_ALT_CODES[bookId];
+    return alt ? [primary, alt] : [primary];
+}
+
+export const COMMENTATORS = [
+    { id: 'john-gill',              label: "John Gill" },
+    { id: 'matthew-henry',          label: "Matthew Henry" },
+    { id: 'adam-clarke',            label: "Adam Clarke" },
+    { id: 'jamieson-fausset-brown', label: "Jamieson-Fausset-Brown" },
+    { id: 'keil-delitzsch',         label: "Keil & Delitzsch (OT only)" },
+    { id: 'tyndale',                label: "Tyndale Open Study Notes" },
+];
+
 class FathersWrapper {
     constructor() { this.db = fathersPromise; }
 
@@ -86,10 +173,6 @@ class PlacesWrapper {
 class DictionaryWrapper {
     constructor() { this.db = dictionaryPromise; }
 
-    /**
-     * Two-tier search: exact term match first, then fallback to definition full-text.
-     * @returns {Promise<{results: Array, matchType: 'exact' | 'definition'}>}
-     */
     async search(term) {
         const db = await this.db;
 
@@ -106,7 +189,6 @@ class DictionaryWrapper {
             return { results: exactResults, matchType: 'exact' };
         }
 
-        // Shortest-definition-first bubbles up concise hits over long tangential mentions
         const fallbackResults = await db.all(
             `SELECT e.id, e.term, e.definition, s.name AS source_name
              FROM dictionary_entries e
@@ -121,8 +203,76 @@ class DictionaryWrapper {
     }
 }
 
-// Commentary DB stores some books under both singular/plural forms (e.g., psalms/psalm).
-// Returns the normalized lowercase-compact form(s) to query for a canonical book name.
+class CrossRefWrapper {
+    constructor() { this.db = crossRefPromise; }
+
+    async getForVerse(canonicalBookName, chapter, verse) {
+        const db = await this.db;
+        const sourceBook = toTSKSourceBook(canonicalBookName);
+        return db.all(
+            `SELECT target_book, target_chapter, target_verse_start, target_verse_end
+             FROM cross_references
+             WHERE source_book = ? AND source_chapter = ? AND source_verse = ?
+             ORDER BY id`,
+            [sourceBook, chapter, verse]
+        );
+    }
+}
+
+class CategoriesWrapper {
+    constructor() { this.db = categoriesPromise; }
+
+    async getRefsForTopic(topicName) {
+        const db = await this.db;
+        return db.all(
+            `SELECT cr.book, cr.chapter, cr.verse, cr.start_verse, cr.end_verse
+             FROM category_references cr
+             JOIN categories c ON c.id = cr.category_id
+             WHERE LOWER(c.name) = LOWER(?)
+             ORDER BY cr.id`,
+            [topicName]
+        );
+    }
+
+    async totalCategoryCount() {
+        const db = await this.db;
+        const row = await db.get(`SELECT COUNT(*) AS cnt FROM categories`);
+        return row?.cnt ?? 0;
+    }
+}
+
+class CommentaryWrapper {
+    constructor() { this.db = commentaryPromise; }
+
+    async getVerseCommentary(commentaryId, bookCodes, chapter, verse) {
+        const db = await this.db;
+        const codes = Array.isArray(bookCodes) ? bookCodes : [bookCodes];
+        if (codes.length === 0) return null;
+        const placeholders = codes.map(() => '?').join(',');
+        return db.get(
+            `SELECT text FROM CommentaryChapterVerse
+             WHERE commentaryId = ? AND bookId IN (${placeholders})
+             AND chapterNumber = ? AND number = ?
+             LIMIT 1`,
+            [commentaryId, ...codes, chapter, verse]
+        );
+    }
+
+    async getChapterCommentary(commentaryId, bookCodes, chapter) {
+        const db = await this.db;
+        const codes = Array.isArray(bookCodes) ? bookCodes : [bookCodes];
+        if (codes.length === 0) return null;
+        const placeholders = codes.map(() => '?').join(',');
+        return db.get(
+            `SELECT introduction FROM CommentaryChapter
+             WHERE commentaryId = ? AND bookId IN (${placeholders})
+             AND number = ?
+             LIMIT 1`,
+            [commentaryId, ...codes, chapter]
+        );
+    }
+}
+
 export function toCommentaryBookVariants(canonicalName) {
     if (!canonicalName) return [];
     const compact = canonicalName.toLowerCase().replace(/\s+/g, '');
@@ -134,3 +284,6 @@ export const fathersWrapper = new FathersWrapper();
 export const personsWrapper = new PersonsWrapper();
 export const placesWrapper = new PlacesWrapper();
 export const dictionaryWrapper = new DictionaryWrapper();
+export const crossRefWrapper = new CrossRefWrapper();
+export const categoriesWrapper = new CategoriesWrapper();
+export const commentaryWrapper = new CommentaryWrapper();
