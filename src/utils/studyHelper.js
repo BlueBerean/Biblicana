@@ -126,14 +126,19 @@ class FathersWrapper {
         const loc = chapter * 1_000_000 + verse;
         const placeholders = bookList.map(() => '?').join(',');
         const params = [...bookList, loc, loc];
-        let sql = `SELECT father_name, txt, source_url, source_title, location_start, location_end
-                   FROM commentary
-                   WHERE book IN (${placeholders}) AND location_start <= ? AND location_end >= ?`;
+        // LEFT JOIN father_meta pulls wiki_url + default_year inline so /fathers
+        // can show a Wikipedia button without a second round-trip per Father.
+        let sql = `SELECT c.father_name, c.txt, c.source_url, c.source_title,
+                          c.location_start, c.location_end,
+                          m.wiki_url, m.default_year
+                   FROM commentary c
+                   LEFT JOIN father_meta m ON m.name = c.father_name COLLATE NOCASE
+                   WHERE c.book IN (${placeholders}) AND c.location_start <= ? AND c.location_end >= ?`;
         if (fatherFilter) {
-            sql += ` AND father_name LIKE ?`;
+            sql += ` AND c.father_name LIKE ?`;
             params.push(`%${fatherFilter}%`);
         }
-        sql += ` ORDER BY father_name LIMIT 50`;
+        sql += ` ORDER BY c.father_name LIMIT 50`;
         return db.all(sql, params);
     }
 

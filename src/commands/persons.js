@@ -1,71 +1,167 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import { personsWrapper } from '../utils/studyHelper.js';
+import { getBookId } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_DESC_LENGTH = 2500;
-const MAX_FIELD_LENGTH = 1024;
+const MAX_RELATION_LIST_CHARS = 400;
 
-function generateFooter(page, maxPages) {
-    const pageText = maxPages > 1 ? ` | Result ${page + 1}/${maxPages}` : '';
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT}${pageText}`,
-        iconURL: process.env.EMBEDICONURL
-    };
-}
-
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage >= totalPages - 1)
-    );
-
-// "Mary_Magdalene_Mat.27.56" -> { name: "Mary Magdalene", firstRef: "Mat 27 56" }
+// uniqueName format: "PersonName_Book.Chapter.Verse" (e.g., "Mary_Magdalene_Mat.27.56").
+// Returns display name, human-readable firstRef, and structured { bookId, chapter, verse } when resolvable.
 function displayName(uniqueName) {
-    if (!uniqueName) return { name: 'Unknown', firstRef: '' };
+    if (!uniqueName) return { name: 'Unknown', firstRef: '', structured: null };
     const parts = uniqueName.split('_');
     const ref = parts[parts.length - 1];
     const name = parts.slice(0, -1).join(' ');
-    return { name, firstRef: ref.replace(/\./g, ' ') };
+
+    let structured = null;
+    const refParts = ref.split('.');
+    if (refParts.length === 3) {
+        const bookId = getBookId(refParts[0].toLowerCase());
+        const chapter = parseInt(refParts[1]);
+        const verse = parseInt(refParts[2]);
+        if (bookId && !isNaN(chapter) && !isNaN(verse)) {
+            structured = { bookId, chapter, verse };
+        }
+    }
+
+    return { name, firstRef: ref.replace(/\./g, ' '), structured };
+}
+
+function parseStrongs(uStrong) {
+    if (!uStrong) return null;
+    const match = uStrong.match(/^([HGhg])0*(\d+)/);
+    if (!match) return null;
+    const lexicon = match[1].toUpperCase() === 'G' ? 'Greek' : 'Hebrew';
+    return { lexicon, strongsId: `${match[1].toUpperCase()}${match[2]}` };
 }
 
 function parseJsonArray(field) {
     if (!field) return [];
     try {
         const parsed = JSON.parse(field);
-        if (Array.isArray(parsed)) return parsed.filter(x => x && x !== '');
-    } catch (e) { /* malformed JSON is non-fatal for display */ }
+        if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch (e) { /* non-fatal */ }
     return [];
 }
 
 function formatRelation(rawField) {
     if (!rawField) return null;
-    const d = displayName(rawField);
-    return d.name || null;
+    return displayName(rawField).name || null;
 }
 
 function formatRelations(jsonField) {
     const items = parseJsonArray(jsonField);
     if (items.length === 0) return null;
-    return items.map(item => displayName(item).name).join(', ');
+    const formatted = items.map(item => displayName(item).name).join(', ');
+    return formatted.length > MAX_RELATION_LIST_CHARS
+        ? formatted.substring(0, MAX_RELATION_LIST_CHARS - 1) + '…'
+        : formatted;
 }
 
 function truncate(text, max) {
     if (!text) return '';
     if (text.length <= max) return text;
-    return text.substring(0, max - 3) + '...';
+    return text.substring(0, max - 1) + '…';
+}
+
+function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const { name, firstRef, structured } = displayName(person.unique_name);
+    const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
+
+    // Facts block: first mention, tribe, sex, Strong's
+    const facts = [];
+    if (firstRef) facts.push(`**📖 First Mention:** ${firstRef}`);
+    if (person.tribe) facts.push(`**🏛 Tribe:** ${person.tribe}`);
+    if (person.sex) facts.push(`**Sex:** ${person.sex}`);
+    if (person.uStrong) facts.push(`**Strong's:** ${person.uStrong}`);
+
+    // Family relations
+    const family = [];
+    const father = formatRelation(person.father);
+    const mother = formatRelation(person.mother);
+    if (father) family.push(`**Father:** ${father}`);
+    if (mother) family.push(`**Mother:** ${mother}`);
+    const siblings = formatRelations(person.siblings);
+    const partners = formatRelations(person.partners);
+    const offspring = formatRelations(person.offspring);
+    if (siblings) family.push(`**Siblings:** ${siblings}`);
+    if (partners) family.push(`**Partners:** ${partners}`);
+    if (offspring) family.push(`**Offspring:** ${offspring}`);
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 👤 ${name}${pageInfo}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            truncate(person.ext_description || person.short_description || '*No description available.*', MAX_DESC_LENGTH)
+        ));
+
+    if (facts.length > 0) {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(facts.join('\n')));
+    }
+    if (family.length > 0) {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(family.join('\n')));
+    }
+
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` | Result ${pageIdx + 1}/${totalPages}` : ''}`
+    ));
+
+    const components = [container];
+
+    // Row 1 — in-app actions
+    const actionButtons = [];
+    if (structured) {
+        actionButtons.push(new ButtonBuilder()
+            .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
+            .setLabel('Open first mention')
+            .setEmoji({ name: '📖' })
+            .setStyle(ButtonStyle.Secondary));
+    }
+    const strongs = parseStrongs(person.uStrong);
+    if (strongs) {
+        actionButtons.push(new ButtonBuilder()
+            .setCustomId(`strongs:${strongs.lexicon}:${strongs.strongsId}`)
+            .setLabel('Define')
+            .setEmoji({ name: '📚' })
+            .setStyle(ButtonStyle.Secondary));
+    }
+    if (actionButtons.length > 0) {
+        components.push(new ActionRowBuilder().addComponents(...actionButtons));
+    }
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+
+    return components;
 }
 
 export default {
@@ -82,97 +178,79 @@ export default {
                 .setMaxLength(100)),
 
     async execute(interaction) {
-        await interaction.deferReply();
+        const rawName = swearWordFilter(interaction.options.getString('name').trim());
+        if (!rawName) {
+            return interaction.reply({ content: 'Please provide a valid name.', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawName = swearWordFilter(interaction.options.getString('name').trim());
-            if (!rawName) {
-                return interaction.editReply({ content: 'Please provide a valid name.', flags: MessageFlags.Ephemeral });
-            }
-
             logger.info(`[Persons Command] Search: "${rawName}"`);
             const results = await personsWrapper.search(rawName);
 
             if (!results || results.length === 0) {
                 return interaction.editReply({
-                    content: `❌ No biblical figure found matching "${rawName}". Try names like Aaron, Abraham, David, Mary, Peter.`,
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No biblical figure found matching "${rawName}". Try names like Aaron, Abraham, David, Mary, Peter.`
+                    )]
                 });
             }
 
             logger.info(`[Persons Command] Found ${results.length} match(es)`);
 
-            let currentPage = 0;
+            let pageIdx = 0;
             const totalPages = results.length;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            const flags = MessageFlags.IsComponentsV2;
 
-            const buildEmbed = (idx) => {
-                const p = results[idx];
-                const { name, firstRef } = displayName(p.unique_name);
-
-                const embed = new EmbedBuilder()
-                    .setTitle(`👤 ${name}`)
-                    .setDescription(truncate(p.ext_description || p.short_description || 'No description available.', MAX_DESC_LENGTH))
-                    .setColor(embedColor)
-                    .setURL(process.env.WEBSITE);
-
-                const fields = [];
-                if (firstRef) fields.push({ name: '📖 First Mention', value: firstRef, inline: true });
-                if (p.tribe) fields.push({ name: '🏛 Tribe', value: p.tribe, inline: true });
-                if (p.sex) fields.push({ name: 'Sex', value: p.sex, inline: true });
-                if (p.uStrong) fields.push({ name: "Strong's", value: p.uStrong, inline: true });
-
-                const father = formatRelation(p.father);
-                const mother = formatRelation(p.mother);
-                if (father) fields.push({ name: 'Father', value: father, inline: true });
-                if (mother) fields.push({ name: 'Mother', value: mother, inline: true });
-
-                const siblings = formatRelations(p.siblings);
-                const partners = formatRelations(p.partners);
-                const offspring = formatRelations(p.offspring);
-                if (siblings) fields.push({ name: 'Siblings', value: truncate(siblings, MAX_FIELD_LENGTH), inline: false });
-                if (partners) fields.push({ name: 'Partners', value: truncate(partners, MAX_FIELD_LENGTH), inline: false });
-                if (offspring) fields.push({ name: 'Offspring', value: truncate(offspring, MAX_FIELD_LENGTH), inline: false });
-
-                embed.addFields(fields).setFooter(generateFooter(idx, totalPages));
-                return embed;
-            };
-
-            const message = await interaction.editReply({
-                embeds: [buildEmbed(currentPage)],
-                components: totalPages > 1 ? [createActionRow(currentPage, totalPages)] : []
+            await interaction.editReply({
+                flags,
+                components: buildPersonPage({ person: results[pageIdx], pageIdx, totalPages })
             });
 
             if (totalPages <= 1) return;
 
-            const filter = i => i.user.id === interaction.user.id;
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
             const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_back') currentPage = Math.max(0, currentPage - 1);
-                    else if (i.customId === 'page_next') currentPage = Math.min(totalPages - 1, currentPage + 1);
-                    await i.editReply({ embeds: [buildEmbed(currentPage)], components: [createActionRow(currentPage, totalPages)] });
-                } catch (collectError) {
-                    logger.error(`[Persons Command] Collector error: ${collectError}`);
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildPersonPage({ person: results[pageIdx], pageIdx, totalPages })
+                    });
+                } catch (err) {
+                    logger.error(`[Persons Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                const finalComponents = createActionRow(currentPage, totalPages, true);
-                message.edit({ components: [finalComponents] }).catch(e => {
-                    if (e.code !== 10008) logger.error(`[Persons Command] Error disabling components: ${e}`);
-                });
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildPersonPage({ person: results[pageIdx], pageIdx, totalPages, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Persons Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
             logger.error(`[Persons Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                await interaction.editReply({ content: '❌ Sorry, an unexpected error occurred.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ Sorry, an unexpected error occurred.`)]
+                });
             } catch (replyError) {
-                if (replyError.code !== 10062 && replyError.code !== 40060) {
-                    logger.error(`[Persons Command] Failed to send final error reply: ${replyError}`);
-                }
+                logger.error(`[Persons Command] Failed to send error reply: ${replyError}`);
             }
         }
     }

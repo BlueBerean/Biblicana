@@ -1,36 +1,64 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import { dictionaryWrapper } from '../utils/studyHelper.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_CHUNK = 4000;
+const MAX_CHARS_PER_CHUNK = 3800;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 
-function generateFooter(page, maxPages, matchType) {
-    const matchLabel = matchType === 'definition' ? ' | Fallback match' : '';
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT} | Page ${page + 1}/${maxPages}${matchLabel}`,
-        iconURL: process.env.EMBEDICONURL
-    };
-}
+function buildDictionaryPage({ page, pageIdx, totalPages, matchType, rawWord, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
 
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === totalPages - 1)
-    );
+    const baseTitle = matchType === 'exact'
+        ? `📖 ${page.term} — ${page.source}`
+        : `📖 "${page.term}" (mentions "${rawWord}") — ${page.source}`;
+    const chunkSuffix = page.totalChunksForResult > 1
+        ? ` (${page.chunkIdx + 1}/${page.totalChunksForResult})`
+        : '';
+    const pageInfo = totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : '';
+
+    const matchLabel = matchType === 'definition' ? ' | Fallback match' : '';
+    const footerText = `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${page.source}${matchLabel}${pageInfo}`;
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${baseTitle}${chunkSuffix}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(page.chunk))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerText));
+
+    const components = [container];
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+
+    return components;
+}
 
 export default {
     data: new SlashCommandBuilder()
@@ -46,31 +74,30 @@ export default {
                 .setMaxLength(100)),
 
     async execute(interaction) {
-        await interaction.deferReply();
+        const rawWord = interaction.options.getString('word').trim();
+        const searchWord = swearWordFilter(rawWord);
+        if (!searchWord) {
+            return interaction.reply({ content: 'Please provide a valid word.', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawWord = interaction.options.getString('word').trim();
-            const searchWord = swearWordFilter(rawWord);
-
-            if (!searchWord) {
-                return interaction.editReply({ content: 'Please provide a valid word.', flags: MessageFlags.Ephemeral });
-            }
-
             logger.info(`[Dictionary Command] Looking up: "${searchWord}"`);
-
             const { results, matchType } = await dictionaryWrapper.search(searchWord);
 
             if (!results || results.length === 0) {
-                logger.warn(`[Dictionary Command] No results for "${searchWord}"`);
                 return interaction.editReply({
-                    content: `❌ No definition found for "${rawWord}" in Easton's or Smith's Bible Dictionary.`,
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No definition found for "${rawWord}" in Easton's or Smith's Bible Dictionary.`
+                    )]
                 });
             }
 
             logger.info(`[Dictionary Command] Found ${results.length} result(s), matchType=${matchType}`);
 
-            // Flatten: each page = one chunk of one result's definition
+            // Flatten: one page per chunk per result
             const pages = [];
             for (const r of results) {
                 const chunks = splitString(r.definition || '(No definition text)', MAX_CHARS_PER_CHUNK);
@@ -86,77 +113,63 @@ export default {
             }
 
             if (pages.length === 0) {
-                logger.error(`[Dictionary Command] No pages produced for "${searchWord}"`);
-                return interaction.editReply({ content: 'An error occurred while formatting the definition.', flags: MessageFlags.Ephemeral });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ An error occurred while formatting the definition.`)]
+                });
             }
 
             const totalPages = pages.length;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            const buildEmbed = (idx) => {
-                const p = pages[idx];
-                const baseTitle = matchType === 'exact'
-                    ? `📖 ${p.term} — ${p.source}`
-                    : `📖 "${p.term}" (mentions "${rawWord}") — ${p.source}`;
-                const chunkSuffix = p.totalChunksForResult > 1
-                    ? ` (${p.chunkIdx + 1}/${p.totalChunksForResult})`
-                    : '';
-                return new EmbedBuilder()
-                    .setTitle(`${baseTitle}${chunkSuffix}`)
-                    .setDescription(p.chunk)
-                    .setColor(embedColor)
-                    .setURL(process.env.WEBSITE)
-                    .setFooter(generateFooter(idx, totalPages, matchType));
-            };
-
-            let currentPageIndex = 0;
-            const message = await interaction.editReply({
-                embeds: [buildEmbed(currentPageIndex)],
-                components: totalPages > 1 ? [createActionRow(currentPageIndex, totalPages)] : []
+            await interaction.editReply({
+                flags,
+                components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord })
             });
 
             if (totalPages <= 1) return;
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                componentType: ComponentType.Button,
-                time: COLLECTOR_TIMEOUT_MS
-            });
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_back') {
-                        currentPageIndex = Math.max(0, currentPageIndex - 1);
-                    } else if (i.customId === 'page_next') {
-                        currentPageIndex = Math.min(totalPages - 1, currentPageIndex + 1);
-                    }
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
                     await i.editReply({
-                        embeds: [buildEmbed(currentPageIndex)],
-                        components: [createActionRow(currentPageIndex, totalPages)]
+                        flags,
+                        components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord })
                     });
-                } catch (collectError) {
-                    logger.error(`[Dictionary Command] Pagination error: ${collectError}`);
+                } catch (err) {
+                    logger.error(`[Dictionary Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[Dictionary Command] Pagination collector ended for "${searchWord}"`);
-                const finalComponents = createActionRow(currentPageIndex, totalPages, true);
-                message.edit({ components: [finalComponents] }).catch(editError => {
-                    if (editError.code !== 10008) logger.error(`[Dictionary Command] Error disabling buttons: ${editError}`);
-                });
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Dictionary Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
             logger.error(`[Dictionary Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: 'An unexpected error occurred. Please try again later.',
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ An unexpected error occurred.`)]
                 });
             } catch (replyError) {
-                logger.error(`[Dictionary Command] Failed to send final error reply: ${replyError}`);
+                logger.error(`[Dictionary Command] Failed to send error reply: ${replyError}`);
             }
         }
     }

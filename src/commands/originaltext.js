@@ -1,4 +1,14 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import axios from 'axios';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -6,31 +16,66 @@ import swearWordFilter from '../utils/filter.js';
 import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_PAGE = 4000;
+const MAX_CHARS_PER_PAGE = 3800;
 const COLLECTOR_TIMEOUT_MS = 600_000;
+const HEBREW_COLOR = 0x3498DB;
+const GREEK_COLOR = 0x9B59B6;
 
-function generateFooter(translation = "BSB", page, maxPages) {
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()} | Page ${page + 1}/${maxPages}`,
-        iconURL: process.env.EMBEDICONURL
-    };
+function buildOriginalTextPage({
+    bodyChunks, pageIdx, totalPages, bookId, bookName, chapter, verse,
+    translation, englishVerseText, languageType, disableNav = false
+}) {
+    const accentColor = languageType === 'Hebrew' ? HEBREW_COLOR : GREEK_COLOR;
+    const pageInfo = totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `## 📜 Original Text — ${bookName} ${chapter}:${verse}${pageInfo}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `**${translation.toUpperCase()} Translation**\n${englishVerseText}`
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(bodyChunks[pageIdx]))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${languageType}${totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : ''}`
+        ));
+
+    const components = [container];
+
+    // Chain buttons: jump to /bible or /interlinear for this verse
+    components.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`openverse:bible:${bookId}:${chapter}:${verse}`)
+            .setLabel('Open passage')
+            .setEmoji({ name: '📖' })
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`openverse:interlinear:${bookId}:${chapter}:${verse}`)
+            .setLabel('Interlinear')
+            .setEmoji({ name: '📚' })
+            .setStyle(ButtonStyle.Secondary)
+    ));
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+
+    return components;
 }
-
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === totalPages - 1)
-    );
 
 export default {
     data: new SlashCommandBuilder()
@@ -64,26 +109,25 @@ export default {
                 )),
 
     async execute(interaction, database) {
-        await interaction.deferReply();
+        const rawBookInput = interaction.options.getString('book').trim();
+        const chapterInput = interaction.options.getString('chapter');
+        const verseInput = interaction.options.getNumber('verse');
+        const rawBook = swearWordFilter(rawBookInput);
+
+        const chapter = parseInt(chapterInput);
+        if (isNaN(chapter) || chapter < 1) {
+            return interaction.reply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
+        }
+
+        const bookId = getBookId(rawBook);
+        const bookName = numbersToBook.get(bookId);
+        if (!bookId || !bookName) {
+            return interaction.reply({ content: `Invalid book: "${rawBook}".`, flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawBookInput = interaction.options.getString('book').trim();
-            const chapterInput = interaction.options.getString('chapter');
-            const verseInput = interaction.options.getNumber('verse');
-            const rawBook = swearWordFilter(rawBookInput);
-
-            const chapter = parseInt(chapterInput);
-            if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
-            }
-
-            const bookId = getBookId(rawBook);
-            const bookName = numbersToBook.get(bookId);
-            if (!bookId || !bookName) {
-                logger.warn(`[OriginalText Command] Invalid book: ${rawBook}`);
-                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, flags: MessageFlags.Ephemeral });
-            }
-
             let translation = 'BSB';
             try {
                 const userPref = await database.getUserValue(interaction.user.id);
@@ -113,152 +157,155 @@ export default {
 
             if (englishVerseResult.status === 'rejected' || !englishVerseResult.value || englishVerseResult.value.length === 0 || !englishVerseResult.value[0][translation]) {
                 const reason = englishVerseResult.reason?.message || 'Not Found or Translation Unavailable';
-                logger.error(`[OriginalText Command] Failed to fetch English verse ${bookName} ${chapter}:${verseInput} (${translation}): ${reason}`);
-                return interaction.editReply({ content: `Sorry, I couldn't fetch the English text for ${bookName} ${chapter}:${verseInput} (${translation}). ${reason}`, flags: MessageFlags.Ephemeral });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Couldn't fetch the English text for ${bookName} ${chapter}:${verseInput} (${translation}). ${reason}`
+                    )]
+                });
             }
             const englishVerseText = englishVerseResult.value[0][translation];
 
             if (originalTextResult.status === 'rejected') {
-                logger.error(`[OriginalText Command] API request failed for verse ID ${verseId}: ${originalTextResult.reason?.message}`);
-                if (originalTextResult.reason?.response) {
-                    logger.error(`[OriginalText Command] API Error Status: ${originalTextResult.reason.response.status}`);
-                    logger.error(`[OriginalText Command] API Error Data: ${JSON.stringify(originalTextResult.reason.response.data)}`);
-                }
-                return interaction.editReply({ content: 'Sorry, failed to connect to the original text source.', flags: MessageFlags.Ephemeral });
+                logger.error(`[OriginalText Command] API request failed: ${originalTextResult.reason?.message}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Couldn't connect to the original text source.`
+                    )]
+                });
             }
 
-            let wordDataRaw = originalTextResult.value?.data;
             let wordData;
             try {
-                if (typeof wordDataRaw === 'string') {
-                    logger.debug("[OriginalText Command] API response was a string, attempting JSON parse.");
-                    wordData = JSON.parse(wordDataRaw);
-                } else {
-                    wordData = wordDataRaw;
-                }
+                const raw = originalTextResult.value?.data;
+                wordData = typeof raw === 'string' ? JSON.parse(raw) : raw;
                 if (!Array.isArray(wordData) || wordData.length === 0) {
                     throw new Error('Parsed data is not a non-empty array.');
                 }
             } catch (parseError) {
-                logger.error(`[OriginalText Command] Failed to parse original text data for ${verseId}: ${parseError.message}`);
-                logger.debug("[OriginalText Command] Raw original text response data:", wordDataRaw);
-                return interaction.editReply({ content: 'Sorry, received invalid data format from the original text source.', flags: MessageFlags.Ephemeral });
+                logger.error(`[OriginalText Command] Parse error: ${parseError.message}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Invalid data format from the original text source.`
+                    )]
+                });
             }
 
             const isNewTestament = bookId > 39;
-            const languageName = isNewTestament ? 'Greek' : 'Hebrew';
+            const languageType = isNewTestament ? 'Greek' : 'Hebrew';
             const languageEmoji = isNewTestament ? '🇬🇷' : '🕎';
 
-            let combinedContent = `**${bookName} ${chapter}:${verseInput} (${translation.toUpperCase()})**\n${englishVerseText}\n\n`;
-            combinedContent += `**${languageEmoji} ${languageName}:**\n${wordData.map(w => w.word || '').join(' ')}\n\n`;
+            let combinedContent = `**${languageEmoji} ${languageType} Text**\n\`\`\`${wordData.map(w => w.word || '').join(' ')}\`\`\`\n`;
 
-            let pronunciationSection = "";
+            let pronunciationSection = '';
             for (const word of wordData) {
                 try {
                     if (word.pronun) {
                         const pronunData = JSON.parse(word.pronun);
-                        pronunciationSection += `\`${word.word}\` - ${pronunData.dic_mod || pronunData.dic || 'N/A'}\n`;
+                        pronunciationSection += `\`${word.word}\` — ${pronunData.dic_mod || pronunData.dic || 'N/A'}\n`;
                     }
                 } catch (e) {
-                    logger.warn(`[OriginalText Command] Error parsing pronunciation for "${word.word}" (${verseId}): ${e.message}`);
-                    pronunciationSection += `\`${word.word}\` - (Error parsing pronunciation)\n`;
+                    pronunciationSection += `\`${word.word}\` — (Error parsing pronunciation)\n`;
                 }
             }
             if (pronunciationSection) {
-                combinedContent += `**🗣️ Pronunciation Guide:**\n${pronunciationSection}\n`;
+                combinedContent += `\n**🗣️ Pronunciation Guide**\n${pronunciationSection}`;
             }
 
-            let analysisSection = "";
+            let analysisSection = '';
             const strongsPrefix = isNewTestament ? 'G' : 'H';
             for (const word of wordData) {
-                const morph = word.morph ? `(\`${word.morph}\`)` : '';
-                analysisSection += `\`${word.word}\` - ${strongsPrefix}${word.strongs || 'N/A'} ${morph}\n`;
+                const morph = word.morph ? ` (\`${word.morph}\`)` : '';
+                analysisSection += `\`${word.word}\` — ${strongsPrefix}${word.strongs || 'N/A'}${morph}\n`;
             }
             if (analysisSection) {
-                combinedContent += `**📝 Word Analysis:**\n${analysisSection}\n`;
+                combinedContent += `\n**📝 Word Analysis**\n${analysisSection}`;
             }
 
-            let notesSection = "";
+            let notesSection = '';
             for (const word of wordData) {
                 if (word.notes) {
                     notesSection += `\`${word.word}\`: ${word.notes}\n`;
                 }
             }
             if (notesSection) {
-                combinedContent += `**📌 Notes:**\n${notesSection}\n`;
+                combinedContent += `\n**📌 Notes**\n${notesSection}`;
             }
 
-            combinedContent += `\n*For detailed Strong's definitions, use the /interlinear command.*`;
-
-            const pages = splitString(combinedContent, MAX_CHARS_PER_PAGE);
-
-            if (pages.length === 0) {
-                logger.error("[OriginalText Command] Failed to create pages from combined content.");
-                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the analysis.', flags: MessageFlags.Ephemeral });
+            const bodyChunks = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
+            if (bodyChunks.length === 0) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ An error occurred while formatting the analysis.`)]
+                });
             }
 
-            let currentPageIndex = 0;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            const totalPages = bodyChunks.length;
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            const embed = new EmbedBuilder()
-                .setTitle(`📜 Original Text Analysis - ${bookName} ${chapter}:${verseInput}`)
-                .setDescription(pages[currentPageIndex])
-                .setColor(embedColor)
-                .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(translation, currentPageIndex, pages.length));
-
-            const message = await interaction.editReply({
-                embeds: [embed],
-                components: pages.length > 1 ? [createActionRow(currentPageIndex, pages.length)] : []
+            await interaction.editReply({
+                flags,
+                components: buildOriginalTextPage({
+                    bodyChunks, pageIdx, totalPages,
+                    bookId, bookName, chapter, verse: verseInput,
+                    translation, englishVerseText, languageType
+                })
             });
 
-            if (pages.length <= 1) return;
+            if (totalPages <= 1) return;
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                componentType: ComponentType.Button,
-                time: COLLECTOR_TIMEOUT_MS
-            });
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
-                    } else if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1) % pages.length;
-                    }
-
-                    embed.setDescription(pages[currentPageIndex])
-                        .setFooter(generateFooter(translation, currentPageIndex, pages.length));
-
-                    await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
-                } catch (collectError) {
-                    logger.error(`[OriginalText Command] Error updating pagination: ${collectError}`);
-                    try { await i.followUp({ content: 'Error changing page.', flags: MessageFlags.Ephemeral }); } catch (followUpError) {
-                        logger.warn(`[OriginalText Command] Failed to send follow-up pagination error: ${followUpError.message}`);
-                    }
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildOriginalTextPage({
+                            bodyChunks, pageIdx, totalPages,
+                            bookId, bookName, chapter, verse: verseInput,
+                            translation, englishVerseText, languageType
+                        })
+                    });
+                } catch (err) {
+                    logger.error(`[OriginalText Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[OriginalText Command] Pagination collector ended for ${bookName} ${chapter}:${verseInput}`);
-                const timedOutRow = createActionRow(currentPageIndex, pages.length, true);
-                message.edit({ components: [timedOutRow] }).catch(editError => {
-                    if (editError.code !== 10008) {
-                        logger.error(`[OriginalText Command] Error disabling buttons: ${editError}`);
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildOriginalTextPage({
+                            bodyChunks, pageIdx, totalPages,
+                            bookId, bookName, chapter, verse: verseInput,
+                            translation, englishVerseText, languageType,
+                            disableNav: true
+                        })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[OriginalText Command] End error: ${err.message}`);
                     }
-                });
+                }
             });
         } catch (error) {
             logger.error(`[OriginalText Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                await interaction.editReply({ content: 'An unexpected error occurred. Please try again later.', embeds: [], components: [] });
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ An unexpected error occurred.`)]
+                });
             } catch (replyError) {
-                if (replyError.code !== 10062 && replyError.code !== 40060) {
-                    logger.error(`[OriginalText Command] Failed to send final error reply: ${replyError}`);
-                }
+                logger.error(`[OriginalText Command] Failed to send error reply: ${replyError}`);
             }
         }
     }
