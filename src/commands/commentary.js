@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
@@ -48,6 +48,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('commentary')
         .setDescription("Look up Bible commentary (verse or chapter level) from classic commentators")
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book you want commentary for')
@@ -82,7 +84,7 @@ export default {
             if (!commentator) {
                 return interaction.editReply({
                     content: `Unknown commentator selection.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -90,14 +92,14 @@ export default {
             if (isNaN(chapter) || chapter < 1) {
                 return interaction.editReply({
                     content: 'Please provide a valid chapter number (must be 1 or greater).',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
             if (verseInput !== null && (!Number.isInteger(verseInput) || verseInput < 1)) {
                 return interaction.editReply({
                     content: 'If provided, verse must be a whole number (1 or greater).',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -106,7 +108,7 @@ export default {
             if (!bookId || !bookName) {
                 return interaction.editReply({
                     content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -114,7 +116,7 @@ export default {
             if (bookCodes.length === 0) {
                 return interaction.editReply({
                     content: `Book "${bookName}" isn't supported by the commentary database.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -133,12 +135,12 @@ export default {
                     if (commentatorId === 'tyndale') {
                         return interaction.editReply({
                             content: `**Tyndale Open Study Notes** doesn't include chapter-level introductions. Try adding a verse number, or pick a different commentator (Gill, Matthew Henry, Clarke, etc.).`,
-                            ephemeral: true
+                            flags: MessageFlags.Ephemeral
                         });
                     }
                     return interaction.editReply({
                         content: `${commentator.label} doesn't have a chapter-level introduction for **${bookName} ${chapter}**. Try adding a verse number, or a different commentator.`,
-                        ephemeral: true
+                        flags: MessageFlags.Ephemeral
                     });
                 }
             } else {
@@ -149,7 +151,7 @@ export default {
                 if (!rawText) {
                     return interaction.editReply({
                         content: `${commentator.label} doesn't have commentary on **${titleRef}**. Try a different commentator or check the reference.`,
-                        ephemeral: true
+                        flags: MessageFlags.Ephemeral
                     });
                 }
 
@@ -158,7 +160,7 @@ export default {
 
             const chunks = splitString(rawText, MAX_CHARS_PER_CHUNK);
             if (chunks.length === 0) {
-                return interaction.editReply({ content: `Failed to format commentary for ${titleRef}.`, ephemeral: true });
+                return interaction.editReply({ content: `Failed to format commentary for ${titleRef}.`, flags: MessageFlags.Ephemeral });
             }
 
             const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
@@ -202,7 +204,7 @@ export default {
                 } catch (collectError) {
                     logger.error(`[Commentary Command] Error updating pagination: ${collectError}`);
                     try {
-                        await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
                     } catch (followUpError) {
                         logger.error(`[Commentary Command] Error sending follow-up after pagination error: ${followUpError}`);
                     }
@@ -221,7 +223,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: 'Sorry, there was an error fetching or processing the commentary. Please try again later.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 logger.error(`[Commentary Command] Failed to send error reply: ${replyError}`);

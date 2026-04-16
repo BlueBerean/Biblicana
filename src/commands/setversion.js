@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
 import 'dotenv/config';
 
@@ -6,6 +6,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('setversion')
         .setDescription('Set your preferred default Bible translation.')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('translation')
                 .setDescription('Your preferred translation')
@@ -63,14 +65,14 @@ export default {
                     iconURL: process.env.EMBEDICONURL
                 });
 
-            await interaction.reply({ embeds: [embed], ephemeral: true });
+            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
             logger.info(`[SetVersion Command] Successfully set default translation for ${userName} (${userId}) to ${translation}`);
         } catch (error) {
             logger.error(`[SetVersion Command] Error setting translation for ${userName} (${userId}) to ${translation}: ${error.message}`, error.stack);
             try {
                 await interaction.reply({
                     content: '❌ Sorry, there was an error saving your preference. Please try again later.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {

@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import swearWordFilter from '../utils/filter.js';
 import { strongsWrapper } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -36,6 +36,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('define')
         .setDescription('Look up the meaning of words in Hebrew or Greek')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('lexiconid')
                 .setDescription('Choose Hebrew or Greek lexicon')
@@ -59,7 +61,7 @@ export default {
             const word = swearWordFilter(rawWord);
 
             if (!word) {
-                return interaction.editReply({ content: 'Please provide a valid word or Strong\'s number.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid word or Strong\'s number.', flags: MessageFlags.Ephemeral });
             }
 
             const strongsRegex = /^[HGhg]\d+$/i;
@@ -83,21 +85,21 @@ export default {
                 }
             } catch (fetchError) {
                 logger.error(`[Define Command] Error fetching from strongsWrapper (${queryType}: ${word}, Lexicon: ${lexiconId}): ${fetchError}`);
-                return interaction.editReply({ content: 'Sorry, there was an error communicating with the lexicon database. Please try again later.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, there was an error communicating with the lexicon database. Please try again later.', flags: MessageFlags.Ephemeral });
             }
 
             if (!results || results.length === 0) {
                 logger.warn(`[Define Command] No results found for ${queryType}: ${word} in ${lexiconId}`);
                 return interaction.editReply({
                     content: `❌ No results found for "${word}" in the ${lexiconId} lexicon.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
             results = results.filter(item => item && item.strongs);
             if (results.length === 0) {
                 logger.warn(`[Define Command] Initial results found but filtered out as invalid for ${queryType}: ${word} in ${lexiconId}`);
-                return interaction.editReply({ content: 'Found potential matches, but couldn\'t process them. Please check your input.', ephemeral: true });
+                return interaction.editReply({ content: 'Found potential matches, but couldn\'t process them. Please check your input.', flags: MessageFlags.Ephemeral });
             }
 
             const pages = [];
@@ -142,7 +144,7 @@ export default {
 
             if (pages.length === 0) {
                 logger.error(`[Define Command] Processing resulted in zero pages for ${queryType}: ${word}`);
-                return interaction.editReply({ content: 'An unexpected error occurred while formatting the results.', ephemeral: true });
+                return interaction.editReply({ content: 'An unexpected error occurred while formatting the results.', flags: MessageFlags.Ephemeral });
             }
 
             let currentPageIndex = 0;
@@ -177,7 +179,7 @@ export default {
                 } catch (collectError) {
                     logger.error(`[Define Command] Error updating pagination: ${collectError}`);
                     try {
-                        await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
                     } catch { /* Ignore */ }
                 }
             });
@@ -194,7 +196,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: 'An unexpected error occurred while processing your request. Please try again later.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 logger.error(`[Define Command] Failed to send error reply: ${replyError}`);

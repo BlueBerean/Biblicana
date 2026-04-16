@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { dictionaryWrapper } from '../utils/studyHelper.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
@@ -36,6 +36,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('dictionary')
         .setDescription("Look up a word in Easton's and Smith's Bible Dictionaries")
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('word')
                 .setDescription('The word to look up')
@@ -51,7 +53,7 @@ export default {
             const searchWord = swearWordFilter(rawWord);
 
             if (!searchWord) {
-                return interaction.editReply({ content: 'Please provide a valid word.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid word.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[Dictionary Command] Looking up: "${searchWord}"`);
@@ -62,7 +64,7 @@ export default {
                 logger.warn(`[Dictionary Command] No results for "${searchWord}"`);
                 return interaction.editReply({
                     content: `❌ No definition found for "${rawWord}" in Easton's or Smith's Bible Dictionary.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -85,7 +87,7 @@ export default {
 
             if (pages.length === 0) {
                 logger.error(`[Dictionary Command] No pages produced for "${searchWord}"`);
-                return interaction.editReply({ content: 'An error occurred while formatting the definition.', ephemeral: true });
+                return interaction.editReply({ content: 'An error occurred while formatting the definition.', flags: MessageFlags.Ephemeral });
             }
 
             const totalPages = pages.length;
@@ -151,7 +153,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: 'An unexpected error occurred. Please try again later.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 logger.error(`[Dictionary Command] Failed to send final error reply: ${replyError}`);

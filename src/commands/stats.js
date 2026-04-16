@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
 import 'dotenv/config';
 
@@ -21,7 +21,9 @@ function formatUptime(ms) {
 export default {
     data: new SlashCommandBuilder()
         .setName('stats')
-        .setDescription('Displays bot and server statistics.'),
+        .setDescription('Displays bot and server statistics.')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
     async execute(interaction) {
         try {
             const client = interaction.client;
@@ -61,7 +63,7 @@ export default {
             try {
                 await interaction.reply({
                     content: '❌ Sorry, there was an error fetching the stats.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {

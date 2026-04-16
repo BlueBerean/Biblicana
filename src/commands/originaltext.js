@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -36,6 +36,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('originaltext')
         .setDescription('View the original Hebrew/Greek text for a Bible verse')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book you want to see the original text for')
@@ -72,14 +74,14 @@ export default {
 
             const chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
+                return interaction.editReply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
             }
 
             const bookId = getBookId(rawBook);
             const bookName = numbersToBook.get(bookId);
             if (!bookId || !bookName) {
                 logger.warn(`[OriginalText Command] Invalid book: ${rawBook}`);
-                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, ephemeral: true });
+                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, flags: MessageFlags.Ephemeral });
             }
 
             let translation = 'BSB';
@@ -112,7 +114,7 @@ export default {
             if (englishVerseResult.status === 'rejected' || !englishVerseResult.value || englishVerseResult.value.length === 0 || !englishVerseResult.value[0][translation]) {
                 const reason = englishVerseResult.reason?.message || 'Not Found or Translation Unavailable';
                 logger.error(`[OriginalText Command] Failed to fetch English verse ${bookName} ${chapter}:${verseInput} (${translation}): ${reason}`);
-                return interaction.editReply({ content: `Sorry, I couldn't fetch the English text for ${bookName} ${chapter}:${verseInput} (${translation}). ${reason}`, ephemeral: true });
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the English text for ${bookName} ${chapter}:${verseInput} (${translation}). ${reason}`, flags: MessageFlags.Ephemeral });
             }
             const englishVerseText = englishVerseResult.value[0][translation];
 
@@ -122,7 +124,7 @@ export default {
                     logger.error(`[OriginalText Command] API Error Status: ${originalTextResult.reason.response.status}`);
                     logger.error(`[OriginalText Command] API Error Data: ${JSON.stringify(originalTextResult.reason.response.data)}`);
                 }
-                return interaction.editReply({ content: 'Sorry, failed to connect to the original text source.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, failed to connect to the original text source.', flags: MessageFlags.Ephemeral });
             }
 
             let wordDataRaw = originalTextResult.value?.data;
@@ -140,7 +142,7 @@ export default {
             } catch (parseError) {
                 logger.error(`[OriginalText Command] Failed to parse original text data for ${verseId}: ${parseError.message}`);
                 logger.debug("[OriginalText Command] Raw original text response data:", wordDataRaw);
-                return interaction.editReply({ content: 'Sorry, received invalid data format from the original text source.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, received invalid data format from the original text source.', flags: MessageFlags.Ephemeral });
             }
 
             const isNewTestament = bookId > 39;
@@ -192,7 +194,7 @@ export default {
 
             if (pages.length === 0) {
                 logger.error("[OriginalText Command] Failed to create pages from combined content.");
-                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the analysis.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the analysis.', flags: MessageFlags.Ephemeral });
             }
 
             let currentPageIndex = 0;
@@ -234,7 +236,7 @@ export default {
                     await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
                 } catch (collectError) {
                     logger.error(`[OriginalText Command] Error updating pagination: ${collectError}`);
-                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch (followUpError) {
+                    try { await i.followUp({ content: 'Error changing page.', flags: MessageFlags.Ephemeral }); } catch (followUpError) {
                         logger.warn(`[OriginalText Command] Failed to send follow-up pagination error: ${followUpError.message}`);
                     }
                 }

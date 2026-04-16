@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -39,6 +39,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('bookinfo')
         .setDescription('Get detailed information about a book of the Bible')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book you want to learn about')
@@ -55,7 +57,7 @@ export default {
             if (!bookId) {
                 return interaction.editReply({
                     content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -173,7 +175,7 @@ export default {
                 } catch (collectError) {
                     logger.error(`[BookInfo Command] Error updating pagination: ${collectError}`);
                     try {
-                        await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
                     } catch (followUpError) {
                         logger.error(`[BookInfo Command] Error sending follow-up after pagination error: ${followUpError}`);
                     }
@@ -196,7 +198,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: 'Sorry, there was an error processing your request. The developers have been notified.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 logger.error(`[BookInfo Command] Failed to send error reply: ${replyError}`);

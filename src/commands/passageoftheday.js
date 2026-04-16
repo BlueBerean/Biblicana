@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { createRequire } from 'node:module';
 import logger from '../utils/logger.js';
 import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
@@ -53,6 +53,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('passageoftheday')
         .setDescription('Get the Bible passage selected for today')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('translation')
                 .setDescription('The translation to show the passage in (defaults to BSB)')
@@ -87,7 +89,7 @@ export default {
 
             if (!referenceString) {
                 logger.error(`[PassageOfTheDay Command] No reference found in VOTD.json for ${monthName} ${dayOfMonth}`);
-                return interaction.editReply({ content: 'Sorry, could not find today\'s passage in the schedule.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, could not find today\'s passage in the schedule.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[PassageOfTheDay Command] Today's reference from JSON: ${referenceString}`);
@@ -96,7 +98,7 @@ export default {
 
             if (!parsedRef) {
                 logger.error(`[PassageOfTheDay Command] Failed to parse reference string: ${referenceString}`);
-                return interaction.editReply({ content: 'Sorry, there was an error understanding today\'s passage reference.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, there was an error understanding today\'s passage reference.', flags: MessageFlags.Ephemeral });
             }
 
             const { bookId, chapter, startVerse, endVerse } = parsedRef;
@@ -114,7 +116,7 @@ export default {
                 }
             } catch (fetchError) {
                 logger.error(`[PassageOfTheDay Command] Error fetching verse text for ${bookName} ${chapter}:${startVerse}-${endVerse}: ${fetchError}`);
-                return interaction.editReply({ content: 'Sorry, I couldn\'t fetch the text for today\'s passage.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, I couldn\'t fetch the text for today\'s passage.', flags: MessageFlags.Ephemeral });
             }
 
             let formattedVerseText = "";
@@ -154,7 +156,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: '❌ Sorry, there was an unexpected error processing your request.',
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                     embeds: [], components: []
                 });
             } catch (replyError) {

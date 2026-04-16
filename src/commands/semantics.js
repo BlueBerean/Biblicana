@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
@@ -54,6 +54,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('semantics')
         .setDescription('Find semantic relations for a Biblical word or concept')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('word')
                 .setDescription('The word you want to find semantic relations for')
@@ -68,7 +70,7 @@ export default {
             const word = swearWordFilter(rawWord);
 
             if (!word) {
-                return interaction.editReply({ content: 'Please provide a valid word.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid word.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[Semantics Command] Looking up relations for: "${word}"`);
@@ -96,12 +98,12 @@ export default {
                 if (apiError.response) {
                     logger.error(`[Semantics Command] API Status: ${apiError.response.status}, Data: ${JSON.stringify(apiError.response.data)}`);
                 }
-                return interaction.editReply({ content: 'Sorry, failed to fetch semantic relations from the source.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, failed to fetch semantic relations from the source.', flags: MessageFlags.Ephemeral });
             }
 
             if (!apiResponseData || typeof apiResponseData !== 'object' || Object.keys(apiResponseData).length === 0) {
                 logger.warn(`[Semantics Command] No relations found or invalid format for "${word}".`);
-                return interaction.editReply({ content: `❌ No semantic relations found for "${word}". Try a different word or check spelling.`, ephemeral: true });
+                return interaction.editReply({ content: `❌ No semantic relations found for "${word}". Try a different word or check spelling.`, flags: MessageFlags.Ephemeral });
             }
 
             let combinedContent = `🔍 Exploring semantic relationships for **${rawWord}**\n\n`;
@@ -122,14 +124,14 @@ export default {
 
             if (!relationsFound) {
                 logger.warn(`[Semantics Command] API returned data for "${word}" but no valid relations found after processing.`);
-                return interaction.editReply({ content: `❌ No valid semantic relations found for "${word}".`, ephemeral: true });
+                return interaction.editReply({ content: `❌ No valid semantic relations found for "${word}".`, flags: MessageFlags.Ephemeral });
             }
 
             const pages = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
 
             if (pages.length === 0) {
                 logger.error("[Semantics Command] Failed to create pages from combined content.");
-                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the relations.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the relations.', flags: MessageFlags.Ephemeral });
             }
 
             let currentPageIndex = 0;
@@ -171,7 +173,7 @@ export default {
                     await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
                 } catch (collectError) {
                     logger.error(`[Semantics Command] Error updating pagination: ${collectError}`);
-                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch (followUpError) {
+                    try { await i.followUp({ content: 'Error changing page.', flags: MessageFlags.Ephemeral }); } catch (followUpError) {
                         logger.warn(`[Semantics Command] Failed to send follow-up pagination error: ${followUpError.message}`);
                     }
                 }
@@ -191,7 +193,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: '❌ Sorry, there was an unexpected error processing your request.',
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                     embeds: [], components: []
                 });
             } catch (replyError) {

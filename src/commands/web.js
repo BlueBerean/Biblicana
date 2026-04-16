@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import { setTimeout as wait } from 'node:timers/promises';
 import logger from '../utils/logger.js';
@@ -44,6 +44,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('web')
         .setDescription('(Beta) Search the web and get AI-powered answers with sources')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('query')
                 .setDescription('What would you like to know?')
@@ -94,7 +96,7 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                 logger.info(`[Web Command] Query intent deemed inappropriate.`);
                 return interaction.editReply({
                     content: 'I can only answer questions that align with Christian teachings and biblical wisdom. Please rephrase your question or ask something else.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -139,7 +141,7 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
             }
 
             if (!tavily_results) {
-                return interaction.editReply({ content: 'Sorry, I could not retrieve search results after multiple attempts.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, I could not retrieve search results after multiple attempts.', flags: MessageFlags.Ephemeral });
             }
 
             let results = tavily_results.results || [];
@@ -336,7 +338,7 @@ ${sourcesForGPT}`
             try {
                 await interaction.editReply({
                     content: `❌ Sorry, an unexpected error occurred while processing your web search: ${error.message}`,
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                     embeds: [], components: []
                 });
             } catch (replyError) {

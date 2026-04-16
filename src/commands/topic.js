@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import swearWordFilter from '../utils/filter.js';
 import logger from '../utils/logger.js';
 import axios from 'axios';
@@ -45,6 +45,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('topic')
         .setDescription('Search commentaries related to a specific topic')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option => option.setName('topic').setDescription('The topic to search commentaries for').setRequired(true).setMinLength(3).setMaxLength(100)),
     async execute(interaction) {
         await interaction.deferReply();
@@ -54,7 +56,7 @@ export default {
             const topic = swearWordFilter(rawTopic);
 
             if (!topic) {
-                return interaction.editReply({ content: 'Please provide a valid topic.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid topic.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[Topic Command] Searching for topic: "${topic}"`);
@@ -81,12 +83,12 @@ export default {
                 if (apiError.response) {
                     logger.error(`[Topic Command] API Status: ${apiError.response.status}, Data: ${JSON.stringify(apiError.response.data)}`);
                 }
-                return interaction.editReply({ content: 'Sorry, failed to fetch commentary data from the source. Please try again later.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, failed to fetch commentary data from the source. Please try again later.', flags: MessageFlags.Ephemeral });
             }
 
             if (!apiResponseData || !Array.isArray(apiResponseData.results) || apiResponseData.results.length === 0) {
                 logger.warn(`[Topic Command] No results found or invalid format for topic "${topic}".`);
-                return await interaction.editReply({ content: `❌ No commentaries found related to "${topic}"!`, ephemeral: true });
+                return await interaction.editReply({ content: `❌ No commentaries found related to "${topic}"!`, flags: MessageFlags.Ephemeral });
             }
 
             const fields = apiResponseData.results
@@ -110,7 +112,7 @@ export default {
 
             if (fields.length === 0) {
                 logger.warn(`[Topic Command] No valid commentary results found for "${topic}" after filtering.`);
-                return await interaction.editReply({ content: `❌ No valid commentaries found related to "${topic}"!`, ephemeral: true });
+                return await interaction.editReply({ content: `❌ No valid commentaries found related to "${topic}"!`, flags: MessageFlags.Ephemeral });
             }
 
             const pages = [];
@@ -120,7 +122,7 @@ export default {
 
             if (pages.length === 0) {
                 logger.error("[Topic Command] Failed to create pages from fields.");
-                return await interaction.editReply({ content: 'Error formatting results.', ephemeral: true });
+                return await interaction.editReply({ content: 'Error formatting results.', flags: MessageFlags.Ephemeral });
             }
 
             let currentPageIndex = 0;
@@ -149,7 +151,7 @@ export default {
 
             collector.on('collect', async i => {
                 if (i.user.id !== interaction.user.id) {
-                    await i.reply({ content: '⚠️ You cannot use these buttons.', ephemeral: true });
+                    await i.reply({ content: '⚠️ You cannot use these buttons.', flags: MessageFlags.Ephemeral });
                     return;
                 }
 
@@ -157,7 +159,7 @@ export default {
                     if (i.customId === 'bias_alert') {
                         await i.reply({
                             content: '⚠ Please note that these commentaries represent various theological perspectives and interpretations. Always compare with Scripture and use discernment.',
-                            ephemeral: true
+                            flags: MessageFlags.Ephemeral
                         });
                         return;
                     }
@@ -197,7 +199,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: '❌ Sorry, there was an unexpected error processing your request.',
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                     embeds: [], components: []
                 });
             } catch (replyError) {

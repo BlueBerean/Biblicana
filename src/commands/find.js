@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import { numbersToBook, bibleWrapper, bookAbbreviations } from '../utils/bibleHelper.js';
@@ -166,7 +166,7 @@ async function sendPaginatedReply(interaction, embed, description, translation, 
                 try { await i.deferUpdate(); } catch (e) {
                     logger.warn(`[Find Command] Failed to defer user check interaction: ${e.message}`);
                 }
-                await i.followUp({ content: 'You cannot use this button.', ephemeral: true });
+                await i.followUp({ content: 'You cannot use this button.', flags: MessageFlags.Ephemeral });
                 return;
             }
         });
@@ -211,7 +211,7 @@ async function sendPaginatedReply(interaction, embed, description, translation, 
             try { await i.deferUpdate(); } catch (e) {
                 logger.warn(`[Find Command] Failed to defer user check interaction: ${e.message}`);
             }
-            await i.followUp({ content: 'You cannot use this button.', ephemeral: true });
+            await i.followUp({ content: 'You cannot use this button.', flags: MessageFlags.Ephemeral });
             return;
         }
 
@@ -254,6 +254,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('find')
         .setDescription('Find a specific verse related to a topic')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option => option.setName('topic').setDescription('The topic you want to find a verse for').setRequired(true).setMinLength(3).setMaxLength(250))
         .addStringOption(option =>
             option.setName('translation')
@@ -328,7 +330,7 @@ export default {
             logger.error(`[Find Command] Unhandled error in execute: ${error.message}`);
             logger.error(error.stack);
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: '⚠️ An unexpected error occurred while processing your request.', ephemeral: true });
+                await interaction.reply({ content: '⚠️ An unexpected error occurred while processing your request.', flags: MessageFlags.Ephemeral });
             } else {
                 await interaction.editReply({ content: '⚠️ An unexpected error occurred while processing your request.' });
             }

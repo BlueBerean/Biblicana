@@ -9,13 +9,13 @@ importers:
   .:
     dependencies:
       '@discordjs/builders':
-        specifier: ^1.8.0
+        specifier: ^1.14.1
         version: 1.14.1
       axios:
         specifier: ^1.15.0
         version: 1.15.0
       discord.js:
-        specifier: ^14.19.0
+        specifier: ^14.26.3
         version: 14.26.3
       dotenv:
         specifier: ^17.4.2

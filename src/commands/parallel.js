@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -37,6 +37,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('parallel')
         .setDescription('View a verse in multiple parallel Bible translations')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book name or abbreviation')
@@ -73,14 +75,14 @@ export default {
 
             const chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
+                return interaction.editReply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
             }
 
             const bookId = getBookId(rawBook);
             const bookName = numbersToBook.get(bookId);
             if (!bookId || !bookName) {
                 logger.warn(`[Parallel Command] Invalid book: ${rawBook}`);
-                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, ephemeral: true });
+                return interaction.editReply({ content: `Invalid book: "${rawBook}".`, flags: MessageFlags.Ephemeral });
             }
 
             let primaryTranslation = 'BSB';
@@ -113,7 +115,7 @@ export default {
             if (originalVerseResult.status === 'rejected' || !originalVerseResult.value || originalVerseResult.value.length === 0 || !originalVerseResult.value[0][primaryTranslation]) {
                 const reason = originalVerseResult.reason?.message || 'Not Found or Translation Unavailable';
                 logger.error(`[Parallel Command] Failed to fetch original verse ${bookName} ${chapter}:${verseInput} (${primaryTranslation}): ${reason}`);
-                return interaction.editReply({ content: `Sorry, I couldn't fetch the text for the primary verse (${bookName} ${chapter}:${verseInput} - ${primaryTranslation}). ${reason}`, ephemeral: true });
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the text for the primary verse (${bookName} ${chapter}:${verseInput} - ${primaryTranslation}). ${reason}`, flags: MessageFlags.Ephemeral });
             }
             const originalVerseText = originalVerseResult.value[0][primaryTranslation];
 
@@ -123,7 +125,7 @@ export default {
                     logger.error(`[Parallel Command] API Error Status: ${parallelResult.reason.response.status}`);
                     logger.error(`[Parallel Command] API Error Data: ${JSON.stringify(parallelResult.reason.response.data)}`);
                 }
-                return interaction.editReply({ content: 'Sorry, failed to connect to the parallel translations source.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, failed to connect to the parallel translations source.', flags: MessageFlags.Ephemeral });
             }
 
             const parallelData = parallelResult.value?.data;
@@ -174,7 +176,7 @@ export default {
 
             if (pages.length === 0) {
                 logger.error("[Parallel Command] Failed to create pages from combined content.");
-                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the parallel translations.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, an error occurred while formatting the parallel translations.', flags: MessageFlags.Ephemeral });
             }
 
             let currentPageIndex = 0;
@@ -216,7 +218,7 @@ export default {
                     await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
                 } catch (collectError) {
                     logger.error(`[Parallel Command] Error updating pagination: ${collectError}`);
-                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch (followUpError) {
+                    try { await i.followUp({ content: 'Error changing page.', flags: MessageFlags.Ephemeral }); } catch (followUpError) {
                         logger.warn(`[Parallel Command] Failed to send follow-up pagination error: ${followUpError.message}`);
                     }
                 }

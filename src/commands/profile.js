@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
@@ -59,6 +59,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('profile')
         .setDescription('Look up a biblical figure or topic in Tyndale Open Study Notes')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('topic')
                 .setDescription('Subject to look up (e.g., Abraham, David, The Pharisees)')
@@ -73,7 +75,7 @@ export default {
             const rawTopic = interaction.options.getString('topic').trim();
             const cleanTopic = swearWordFilter(rawTopic);
             if (!cleanTopic) {
-                return interaction.editReply({ content: 'Please provide a valid topic.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid topic.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[Profile Command] Searching: "${cleanTopic}"`);
@@ -83,7 +85,7 @@ export default {
             if (!results || results.length === 0) {
                 return interaction.editReply({
                     content: `❌ No profile found for "${rawTopic}". Try names like Abraham, David, Mary, or groups like "The Pharisees".`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -106,7 +108,7 @@ export default {
             }
 
             if (pages.length === 0) {
-                return interaction.editReply({ content: 'An error occurred while formatting the profile.', ephemeral: true });
+                return interaction.editReply({ content: 'An error occurred while formatting the profile.', flags: MessageFlags.Ephemeral });
             }
 
             const totalPages = pages.length;
@@ -179,7 +181,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: 'An unexpected error occurred. Please try again later.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 logger.error(`[Profile Command] Failed to send error reply: ${replyError}`);

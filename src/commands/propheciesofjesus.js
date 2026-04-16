@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,7 +44,9 @@ const createProphecyActionRow = (currentPage, totalPages, isEnd = false) => new 
 export default {
     data: new SlashCommandBuilder()
         .setName('propheciesofjesus')
-        .setDescription('Displays prophecies about Jesus fulfilled in Scripture (paginated).'),
+        .setDescription('Displays prophecies about Jesus fulfilled in Scripture (paginated).')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
 
     async execute(interaction) {
         await interaction.deferReply();
@@ -66,7 +68,7 @@ export default {
         } catch (error) {
             logger.error(`[/PropheciesOfJesus Command] Error reading or parsing prophecies.json: ${error.message}`, error.stack);
             const errorEmbed = createErrorEmbed('🧪 File Error', 'Could not load the prophecy data file. Please check server logs.');
-            return interaction.editReply({ embeds: [errorEmbed], ephemeral: true });
+            return interaction.editReply({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
         }
 
         if (prophecies.length === 0) {
@@ -168,9 +170,9 @@ export default {
                 if (interaction.channel) {
                     const errorEmbed = createErrorEmbed('🧪 Command Error', 'An error occurred while displaying the prophecies.');
                     if (interaction.replied || interaction.deferred) {
-                        await interaction.followUp({ embeds: [errorEmbed], ephemeral: true });
+                        await interaction.followUp({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
                     } else {
-                        await interaction.editReply({ embeds: [errorEmbed], ephemeral: true });
+                        await interaction.editReply({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
                     }
                 }
             } catch (followUpError) {

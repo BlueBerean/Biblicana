@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from '@discordjs/builders';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 
@@ -6,6 +6,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('bible')
         .setDescription('Find a specific verse in the bible')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option => option.setName('book').setDescription('The book you want to find a verse for').setRequired(true))
         .addStringOption(option => option.setName('chapter').setDescription('The chapter you want to find a verse for').setRequired(true))
         .addNumberOption(option => option.setName('startverse').setDescription('The range of verses you want to find').setRequired(true))
@@ -48,7 +50,7 @@ export default {
                 logger.warn(`[Bible Command] Could not find book ID for: ${rawBook}`);
                 return interaction.editReply({
                     content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -59,7 +61,7 @@ export default {
             logger.info(`[Bible Command] Looking up book ${bookid} (${numbersToBook.get(bookid)}) ${chapter}:${startVerse}-${endVerse} in ${translation}`);
 
             if (startVerse > endVerse) {
-                return interaction.editReply({ content: 'The start verse cannot be greater than the end verse', ephemeral: true });
+                return interaction.editReply({ content: 'The start verse cannot be greater than the end verse', flags: MessageFlags.Ephemeral });
             }
 
             let verses = await bibleWrapper.getVerses(bookid, chapter, startVerse, endVerse, translation);
@@ -67,7 +69,7 @@ export default {
             if (!verses.length > 0) {
                 return interaction.editReply({
                     content: `I couldn't find any verses related to ${numbersToBook.get(bookid)} ${chapter}:${startVerse}${endVerse && startVerse != endVerse ? "-" + endVerse : ""}!`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -107,7 +109,7 @@ export default {
             try {
                 return interaction.editReply({
                     content: 'Sorry, there was an error processing your request.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (e) {
                 logger.error(`[Bible Command] Could not send error message: ${e.message}`);

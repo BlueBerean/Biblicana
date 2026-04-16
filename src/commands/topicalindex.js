@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
 import { bibleWrapper, getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import { categoriesWrapper } from '../utils/studyHelper.js';
@@ -111,6 +111,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('topicalindex')
         .setDescription('Search the Bible by topic or view all topics')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('topic')
                 .setDescription('The topic to search for (e.g., faith, love, hope)')
@@ -145,7 +147,7 @@ export default {
             if (!topic && !showAll) {
                 return interaction.editReply({
                     content: 'Please provide a topic to search for, or set `showall` to true to list all topics.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -164,7 +166,7 @@ export default {
                     const pages = splitString(description, MAX_CHARS_PER_PAGE);
 
                     if (pages.length === 0) {
-                        return interaction.editReply({ content: 'Failed to format the topic list.', ephemeral: true });
+                        return interaction.editReply({ content: 'Failed to format the topic list.', flags: MessageFlags.Ephemeral });
                     }
 
                     let currentPageIndex = 0;
@@ -209,7 +211,7 @@ export default {
                     return;
                 } catch (dbError) {
                     logger.error(`[TopicalIndex Command - ShowAll] DB query failed: ${dbError.message}`);
-                    return interaction.editReply({ content: 'Sorry, failed to fetch the list of topics.', ephemeral: true });
+                    return interaction.editReply({ content: 'Sorry, failed to fetch the list of topics.', flags: MessageFlags.Ephemeral });
                 }
             }
 
@@ -229,7 +231,7 @@ export default {
             if (!verseReferences || verseReferences.length === 0) {
                 return interaction.editReply({
                     content: `❌ Topic "${topic}" not found. Use \`/topicalindex showall:true\` to see available topics.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -297,9 +299,9 @@ export default {
             logger.error(`[TopicalIndex Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 if (!interaction.replied && !interaction.deferred) {
-                    await interaction.reply({ content: '❌ Sorry, there was an unexpected error.', ephemeral: true });
+                    await interaction.reply({ content: '❌ Sorry, there was an unexpected error.', flags: MessageFlags.Ephemeral });
                 } else {
-                    await interaction.editReply({ content: '❌ Sorry, there was an unexpected error.', embeds: [], components: [], ephemeral: true });
+                    await interaction.editReply({ content: '❌ Sorry, there was an unexpected error.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
                 }
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {

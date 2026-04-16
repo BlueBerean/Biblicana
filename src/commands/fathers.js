@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { fathersWrapper, toCommentaryBookVariants } from '../utils/studyHelper.js';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -43,6 +43,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('fathers')
         .setDescription('Search Early Church Fathers\' commentary on a biblical passage')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('Bible book (e.g., John, Genesis, 1 Corinthians)')
@@ -78,7 +80,7 @@ export default {
             if (!bookId || !canonicalBookName) {
                 return interaction.editReply({
                     content: `❌ Unknown book: "${rawBook}". Try "John", "Genesis", "1 Corinthians", etc.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -90,7 +92,7 @@ export default {
             if (!results || results.length === 0) {
                 return interaction.editReply({
                     content: `❌ No commentary found for **${canonicalBookName} ${chapter}:${verse}**${fatherFilter ? ' from fathers matching "' + fatherFilter + '"' : ''}. Some books (especially minor prophets) have sparse coverage.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -145,7 +147,7 @@ export default {
         } catch (error) {
             logger.error(`[Fathers Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                await interaction.editReply({ content: '❌ Sorry, an unexpected error occurred.', embeds: [], components: [], ephemeral: true });
+                await interaction.editReply({ content: '❌ Sorry, an unexpected error occurred.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
                     logger.error(`[Fathers Command] Failed to send final error reply: ${replyError}`);

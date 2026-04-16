@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -12,6 +12,8 @@ function createAudioCommand() {
     const command = new SlashCommandBuilder()
         .setName('audio')
         .setDescription('Get audio narration for a Bible chapter (KJV only)')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book name or abbreviation')
@@ -99,12 +101,12 @@ export default {
 
             rawBook = swearWordFilter(rawBookInput.trim());
             if (!rawBook) {
-                return interaction.editReply({ content: 'Please provide a valid book name.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid book name.', flags: MessageFlags.Ephemeral });
             }
 
             chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ content: 'Please provide a valid chapter number (1 or greater).', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid chapter number (1 or greater).', flags: MessageFlags.Ephemeral });
             }
 
             bookId = getBookId(rawBook);
@@ -113,7 +115,7 @@ export default {
             if (!bookId || !bookName) {
                 return interaction.editReply({
                     content: `I couldn't find the book "${rawBookInput}". Please check the spelling or use common abbreviations.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -124,7 +126,7 @@ export default {
                 logger.warn(`[Audio Command] No valid fileName found in API response for ${bookName} ${chapter}`);
                 return interaction.editReply({
                     content: `No audio narration found for ${bookName} chapter ${chapter} (KJV). It might not be available.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -132,7 +134,7 @@ export default {
                 new URL(audioUrl);
             } catch (urlError) {
                 logger.error(`[Audio Command] Invalid audio URL received from API: ${audioUrl}`);
-                return interaction.editReply({ content: 'Received an invalid audio link from the source.', ephemeral: true });
+                return interaction.editReply({ content: 'Received an invalid audio link from the source.', flags: MessageFlags.Ephemeral });
             }
 
             let audioAttachment;
@@ -143,7 +145,7 @@ export default {
                 });
             } catch (attachmentError) {
                 logger.error(`[Audio Command] Failed to create AttachmentBuilder: ${attachmentError.message}`);
-                return interaction.editReply({ content: 'Failed to prepare the audio file for sending.', ephemeral: true });
+                return interaction.editReply({ content: 'Failed to prepare the audio file for sending.', flags: MessageFlags.Ephemeral });
             }
 
             const embed = createAudioEmbed(bookName, chapter, audioUrl);
@@ -168,7 +170,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: `❌ ${userErrorMessage}`,
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                     embeds: [], files: []
                 });
             } catch (replyError) {

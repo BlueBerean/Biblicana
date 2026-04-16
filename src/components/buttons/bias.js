@@ -1,4 +1,4 @@
-import { EmbedBuilder } from 'discord.js';
+import { EmbedBuilder, MessageFlags } from 'discord.js';
 import 'dotenv/config';
 
 export default {
@@ -16,11 +16,11 @@ export default {
                     iconURL: process.env.EMBEDICONURL
                 });
 
-            await interaction.reply({ embeds: [embed], ephemeral: true });
+            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         } catch (error) {
             try {
                 if (!interaction.replied) {
-                    await interaction.reply({ content: 'Could not display disclaimer due to an error.', ephemeral: true });
+                    await interaction.reply({ content: 'Could not display disclaimer due to an error.', flags: MessageFlags.Ephemeral });
                 }
             } catch (nestedError) {
                 console.error('Error during fallback reply:', nestedError);

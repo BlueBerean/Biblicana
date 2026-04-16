@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import { crossRefWrapper } from '../utils/studyHelper.js';
 import logger from '../utils/logger.js';
@@ -41,6 +41,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('crossref')
         .setDescription('Find cross-references for a Bible verse (Treasury of Scripture Knowledge)')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('The book of the Bible')
@@ -99,14 +101,14 @@ export default {
             if (isNaN(chapter) || chapter < 1) {
                 return interaction.editReply({
                     content: 'Please provide a valid chapter number (must be 1 or greater).',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
             if (verseInput === null || !Number.isInteger(verseInput) || verseInput < 1) {
                 return interaction.editReply({
                     content: 'Please provide a valid verse number (must be a whole number, 1 or greater).',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
             const verse = verseInput;
@@ -116,7 +118,7 @@ export default {
             if (!bookId || !bookName) {
                 return interaction.editReply({
                     content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -129,7 +131,7 @@ export default {
 
             if (originalVerseResult.status === 'rejected' || !originalVerseResult.value || originalVerseResult.value.length === 0 || !originalVerseResult.value[0][translation]) {
                 logger.error(`[Crossref Command] Failed to fetch original verse ${bookName} ${chapter}:${verse} (${translation}): ${originalVerseResult.reason?.message || 'Not Found'}`);
-                return interaction.editReply({ content: `Sorry, I couldn't fetch the text for the original verse (${bookName} ${chapter}:${verse} - ${translation}). Please ensure the translation is available for this verse.`, ephemeral: true });
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the text for the original verse (${bookName} ${chapter}:${verse} - ${translation}). Please ensure the translation is available for this verse.`, flags: MessageFlags.Ephemeral });
             }
             const originalVerseText = originalVerseResult.value[0][translation];
             const originalVerseRef = `**📍 ${bookName} ${chapter}:${verse} (${translation.toUpperCase()})**`;
@@ -239,7 +241,7 @@ export default {
                 } catch (collectError) {
                     logger.error(`[Crossref Command] Error updating pagination: ${collectError}`);
                     try {
-                        await i.followUp({ content: 'There was an error changing the page.', ephemeral: true });
+                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
                     } catch { /* Ignore */ }
                 }
             });
@@ -256,7 +258,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: 'Sorry, there was an error processing your cross-reference request. Please try again later.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             } catch (replyError) {
                 logger.error(`[Crossref Command] Failed to send error reply: ${replyError}`);

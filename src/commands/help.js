@@ -1,9 +1,11 @@
-import { SlashCommandBuilder, EmbedBuilder } from '@discordjs/builders';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 
 export default {
     data: new SlashCommandBuilder()
         .setName('help')
-        .setDescription('How to use the bot'),
+        .setDescription('How to use the bot')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
     async execute(interaction) {
         const fields = [
             { name: '📖 Bible Verse Access', value: '• `/bible` - Read specific verses. Supports multiple translations and verse ranges.\n• `/bookinfo` - Get detailed background information about a book of the Bible.\n• `/randomverse` - Get a random verse, optionally limited by book/chapter.' },
@@ -31,6 +33,6 @@ export default {
                 iconURL: process.env.EMBEDICONURL
             });
 
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     },
 };

@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { personsWrapper } from '../utils/studyHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
@@ -72,6 +72,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('persons')
         .setDescription('Look up a biblical figure (Aaron, David, Mary, etc.)')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('name')
                 .setDescription('Name of the person (e.g., Aaron, David, Mary Magdalene)')
@@ -85,7 +87,7 @@ export default {
         try {
             const rawName = swearWordFilter(interaction.options.getString('name').trim());
             if (!rawName) {
-                return interaction.editReply({ content: 'Please provide a valid name.', ephemeral: true });
+                return interaction.editReply({ content: 'Please provide a valid name.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[Persons Command] Search: "${rawName}"`);
@@ -94,7 +96,7 @@ export default {
             if (!results || results.length === 0) {
                 return interaction.editReply({
                     content: `❌ No biblical figure found matching "${rawName}". Try names like Aaron, Abraham, David, Mary, Peter.`,
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                 });
             }
 
@@ -166,7 +168,7 @@ export default {
         } catch (error) {
             logger.error(`[Persons Command] Unhandled error: ${error.message}`, error.stack);
             try {
-                await interaction.editReply({ content: '❌ Sorry, an unexpected error occurred.', embeds: [], components: [], ephemeral: true });
+                await interaction.editReply({ content: '❌ Sorry, an unexpected error occurred.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {
                     logger.error(`[Persons Command] Failed to send final error reply: ${replyError}`);

@@ -1,4 +1,4 @@
-import { Events, EmbedBuilder } from 'discord.js';
+import { Events, EmbedBuilder, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 
 export default {
@@ -21,7 +21,7 @@ export default {
                             iconURL: process.env.EMBEDICONURL
                         });
 
-                    return interaction.reply({ embeds: [embed], ephemeral: true });
+                    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
                 }
             }
 
@@ -48,7 +48,7 @@ export default {
                 try {
                     const errorResponse = {
                         content: 'There was an error executing this command!',
-                        ephemeral: true
+                        flags: MessageFlags.Ephemeral
                     };
 
                     if (!interaction.replied && !interaction.deferred) {

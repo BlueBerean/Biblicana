@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import { bibleWrapper, strongsWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
@@ -38,6 +38,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('interlinear')
         .setDescription('Get an interlinear view of a specific Bible verse')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('Book name or abbreviation (e.g., gen, john, 1co)')
@@ -84,14 +86,14 @@ export default {
 
             const chapter = parseInt(chapterInput);
             if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({ content: 'Invalid chapter number provided.', ephemeral: true });
+                return interaction.editReply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
             }
 
             const bookId = getBookId(rawBook);
             const bookName = numbersToBook.get(bookId);
             if (!bookId || !bookName) {
                 logger.warn(`[Interlinear Command] Invalid book: ${rawBook}`);
-                return interaction.editReply({ content: `Invalid book: "${rawBook}". Use names like Genesis, John, 1 Corinthians, or abbreviations like gen, jn, 1co.`, ephemeral: true });
+                return interaction.editReply({ content: `Invalid book: "${rawBook}". Use names like Genesis, John, 1 Corinthians, or abbreviations like gen, jn, 1co.`, flags: MessageFlags.Ephemeral });
             }
 
             let translation = 'BSB';
@@ -127,7 +129,7 @@ export default {
                 logger.info(`[Interlinear Command] Fetched interlinear and English data.`);
             } catch (fetchError) {
                 logger.error(`[Interlinear Command] Error fetching data: ${fetchError.message}`);
-                return interaction.editReply({ content: `Sorry, I couldn't fetch the required verse data (${fetchError.message}). Please check the reference or try again later.`, ephemeral: true });
+                return interaction.editReply({ content: `Sorry, I couldn't fetch the required verse data (${fetchError.message}). Please check the reference or try again later.`, flags: MessageFlags.Ephemeral });
             }
 
             let interlinearItems;
@@ -138,7 +140,7 @@ export default {
                 }
             } catch (parseError) {
                 logger.error(`[Interlinear Command] Error parsing interlinear JSON: ${parseError.message}`);
-                return interaction.editReply({ content: 'Sorry, there was an error processing the interlinear data format from the source.', ephemeral: true });
+                return interaction.editReply({ content: 'Sorry, there was an error processing the interlinear data format from the source.', flags: MessageFlags.Ephemeral });
             }
 
             let originalVerseText = "";
@@ -275,7 +277,7 @@ export default {
                     await i.editReply({ embeds: [embed], components: [createActionRow(currentStrongsPage, totalStrongsPages)] });
                 } catch (collectError) {
                     logger.error(`[Interlinear Command] Error updating pagination: ${collectError}`);
-                    try { await i.followUp({ content: 'Error changing page.', ephemeral: true }); } catch { /* Ignore */ }
+                    try { await i.followUp({ content: 'Error changing page.', flags: MessageFlags.Ephemeral }); } catch { /* Ignore */ }
                 }
             });
 

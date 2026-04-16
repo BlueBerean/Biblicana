@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import axios from 'axios';
 import { getBookId, numbersToBook, bibleWrapper } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
@@ -18,6 +18,8 @@ export default {
     data: new SlashCommandBuilder()
         .setName('randomverse')
         .setDescription('Get a random Bible verse')
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>
             option.setName('book')
                 .setDescription('Limit to a specific book (optional)')
@@ -62,7 +64,7 @@ export default {
                     if (!bookId) {
                         return interaction.editReply({
                             content: `I couldn't find the book "${rawBookInput}". Please check the spelling or try using the full book name.`,
-                            ephemeral: true
+                            flags: MessageFlags.Ephemeral
                         });
                     }
 
@@ -70,7 +72,7 @@ export default {
                     if (chapterInput !== null) {
                         chapter = chapterInput;
                         if (isNaN(chapter) || chapter < 1) {
-                            return interaction.editReply({ content: 'Please provide a valid chapter number (1 or greater).', ephemeral: true });
+                            return interaction.editReply({ content: 'Please provide a valid chapter number (1 or greater).', flags: MessageFlags.Ephemeral });
                         }
                     }
                 }
@@ -122,7 +124,7 @@ export default {
                 const userMessage = apiError.response?.status === 404
                     ? 'No verse found matching the specified criteria (book/chapter). Please broaden your search.'
                     : 'Unable to fetch a random verse from the source. Please try again later.';
-                return interaction.editReply({ content: userMessage, ephemeral: true });
+                return interaction.editReply({ content: userMessage, flags: MessageFlags.Ephemeral });
             }
 
             const parsedBookId = parseInt(randomVerseData.b);
@@ -132,7 +134,7 @@ export default {
 
             if (isNaN(parsedBookId) || isNaN(parsedChapter) || isNaN(parsedVerse) || !bookName) {
                 logger.error(`[RandomVerse Command] Failed to parse valid reference from API: b=${randomVerseData.b}, c=${randomVerseData.c}, v=${randomVerseData.v}`);
-                return interaction.editReply({ content: 'Received an invalid verse reference from the source.', ephemeral: true });
+                return interaction.editReply({ content: 'Received an invalid verse reference from the source.', flags: MessageFlags.Ephemeral });
             }
 
             let verseDbResult;
@@ -140,12 +142,12 @@ export default {
                 verseDbResult = await bibleWrapper.getVerses(parsedBookId, parsedChapter, parsedVerse, parsedVerse);
             } catch (dbError) {
                 logger.error(`[RandomVerse Command] Database error fetching ${bookName} ${parsedChapter}:${parsedVerse}: ${dbError}`);
-                return interaction.editReply({ content: 'Error retrieving verse text from database.', ephemeral: true });
+                return interaction.editReply({ content: 'Error retrieving verse text from database.', flags: MessageFlags.Ephemeral });
             }
 
             if (!verseDbResult || verseDbResult.length === 0) {
                 logger.error(`[RandomVerse Command] Verse not found in DB: ${bookName} ${parsedChapter}:${parsedVerse}`);
-                return interaction.editReply({ content: 'Verse reference found, but text could not be retrieved from database.', ephemeral: true });
+                return interaction.editReply({ content: 'Verse reference found, but text could not be retrieved from database.', flags: MessageFlags.Ephemeral });
             }
 
             let verseText = verseDbResult[0][translation];
@@ -159,7 +161,7 @@ export default {
 
             if (!verseText) {
                 logger.error(`[RandomVerse Command] No usable verse text found for ${bookName} ${parsedChapter}:${parsedVerse}`);
-                return interaction.editReply({ content: 'Could not find any text for the selected verse.', ephemeral: true });
+                return interaction.editReply({ content: 'Could not find any text for the selected verse.', flags: MessageFlags.Ephemeral });
             }
 
             logger.info(`[RandomVerse Command] Displaying: ${bookName} ${parsedChapter}:${parsedVerse} (${usedTranslation})`);
@@ -178,7 +180,7 @@ export default {
             try {
                 await interaction.editReply({
                     content: '❌ Sorry, there was an unexpected error processing your request.',
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                     embeds: [], components: []
                 });
             } catch (replyError) {
