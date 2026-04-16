@@ -1,6 +1,29 @@
 import { Events, EmbedBuilder, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 
+const MAX_OPT_VALUE_LEN = 60;
+
+// Flatten slash-command option data into a single compact string for logs.
+// Handles subcommands (which nest their args under .options) so subcommand
+// trees like `/foo sub:bar arg:baz` still show up as `sub=bar;arg=baz`.
+function summarizeOptions(data) {
+    if (!Array.isArray(data) || data.length === 0) return '';
+    const parts = [];
+    for (const opt of data) {
+        if (opt.options && Array.isArray(opt.options)) {
+            parts.push(`${opt.name}=${opt.value ?? ''}`);
+            parts.push(summarizeOptions(opt.options));
+        } else if (opt.value !== undefined) {
+            const v = String(opt.value);
+            const truncated = v.length > MAX_OPT_VALUE_LEN
+                ? v.substring(0, MAX_OPT_VALUE_LEN - 1) + '…'
+                : v;
+            parts.push(`${opt.name}=${truncated}`);
+        }
+    }
+    return parts.filter(Boolean).join(';');
+}
+
 export default {
     name: Events.InteractionCreate,
     async execute(interaction, database) {
@@ -33,6 +56,14 @@ export default {
                 if (interaction.replied) return;
                 return interaction.reply(`No command matching ${interaction.commandName} was found.`);
             }
+
+            // One-line usage log. Grep `[Usage] cmd=<name>` from PM2 logs to
+            // count invocations per command / per user / per guild without
+            // each command needing its own logging.
+            const opts = summarizeOptions(interaction.options?.data);
+            logger.info(
+                `[Usage] cmd=${interaction.commandName} user=${interaction.user.id} guild=${interaction.guildId ?? 'DM'}${opts ? ` opts=${opts}` : ''}`
+            );
 
             try {
                 await command.execute(interaction, database);
@@ -78,6 +109,13 @@ export default {
 
                 return interaction.reply(`No button matching ${interaction.customId} was found.`);
             }
+
+            // Button usage log. Chain interactions ([Open] → /bible, [Commentary],
+            // etc.) matter for understanding UX flow, so they go in the same
+            // [Usage] stream as slash commands.
+            logger.info(
+                `[Usage] btn=${interaction.customId} user=${interaction.user.id} guild=${interaction.guildId ?? 'DM'}`
+            );
 
             try {
                 await button.execute(interaction, database);
