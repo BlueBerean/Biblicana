@@ -64,7 +64,12 @@ export default {
                 }
             }
         } else if (interaction.isButton()) {
-            const button = interaction.client.buttons.get(interaction.customId);
+            let button = interaction.client.buttons.get(interaction.customId);
+            // Parametric custom IDs (e.g., "strongs:Greek:G2316") fall back to prefix lookup.
+            // Handlers receive the full customId and parse their own arguments.
+            if (!button && interaction.customId.includes(':')) {
+                button = interaction.client.buttons.get(interaction.customId.split(':')[0]);
+            }
 
             if (!button) {
                 if (interaction.replied) return;
