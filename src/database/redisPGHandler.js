@@ -1,6 +1,5 @@
 import pg from 'pg';
 import Redis from 'ioredis';
-import axios from 'axios';
 import logger from '../utils/logger.js';
 import userModel from './schemas/user.js';
 import guildModel from './schemas/guild.js';
@@ -93,13 +92,22 @@ class RedisPGWrapper {
     }
 }
 
+// Only these key prefixes may map to Postgres tables. Guards against both SQL
+// injection via crafted keys and silent typos that would hit a nonexistent table.
+const ALLOWED_TABLE_PREFIXES = new Set(['user', 'guild']);
+
+function tableForKey(key) {
+    const prefix = String(key).split(':')[0];
+    if (!ALLOWED_TABLE_PREFIXES.has(prefix)) {
+        throw new Error(`[Database] Invalid key prefix: ${prefix}`);
+    }
+    return `${prefix}data`;
+}
+
 class RedisPGClient {
     constructor(postgresConfig, redisConfig = null, redisExpiry = 21600) {
         this.pgClient = new pg.Pool(postgresConfig);
         this.redisClient = new Redis(redisConfig);
-
-        this.rapidApiKey = process.env.RAPIDAPIKEY;
-        this.rapidApiHost = 'uncovered-treasure-v1.p.rapidapi.com';
 
         this.redisClient.on('connect', () => {
             logger.debug('[Database] Connected to Redis');
@@ -111,97 +119,25 @@ class RedisPGClient {
     async initialize() {
         logger.debug('[Database] Initializing Database Handler...');
         await this.createTables();
+        // Probe that the pool can actually execute queries — createTables can
+        // succeed against a cached schema while the session is unusable.
+        await this.pgClient.query('SELECT 1');
         logger.info('[Database] Database Handler Initialized.');
     }
 
     async createTables() {
-        try {
-            await this.pgClient.query(`
-                CREATE TABLE IF NOT EXISTS guilddata (
-                    id varchar(255) PRIMARY KEY,
-                    data JSONB NOT NULL
-                );
+        await this.pgClient.query(`
+            CREATE TABLE IF NOT EXISTS guilddata (
+                id varchar(255) PRIMARY KEY,
+                data JSONB NOT NULL
+            );
 
-                CREATE TABLE IF NOT EXISTS userdata (
-                    id varchar(255) PRIMARY KEY,
-                    data JSONB NOT NULL
-                );
-            `);
-
-            logger.debug('[Database] Tables created successfully.');
-        } catch (error) {
-            logger.error(`[Database ERR] Error creating tables: ${error}`);
-        }
-    }
-
-    async getStrongsDefinition(language, strongsId) {
-        try {
-            const options = {
-                method: 'GET',
-                url: `https://${this.rapidApiHost}/strongs/${strongsId}`,
-                headers: {
-                    'x-rapidapi-key': this.rapidApiKey,
-                    'x-rapidapi-host': this.rapidApiHost
-                }
-            };
-
-            const response = await axios.request(options);
-            logger.debug('[API Response]', response.data);
-
-            if (!response.data) {
-                logger.error('[Error] No data in API response');
-                return null;
-            }
-
-            if (!response.data.language) {
-                logger.error('[Error] Response missing language property:', response.data);
-                return null;
-            }
-
-            if (language && response.data.language.toLowerCase() !== language.toLowerCase()) {
-                return null;
-            }
-            return response.data;
-        } catch (error) {
-            logger.error(`[Error] Failed to fetch Strong's definition:`, error.response?.data || error);
-            return null;
-        }
-    }
-
-    async searchStrongsByEnglish(language, word) {
-        try {
-            const options = {
-                method: 'GET',
-                url: `https://${this.rapidApiHost}/search/${encodeURIComponent(word)}`,
-                headers: {
-                    'x-rapidapi-key': this.rapidApiKey,
-                    'x-rapidapi-host': this.rapidApiHost
-                }
-            };
-
-            const response = await axios.request(options);
-            logger.debug('[API Response]', response.data);
-
-            if (!response.data) {
-                logger.error('[Error] No data in API response');
-                return null;
-            }
-
-            if (!response.data.results) {
-                logger.error('[Error] Response missing results property:', response.data);
-                return null;
-            }
-
-            if (language) {
-                return response.data.results.filter(entry =>
-                    entry.language && entry.language.toLowerCase() === language.toLowerCase()
-                );
-            }
-            return response.data.results;
-        } catch (error) {
-            logger.error(`[Error] Failed to search Strong's concordance:`, error.response?.data || error);
-            return null;
-        }
+            CREATE TABLE IF NOT EXISTS userdata (
+                id varchar(255) PRIMARY KEY,
+                data JSONB NOT NULL
+            );
+        `);
+        logger.debug('[Database] Tables created successfully.');
     }
 
     async getValue(key) {
@@ -210,8 +146,11 @@ class RedisPGClient {
             return JSON.parse(cachedValue);
         }
 
-        const query = `SELECT * FROM ${key.split(':')[0]}data WHERE id = $1`;
-        const { rows } = await this.pgClient.query(query, [key]);
+        const table = tableForKey(key);
+        const { rows } = await this.pgClient.query(
+            `SELECT * FROM ${table} WHERE id = $1`,
+            [key]
+        );
 
         if (rows.length > 0) {
             const value = rows[0].data;
@@ -225,25 +164,26 @@ class RedisPGClient {
     async setValue(key, value) {
         await this.setValueRedis(key, value);
 
-        const query = `INSERT INTO ${key.split(':')[0]}data (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = '${JSON.stringify(value)}'`;
+        const table = tableForKey(key);
+        const res = await this.pgClient.query(
+            `INSERT INTO ${table} (id, data) VALUES ($1, $2)
+             ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+            [key, JSON.stringify(value)]
+        );
 
-        const res = await this.pgClient.query(query, [key, JSON.stringify(value)]);
-
-        if (res.rowCount > 0) {
-            return true;
-        }
-
-        return false;
+        return res.rowCount > 0;
     }
 
     async setValueRedis(key, value) {
-        await this.redisClient.set(key, JSON.stringify(value));
-        this.redisClient.expire(key, this.expiry);
+        await this.redisClient.set(key, JSON.stringify(value), 'EX', this.expiry);
     }
 
     async deleteValue(key) {
-        const query = `DELETE FROM ${key.split(':')[0]}data WHERE id = $1`;
-        const res = await this.pgClient.query(query, [key]);
+        const table = tableForKey(key);
+        const res = await this.pgClient.query(
+            `DELETE FROM ${table} WHERE id = $1`,
+            [key]
+        );
 
         if (res.rowCount > 0) {
             await this.redisClient.del(key);
