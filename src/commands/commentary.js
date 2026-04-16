@@ -1,40 +1,26 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    StringSelectMenuBuilder,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import { commentaryWrapper, toCommentaryBookCodes, COMMENTATORS } from '../utils/studyHelper.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_CHUNK = 4000;
+const MAX_CHARS_PER_PAGE = 3800;
 const COLLECTOR_TIMEOUT_MS = 1_800_000;
 const DEFAULT_COMMENTATOR_ID = 'jamieson-fausset-brown';
 
-function generateFooter(commentatorLabel, page, maxPages) {
-    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT} | ${commentatorLabel}${pageText}`,
-        iconURL: process.env.EMBEDICONURL
-    };
-}
-
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === totalPages - 1)
-    );
-
-// Tyndale entries prefix each verse with its own "3:16" or "3:16-21" header inline;
-// the embed title already shows that, so strip it from the body for cleanliness.
+// Tyndale verse entries are prefixed with "3:16" / "3:16-21" — strip for display.
 function stripTyndaleReferencePrefix(text, commentatorId) {
     if (commentatorId !== 'tyndale' || !text) return text;
     return text.replace(/^\d+:\d+(-\d+)?\s+/, '');
@@ -42,6 +28,105 @@ function stripTyndaleReferencePrefix(text, commentatorId) {
 
 function findCommentator(id) {
     return COMMENTATORS.find(c => c.id === id);
+}
+
+// Available commentators for this book + mode. Keil is OT-only; Tyndale has
+// no chapter-level introductions.
+function availableCommentators({ isNT, isChapterLevel }) {
+    return COMMENTATORS.filter(c => {
+        if (c.id === 'keil-delitzsch' && isNT) return false;
+        if (c.id === 'tyndale' && isChapterLevel) return false;
+        return true;
+    });
+}
+
+// Fetch text for one commentator in the current mode.
+async function fetchForCommentator({ commentatorId, bookCodes, chapter, verse, isChapterLevel }) {
+    if (isChapterLevel) {
+        const row = await commentaryWrapper.getChapterCommentary(commentatorId, bookCodes, chapter);
+        return row?.introduction || null;
+    }
+    const row = await commentaryWrapper.getVerseCommentary(commentatorId, bookCodes, chapter, verse);
+    if (!row?.text) return null;
+    return stripTyndaleReferencePrefix(row.text, commentatorId);
+}
+
+// Try preferred commentator first, then fall through the rest in order.
+async function fetchWithFallback({ preferredId, available, bookCodes, chapter, verse, isChapterLevel }) {
+    const ordered = [preferredId, ...available.filter(c => c.id !== preferredId).map(c => c.id)];
+    for (const id of ordered) {
+        const text = await fetchForCommentator({ commentatorId: id, bookCodes, chapter, verse, isChapterLevel });
+        if (text) return { commentatorId: id, text };
+    }
+    return null;
+}
+
+function buildCommentarySelect({ available, currentId, disabled = false }) {
+    return new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId('cmtr_select')
+            .setPlaceholder('Switch commentator')
+            .setDisabled(disabled)
+            .addOptions(available.map(c => ({
+                label: c.label,
+                value: c.id,
+                default: c.id === currentId
+            })))
+    );
+}
+
+function buildPaginationRow({ pageIdx, totalPages, disableNav = false }) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('page_back')
+            .setEmoji({ name: '◀️' })
+            .setLabel('Previous')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disableNav || pageIdx === 0),
+        new ButtonBuilder()
+            .setCustomId('page_next')
+            .setEmoji({ name: '▶️' })
+            .setLabel('Next')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disableNav || pageIdx === totalPages - 1)
+    );
+}
+
+function buildComponents({
+    state,
+    available,
+    bookName,
+    chapter,
+    verseInput,
+    preferredLabel,
+    disableNav = false,
+    disableSelect = false
+}) {
+    const { commentatorId, pages, pageIdx, wasFallback } = state;
+    const commentator = findCommentator(commentatorId);
+    const isChapterLevel = verseInput === null;
+    const titleRef = isChapterLevel ? `${bookName} ${chapter}` : `${bookName} ${chapter}:${verseInput}`;
+    const chapterTag = isChapterLevel ? ' (chapter intro)' : '';
+    const pageInfo = pages.length > 1 ? ` (Page ${pageIdx + 1}/${pages.length})` : '';
+
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+
+    const headerLines = [`## 📚 ${commentator.label}: ${titleRef}${chapterTag}${pageInfo}`];
+    if (wasFallback && preferredLabel) {
+        headerLines.push('', `*${preferredLabel} had no commentary on this reference — showing ${commentator.label} instead. Switch below.*`);
+    }
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(headerLines.join('\n')))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(pages[pageIdx]))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${commentator.label}`));
+
+    const components = [container, buildCommentarySelect({ available, currentId: commentatorId, disabled: disableSelect })];
+    if (pages.length > 1) {
+        components.push(buildPaginationRow({ pageIdx, totalPages: pages.length, disableNav }));
+    }
+    return components;
 }
 
 export default {
@@ -72,161 +157,175 @@ export default {
                 )),
 
     async execute(interaction) {
-        await interaction.deferReply();
+        // Sync validation before defer.
+        const rawBook = interaction.options.getString('book');
+        const chapterInput = interaction.options.getString('chapter');
+        const verseInput = interaction.options.getNumber('verse');
+        const explicitCommentator = interaction.options.getString('commentator');
+
+        const chapter = parseInt(chapterInput);
+        if (isNaN(chapter) || chapter < 1) {
+            return interaction.reply({
+                content: 'Please provide a valid chapter number (must be 1 or greater).',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        if (verseInput !== null && (!Number.isInteger(verseInput) || verseInput < 1)) {
+            return interaction.reply({
+                content: 'If provided, verse must be a whole number (1 or greater).',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        const bookId = getBookId(rawBook);
+        const bookName = bookId ? numbersToBook.get(bookId) : null;
+        if (!bookId || !bookName) {
+            return interaction.reply({
+                content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        const bookCodes = toCommentaryBookCodes(bookId);
+        if (bookCodes.length === 0) {
+            return interaction.reply({
+                content: `Book "${bookName}" isn't supported by the commentary database.`,
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawBook = interaction.options.getString('book');
-            const chapterInput = interaction.options.getString('chapter');
-            const verseInput = interaction.options.getNumber('verse');
-            const commentatorId = interaction.options.getString('commentator') || DEFAULT_COMMENTATOR_ID;
-            const commentator = findCommentator(commentatorId);
-
-            if (!commentator) {
-                return interaction.editReply({
-                    content: `Unknown commentator selection.`,
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            const chapter = parseInt(chapterInput);
-            if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({
-                    content: 'Please provide a valid chapter number (must be 1 or greater).',
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            if (verseInput !== null && (!Number.isInteger(verseInput) || verseInput < 1)) {
-                return interaction.editReply({
-                    content: 'If provided, verse must be a whole number (1 or greater).',
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            const bookId = getBookId(rawBook);
-            const bookName = bookId ? numbersToBook.get(bookId) : null;
-            if (!bookId || !bookName) {
-                return interaction.editReply({
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            const bookCodes = toCommentaryBookCodes(bookId);
-            if (bookCodes.length === 0) {
-                return interaction.editReply({
-                    content: `Book "${bookName}" isn't supported by the commentary database.`,
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
+            const isNT = bookId > 39;
             const isChapterLevel = verseInput === null;
+            const available = availableCommentators({ isNT, isChapterLevel });
+            const preferredId = explicitCommentator || DEFAULT_COMMENTATOR_ID;
+            const preferred = findCommentator(preferredId);
 
-            logger.info(`[Commentary Command] ${commentatorId} on ${bookName} ${chapter}${isChapterLevel ? ' (chapter)' : `:${verseInput}`}`);
-
-            let rawText;
-            let titleRef;
-            if (isChapterLevel) {
-                const row = await commentaryWrapper.getChapterCommentary(commentatorId, bookCodes, chapter);
-                rawText = row?.introduction;
-                titleRef = `${bookName} ${chapter}`;
-
-                if (!rawText) {
-                    if (commentatorId === 'tyndale') {
-                        return interaction.editReply({
-                            content: `**Tyndale Open Study Notes** doesn't include chapter-level introductions. Try adding a verse number, or pick a different commentator (Gill, Matthew Henry, Clarke, etc.).`,
-                            flags: MessageFlags.Ephemeral
-                        });
-                    }
-                    return interaction.editReply({
-                        content: `${commentator.label} doesn't have a chapter-level introduction for **${bookName} ${chapter}**. Try adding a verse number, or a different commentator.`,
-                        flags: MessageFlags.Ephemeral
-                    });
-                }
-            } else {
-                const row = await commentaryWrapper.getVerseCommentary(commentatorId, bookCodes, chapter, verseInput);
-                rawText = row?.text;
-                titleRef = `${bookName} ${chapter}:${verseInput}`;
-
-                if (!rawText) {
-                    return interaction.editReply({
-                        content: `${commentator.label} doesn't have commentary on **${titleRef}**. Try a different commentator or check the reference.`,
-                        flags: MessageFlags.Ephemeral
-                    });
-                }
-
-                rawText = stripTyndaleReferencePrefix(rawText, commentatorId);
+            // If the user explicitly picked an unavailable commentator for this
+            // mode (Keil on NT, Tyndale on chapter), surface directly.
+            if (!available.some(c => c.id === preferredId)) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ ${preferred.label} isn't available for this ${isChapterLevel ? 'chapter-level' : ''} request.`
+                    )]
+                });
             }
 
-            const chunks = splitString(rawText, MAX_CHARS_PER_CHUNK);
-            if (chunks.length === 0) {
-                return interaction.editReply({ content: `Failed to format commentary for ${titleRef}.`, flags: MessageFlags.Ephemeral });
-            }
+            logger.info(`[Commentary Command] Request: ${preferredId} on ${bookName} ${chapter}${isChapterLevel ? ' (chapter)' : `:${verseInput}`}`);
 
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
-            let currentPageIndex = 0;
-
-            const buildEmbed = (idx) => new EmbedBuilder()
-                .setColor(embedColor)
-                .setTitle(`📖 ${commentator.label}: ${titleRef}${isChapterLevel ? ' (chapter intro)' : ''}`)
-                .setDescription(chunks[idx])
-                .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(commentator.label, idx, chunks.length));
-
-            if (chunks.length === 1) {
-                return interaction.editReply({ embeds: [buildEmbed(0)] });
-            }
-
-            const message = await interaction.editReply({
-                embeds: [buildEmbed(currentPageIndex)],
-                components: [createActionRow(currentPageIndex, chunks.length)]
+            const initial = await fetchWithFallback({
+                preferredId, available, bookCodes, chapter, verse: verseInput, isChapterLevel
             });
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                componentType: ComponentType.Button,
-                time: COLLECTOR_TIMEOUT_MS
+            if (!initial) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No commentary available on ${bookName} ${chapter}${isChapterLevel ? '' : `:${verseInput}`} from any of the ${available.length} eligible commentators.`
+                    )]
+                });
+            }
+
+            const state = {
+                commentatorId: initial.commentatorId,
+                pages: splitString(initial.text, MAX_CHARS_PER_PAGE),
+                pageIdx: 0,
+                wasFallback: initial.commentatorId !== preferredId
+            };
+
+            const flags = MessageFlags.IsComponentsV2;
+            await interaction.editReply({
+                flags,
+                components: buildComponents({
+                    state, available, bookName, chapter, verseInput,
+                    preferredLabel: preferred.label
+                })
             });
+
+            // Single collector handles BOTH the select-menu swap and page-nav buttons.
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id && (
+                i.customId === 'cmtr_select' ||
+                i.customId === 'page_back' ||
+                i.customId === 'page_next'
+            );
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1) % chunks.length;
+
+                    if (i.customId === 'cmtr_select') {
+                        const pickedId = i.values[0];
+                        const picked = findCommentator(pickedId);
+                        const text = await fetchForCommentator({
+                            commentatorId: pickedId, bookCodes, chapter, verse: verseInput, isChapterLevel
+                        });
+
+                        if (!text) {
+                            state.commentatorId = pickedId;
+                            state.pages = [`*${picked.label} doesn't have commentary on ${bookName} ${chapter}${isChapterLevel ? '' : `:${verseInput}`}. Pick another commentator from the dropdown.*`];
+                            state.pageIdx = 0;
+                            state.wasFallback = false;
+                        } else {
+                            state.commentatorId = pickedId;
+                            state.pages = splitString(text, MAX_CHARS_PER_PAGE);
+                            state.pageIdx = 0;
+                            state.wasFallback = false;
+                        }
+                    } else if (i.customId === 'page_next') {
+                        state.pageIdx = Math.min(state.pages.length - 1, state.pageIdx + 1);
                     } else if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1 + chunks.length) % chunks.length;
+                        state.pageIdx = Math.max(0, state.pageIdx - 1);
                     }
+
                     await i.editReply({
-                        embeds: [buildEmbed(currentPageIndex)],
-                        components: [createActionRow(currentPageIndex, chunks.length)]
+                        flags,
+                        components: buildComponents({
+                            state, available, bookName, chapter, verseInput,
+                            preferredLabel: preferred.label
+                        })
                     });
-                } catch (collectError) {
-                    logger.error(`[Commentary Command] Error updating pagination: ${collectError}`);
-                    try {
-                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
-                    } catch (followUpError) {
-                        logger.error(`[Commentary Command] Error sending follow-up after pagination error: ${followUpError}`);
-                    }
+                } catch (err) {
+                    logger.error(`[Commentary Command] Collector error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[Commentary Command] Pagination collector ended for ${titleRef}`);
-                const timedOutRow = createActionRow(currentPageIndex, chunks.length, true);
-                message.edit({ components: [timedOutRow] }).catch(editError => {
-                    if (editError.code !== 10008) logger.error(`[Commentary Command] Error disabling buttons after timeout: ${editError}`);
-                });
+            collector.on('end', async () => {
+                logger.info(`[Commentary Command] Collector ended for ${bookName} ${chapter}${isChapterLevel ? '' : `:${verseInput}`}`);
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildComponents({
+                            state, available, bookName, chapter, verseInput,
+                            preferredLabel: preferred.label,
+                            disableNav: true,
+                            disableSelect: true
+                        })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Commentary Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
-            logger.error(`[Commentary Command] Error: ${error.message}`, error.stack);
+            logger.error(`[Commentary Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: 'Sorry, there was an error fetching or processing the commentary. Please try again later.',
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ ${error.message || 'An unexpected error occurred while loading commentary.'}`
+                    )]
                 });
             } catch (replyError) {
-                logger.error(`[Commentary Command] Failed to send error reply: ${replyError}`);
+                if (replyError.code !== 10062 && replyError.code !== 40060) {
+                    logger.error(`[Commentary Command] Failed to send final error reply: ${replyError}`);
+                }
             }
         }
     },
