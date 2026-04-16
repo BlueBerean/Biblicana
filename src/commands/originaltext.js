@@ -1,6 +1,7 @@
 import {
     SlashCommandBuilder,
     ContainerBuilder,
+    SectionBuilder,
     TextDisplayBuilder,
     ActionRowBuilder,
     ButtonBuilder,
@@ -13,37 +14,125 @@ import axios from 'axios';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
-import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_PAGE = 3800;
+// Discord's 40-component tree cap: 2 (header) + 10*3 (word Sections) + 3
+// (action row) + 3 (pagination row) = 38. Ten words/page works for every
+// Greek verse and paginates long Hebrew ones across a few pages.
+const WORDS_PER_PAGE_NO_NAV = 11;
+const WORDS_PER_PAGE_WITH_NAV = 10;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const HEBREW_COLOR = 0x3498DB;
 const GREEK_COLOR = 0x9B59B6;
+const MAX_SECTION_TEXT = 280;
+
+function parsePronunciation(pronunField) {
+    if (!pronunField) return null;
+    try {
+        const data = JSON.parse(pronunField);
+        return data.dic_mod || data.dic || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// Normalize a word row from RapidAPI into the shape we render per-Section.
+function processWord(word, strongsPrefix) {
+    const strongsRaw = word.strongs;
+    const strongsId = strongsRaw ? `${strongsPrefix}${strongsRaw}` : null;
+    const lexicon = strongsPrefix === 'G' ? 'Greek' : 'Hebrew';
+    return {
+        original: word.word || '',
+        pronunciation: parsePronunciation(word.pronun),
+        morph: word.morph || null,
+        strongsId,
+        lexicon,
+        notes: word.notes || null
+    };
+}
+
+function buildWordSectionText(wordInfo) {
+    const lines = [];
+    const titleBits = [`**${wordInfo.original}**`];
+    if (wordInfo.pronunciation) titleBits.push(`*${wordInfo.pronunciation}*`);
+    lines.push(titleBits.join(' — '));
+
+    if (wordInfo.strongsId) {
+        const morphTag = wordInfo.morph ? ` *(${wordInfo.morph})*` : '';
+        lines.push(`${wordInfo.strongsId}${morphTag}`);
+    }
+    if (wordInfo.notes) {
+        const note = wordInfo.notes.length > 120
+            ? wordInfo.notes.substring(0, 119) + '…'
+            : wordInfo.notes;
+        lines.push(`📌 *${note}*`);
+    }
+
+    let joined = lines.join('\n');
+    if (joined.length > MAX_SECTION_TEXT) joined = joined.substring(0, MAX_SECTION_TEXT - 1) + '…';
+    return joined;
+}
 
 function buildOriginalTextPage({
-    bodyChunks, pageIdx, totalPages, bookId, bookName, chapter, verse,
-    translation, englishVerseText, languageType, disableNav = false
+    words, pageIdx, wordsPerPage, totalPages, bookId, bookName, chapter, verse,
+    translation, englishVerseText, originalJoined, languageType,
+    disableNav = false
 }) {
     const accentColor = languageType === 'Hebrew' ? HEBREW_COLOR : GREEK_COLOR;
+    const start = pageIdx * wordsPerPage;
+    const end = Math.min(start + wordsPerPage, words.length);
+    const pageWords = words.slice(start, end);
     const pageInfo = totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : '';
+
+    const headerLines = [
+        `## 📜 Original Text — ${bookName} ${chapter}:${verse}`,
+        '',
+        `**${translation.toUpperCase()} Translation**`,
+        englishVerseText,
+        '',
+        `**${languageType === 'Hebrew' ? '🕎' : '🇬🇷'} ${languageType} Text** ${languageType === 'Hebrew' ? '(Right to Left)' : '(Left to Right)'}`,
+        `\`\`\`${originalJoined}\`\`\``,
+        '',
+        `### Words${pageInfo}`,
+        `*Tap any word for its full definition.*`
+    ];
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `## 📜 Original Text — ${bookName} ${chapter}:${verse}${pageInfo}`
-        ))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `**${translation.toUpperCase()} Translation**\n${englishVerseText}`
-        ))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(bodyChunks[pageIdx]))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${languageType}${totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : ''}`
-        ));
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(headerLines.join('\n')));
+
+    for (const [localIdx, wordInfo] of pageWords.entries()) {
+        const globalIdx = start + localIdx;
+        const section = new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(buildWordSectionText(wordInfo)));
+
+        if (wordInfo.strongsId) {
+            section.setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`strongs:${wordInfo.lexicon}:${wordInfo.strongsId}:${globalIdx}`)
+                    .setLabel('Define')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+            );
+        } else {
+            // No Strong's — button is disabled. Sections require an accessory
+            // even in this case, so we keep the button shape but make it inert.
+            section.setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`strongs:none:none:${globalIdx}`)
+                    .setLabel('Define')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true)
+            );
+        }
+
+        container.addSectionComponents(section);
+    }
 
     const components = [container];
 
-    // Chain buttons: jump to /bible or /interlinear for this verse
+    // Action row — cross-command navigation.
     components.push(new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`openverse:bible:${bookId}:${chapter}:${verse}`)
@@ -195,63 +284,24 @@ export default {
 
             const isNewTestament = bookId > 39;
             const languageType = isNewTestament ? 'Greek' : 'Hebrew';
-            const languageEmoji = isNewTestament ? '🇬🇷' : '🕎';
-
-            let combinedContent = `**${languageEmoji} ${languageType} Text**\n\`\`\`${wordData.map(w => w.word || '').join(' ')}\`\`\`\n`;
-
-            let pronunciationSection = '';
-            for (const word of wordData) {
-                try {
-                    if (word.pronun) {
-                        const pronunData = JSON.parse(word.pronun);
-                        pronunciationSection += `\`${word.word}\` — ${pronunData.dic_mod || pronunData.dic || 'N/A'}\n`;
-                    }
-                } catch (e) {
-                    pronunciationSection += `\`${word.word}\` — (Error parsing pronunciation)\n`;
-                }
-            }
-            if (pronunciationSection) {
-                combinedContent += `\n**🗣️ Pronunciation Guide**\n${pronunciationSection}`;
-            }
-
-            let analysisSection = '';
             const strongsPrefix = isNewTestament ? 'G' : 'H';
-            for (const word of wordData) {
-                const morph = word.morph ? ` (\`${word.morph}\`)` : '';
-                analysisSection += `\`${word.word}\` — ${strongsPrefix}${word.strongs || 'N/A'}${morph}\n`;
-            }
-            if (analysisSection) {
-                combinedContent += `\n**📝 Word Analysis**\n${analysisSection}`;
-            }
+            const words = wordData.map(w => processWord(w, strongsPrefix));
+            const originalJoined = wordData.map(w => w.word || '').join(' ').trim().substring(0, 600);
 
-            let notesSection = '';
-            for (const word of wordData) {
-                if (word.notes) {
-                    notesSection += `\`${word.word}\`: ${word.notes}\n`;
-                }
-            }
-            if (notesSection) {
-                combinedContent += `\n**📌 Notes**\n${notesSection}`;
-            }
-
-            const bodyChunks = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
-            if (bodyChunks.length === 0) {
-                return interaction.editReply({
-                    flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(`❌ An error occurred while formatting the analysis.`)]
-                });
-            }
-
-            const totalPages = bodyChunks.length;
+            const needsPagination = words.length > WORDS_PER_PAGE_NO_NAV;
+            const wordsPerPage = needsPagination ? WORDS_PER_PAGE_WITH_NAV : WORDS_PER_PAGE_NO_NAV;
+            const totalPages = needsPagination ? Math.ceil(words.length / wordsPerPage) : 1;
             let pageIdx = 0;
             const flags = MessageFlags.IsComponentsV2;
+
+            logger.info(`[OriginalText Command] ${words.length} words across ${totalPages} page(s).`);
 
             await interaction.editReply({
                 flags,
                 components: buildOriginalTextPage({
-                    bodyChunks, pageIdx, totalPages,
+                    words, pageIdx, wordsPerPage, totalPages,
                     bookId, bookName, chapter, verse: verseInput,
-                    translation, englishVerseText, languageType
+                    translation, englishVerseText, originalJoined, languageType
                 })
             });
 
@@ -270,9 +320,9 @@ export default {
                     await i.editReply({
                         flags,
                         components: buildOriginalTextPage({
-                            bodyChunks, pageIdx, totalPages,
+                            words, pageIdx, wordsPerPage, totalPages,
                             bookId, bookName, chapter, verse: verseInput,
-                            translation, englishVerseText, languageType
+                            translation, englishVerseText, originalJoined, languageType
                         })
                     });
                 } catch (err) {
@@ -285,9 +335,9 @@ export default {
                     await interaction.editReply({
                         flags,
                         components: buildOriginalTextPage({
-                            bodyChunks, pageIdx, totalPages,
+                            words, pageIdx, wordsPerPage, totalPages,
                             bookId, bookName, chapter, verse: verseInput,
-                            translation, englishVerseText, languageType,
+                            translation, englishVerseText, originalJoined, languageType,
                             disableNav: true
                         })
                     });

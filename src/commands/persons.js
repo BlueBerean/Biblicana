@@ -1,6 +1,7 @@
 import {
     SlashCommandBuilder,
     ContainerBuilder,
+    SectionBuilder,
     TextDisplayBuilder,
     ActionRowBuilder,
     ButtonBuilder,
@@ -83,12 +84,11 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
     const { name, firstRef, structured } = displayName(person.unique_name);
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
-    // Facts block: first mention, tribe, sex, Strong's
+    // Facts block: tribe + sex only (first mention and Strong's get their own
+    // Sections below so the affordance sits next to the info it applies to).
     const facts = [];
-    if (firstRef) facts.push(`**📖 First Mention:** ${firstRef}`);
     if (person.tribe) facts.push(`**🏛 Tribe:** ${person.tribe}`);
     if (person.sex) facts.push(`**Sex:** ${person.sex}`);
-    if (person.uStrong) facts.push(`**Strong's:** ${person.uStrong}`);
 
     // Family relations
     const family = [];
@@ -117,32 +117,42 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
         container.addTextDisplayComponents(new TextDisplayBuilder().setContent(family.join('\n')));
     }
 
+    // First Mention Section — info tied to its action button.
+    if (structured && firstRef) {
+        container.addSectionComponents(
+            new SectionBuilder()
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 First Mention:** ${firstRef}`))
+                .setButtonAccessory(
+                    new ButtonBuilder()
+                        .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
+                        .setLabel('Open passage')
+                        .setEmoji({ name: '📖' })
+                        .setStyle(ButtonStyle.Secondary)
+                )
+        );
+    }
+
+    // Strong's Section — info tied to its action button.
+    const strongs = parseStrongs(person.uStrong);
+    if (strongs) {
+        container.addSectionComponents(
+            new SectionBuilder()
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📚 Strong's:** ${person.uStrong}`))
+                .setButtonAccessory(
+                    new ButtonBuilder()
+                        .setCustomId(`strongs:${strongs.lexicon}:${strongs.strongsId}`)
+                        .setLabel('Define')
+                        .setEmoji({ name: '📚' })
+                        .setStyle(ButtonStyle.Secondary)
+                )
+        );
+    }
+
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
         `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` | Result ${pageIdx + 1}/${totalPages}` : ''}`
     ));
 
     const components = [container];
-
-    // Row 1 — in-app actions
-    const actionButtons = [];
-    if (structured) {
-        actionButtons.push(new ButtonBuilder()
-            .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
-            .setLabel('Open first mention')
-            .setEmoji({ name: '📖' })
-            .setStyle(ButtonStyle.Secondary));
-    }
-    const strongs = parseStrongs(person.uStrong);
-    if (strongs) {
-        actionButtons.push(new ButtonBuilder()
-            .setCustomId(`strongs:${strongs.lexicon}:${strongs.strongsId}`)
-            .setLabel('Define')
-            .setEmoji({ name: '📚' })
-            .setStyle(ButtonStyle.Secondary));
-    }
-    if (actionButtons.length > 0) {
-        components.push(new ActionRowBuilder().addComponents(...actionButtons));
-    }
 
     if (totalPages > 1) {
         components.push(new ActionRowBuilder().addComponents(

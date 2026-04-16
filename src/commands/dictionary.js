@@ -18,7 +18,7 @@ import 'dotenv/config';
 const MAX_CHARS_PER_CHUNK = 3800;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 
-function buildDictionaryPage({ page, pageIdx, totalPages, matchType, rawWord, disableNav = false }) {
+function buildDictionaryPage({ page, pageIdx, totalPages, matchType, rawWord, matchedSources, missingSources, disableNav = false }) {
     const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
 
     const baseTitle = matchType === 'exact'
@@ -34,9 +34,19 @@ function buildDictionaryPage({ page, pageIdx, totalPages, matchType, rawWord, di
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor)
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${baseTitle}${chunkSuffix}`))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(page.chunk))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerText));
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${baseTitle}${chunkSuffix}`));
+
+    // Surface which dictionaries lacked an entry so the user doesn't think
+    // pagination is broken when only one source matched.
+    if (missingSources.length > 0) {
+        const label = missingSources.length === 1
+            ? `*${missingSources[0]} doesn't have an entry for "${rawWord}".*`
+            : `*${missingSources.join(' and ')} don't have entries for "${rawWord}".*`;
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(label));
+    }
+
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(page.chunk));
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(footerText));
 
     const components = [container];
 
@@ -97,6 +107,11 @@ export default {
 
             logger.info(`[Dictionary Command] Found ${results.length} result(s), matchType=${matchType}`);
 
+            // Compute which configured dictionaries matched vs missed this term.
+            const KNOWN_SOURCES = ["Easton's Bible Dictionary", "Smith's Bible Dictionary"];
+            const matchedSources = [...new Set(results.map(r => r.source_name))];
+            const missingSources = KNOWN_SOURCES.filter(s => !matchedSources.includes(s));
+
             // Flatten: one page per chunk per result
             const pages = [];
             for (const r of results) {
@@ -125,7 +140,7 @@ export default {
 
             await interaction.editReply({
                 flags,
-                components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord })
+                components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord, matchedSources, missingSources })
             });
 
             if (totalPages <= 1) return;
@@ -142,7 +157,7 @@ export default {
                     else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
                     await i.editReply({
                         flags,
-                        components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord })
+                        components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord, matchedSources, missingSources })
                     });
                 } catch (err) {
                     logger.error(`[Dictionary Command] Pagination error: ${err.message}`);
@@ -153,7 +168,7 @@ export default {
                 try {
                     await interaction.editReply({
                         flags,
-                        components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord, disableNav: true })
+                        components: buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord, matchedSources, missingSources, disableNav: true })
                     });
                 } catch (err) {
                     if (err.code !== 10008 && err.code !== 10062) {
