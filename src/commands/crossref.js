@@ -1,40 +1,83 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    SectionBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import { crossRefWrapper } from '../utils/studyHelper.js';
 import logger from '../utils/logger.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_PAGE = 4000;
+const REFS_PER_PAGE = 8;
 const COLLECTOR_TIMEOUT_MS = 600_000;
-
-function generateFooter(translation = "BSB", page, maxPages) {
-    return {
-        text: `${process.env.EMBEDFOOTERTEXT} | Translation: ${translation.toUpperCase()} | Page ${page + 1}/${maxPages}`,
-        iconURL: process.env.EMBEDICONURL
-    };
-}
-
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === totalPages - 1)
-    );
+const MAX_FETCH = 80; // cap on total refs we'll fetch text for
 
 function formatRefRange(book, chapter, startVerse, endVerse) {
     if (endVerse && endVerse > startVerse) {
         return `${book} ${chapter}:${startVerse}-${endVerse}`;
     }
     return `${book} ${chapter}:${startVerse}`;
+}
+
+function buildCrossrefPage({ data, pageIdx, totalPages, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const start = pageIdx * REFS_PER_PAGE;
+    const end = Math.min(start + REFS_PER_PAGE, data.refs.length);
+    const pageRefs = data.refs.slice(start, end);
+
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔗 Cross References — ${data.sourceLabel}${pageInfo}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${data.translation.toUpperCase()}:** ${data.sourceText}`));
+
+    const components = [container];
+
+    for (const ref of pageRefs) {
+        const section = new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${ref.label}** — ${ref.text}`))
+            .setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}`)
+                    .setLabel('Open')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+            );
+        components.push(section);
+    }
+
+    const totalRefs = data.totalRefCount ?? data.refs.length;
+    const footerSuffix = totalRefs > data.refs.length ? ` | ${data.refs.length} of ${totalRefs} shown` : '';
+    components.push(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${data.translation.toUpperCase()}${footerSuffix}`
+    ));
+
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+
+    return components;
 }
 
 export default {
@@ -79,186 +122,150 @@ export default {
                 )),
 
     async execute(interaction, database) {
-        await interaction.deferReply();
+        const rawBook = interaction.options.getString('book');
+        const chapterInput = interaction.options.getString('chapter');
+        const verseInput = interaction.options.getNumber('verse');
+
+        const chapter = parseInt(chapterInput);
+        if (isNaN(chapter) || chapter < 1) {
+            return interaction.reply({ content: 'Please provide a valid chapter number.', flags: MessageFlags.Ephemeral });
+        }
+        if (verseInput === null || !Number.isInteger(verseInput) || verseInput < 1) {
+            return interaction.reply({ content: 'Please provide a valid verse number.', flags: MessageFlags.Ephemeral });
+        }
+
+        const bookId = getBookId(rawBook);
+        const bookName = bookId ? numbersToBook.get(bookId) : null;
+        if (!bookId || !bookName) {
+            return interaction.reply({ content: `I couldn't find the book "${rawBook}".`, flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
             let translation = 'BSB';
             try {
                 const userPref = await database.getUserValue(interaction.user.id);
-                if (userPref?.translation) {
-                    translation = userPref.translation;
-                }
+                if (userPref?.translation) translation = userPref.translation;
             } catch (dbError) {
-                logger.error(`[Crossref Command] Failed to get user preference from DB: ${dbError}`);
+                logger.error(`[Crossref Command] Failed to get user preference: ${dbError}`);
             }
             translation = interaction.options.getString('translation') || translation;
 
-            const rawBook = interaction.options.getString('book');
-            const chapterInput = interaction.options.getString('chapter');
-            const verseInput = interaction.options.getNumber('verse');
+            logger.info(`[Crossref Command] Looking up ${bookName} ${chapter}:${verseInput} (${translation})`);
 
-            const chapter = parseInt(chapterInput);
-            if (isNaN(chapter) || chapter < 1) {
-                return interaction.editReply({
-                    content: 'Please provide a valid chapter number (must be 1 or greater).',
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            if (verseInput === null || !Number.isInteger(verseInput) || verseInput < 1) {
-                return interaction.editReply({
-                    content: 'Please provide a valid verse number (must be a whole number, 1 or greater).',
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-            const verse = verseInput;
-
-            const bookId = getBookId(rawBook);
-            const bookName = bookId ? numbersToBook.get(bookId) : null;
-            if (!bookId || !bookName) {
-                return interaction.editReply({
-                    content: `I couldn't find the book "${rawBook}". Please check the spelling or try using the full book name.`,
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-
-            logger.info(`[Crossref Command] Looking up cross-refs for ${bookName} ${chapter}:${verse} (Translation: ${translation})`);
-
-            const [crossRefResult, originalVerseResult] = await Promise.allSettled([
-                crossRefWrapper.getForVerse(bookName, chapter, verse),
-                bibleWrapper.getVerses(bookId, chapter, verse, verse)
+            const [crossRefResult, sourceResult] = await Promise.allSettled([
+                crossRefWrapper.getForVerse(bookName, chapter, verseInput),
+                bibleWrapper.getVerses(bookId, chapter, verseInput, verseInput)
             ]);
 
-            if (originalVerseResult.status === 'rejected' || !originalVerseResult.value || originalVerseResult.value.length === 0 || !originalVerseResult.value[0][translation]) {
-                logger.error(`[Crossref Command] Failed to fetch original verse ${bookName} ${chapter}:${verse} (${translation}): ${originalVerseResult.reason?.message || 'Not Found'}`);
-                return interaction.editReply({ content: `Sorry, I couldn't fetch the text for the original verse (${bookName} ${chapter}:${verse} - ${translation}). Please ensure the translation is available for this verse.`, flags: MessageFlags.Ephemeral });
+            if (sourceResult.status === 'rejected' || !sourceResult.value || sourceResult.value.length === 0 || !sourceResult.value[0][translation]) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ Couldn't fetch text for ${bookName} ${chapter}:${verseInput} in ${translation.toUpperCase()}.`
+                    )]
+                });
             }
-            const originalVerseText = originalVerseResult.value[0][translation];
-            const originalVerseRef = `**📍 ${bookName} ${chapter}:${verse} (${translation.toUpperCase()})**`;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            const sourceText = sourceResult.value[0][translation];
+            const sourceLabel = `${bookName} ${chapter}:${verseInput}`;
 
             if (crossRefResult.status === 'rejected' || !crossRefResult.value || crossRefResult.value.length === 0) {
-                logger.warn(`[Crossref Command] No cross-references found for ${bookName} ${chapter}:${verse}: ${crossRefResult.reason?.message || 'Empty result'}`);
-                const noRefsEmbed = new EmbedBuilder()
-                    .setTitle('📖 Cross References')
-                    .setDescription(`${originalVerseRef}\n${originalVerseText}\n\nNo cross-references found for this verse.`)
-                    .setColor(embedColor)
-                    .setURL(process.env.WEBSITE)
-                    .setFooter({ text: process.env.EMBEDFOOTERTEXT, iconURL: process.env.EMBEDICONURL });
-                return interaction.editReply({ embeds: [noRefsEmbed] });
+                logger.warn(`[Crossref Command] No cross-references for ${bookName} ${chapter}:${verseInput}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [
+                        new ContainerBuilder()
+                            .setAccentColor(process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459)
+                            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔗 Cross References — ${sourceLabel}`))
+                            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${translation.toUpperCase()}:** ${sourceText}`))
+                            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`\n*No cross-references found for this verse.*`))
+                    ]
+                });
             }
 
-            const crossRefs = crossRefResult.value;
-            logger.info(`[Crossref Command] Found ${crossRefs.length} cross-references`);
+            const rawRefs = crossRefResult.value;
+            const totalRefCount = rawRefs.length;
+            const fetchable = rawRefs.slice(0, MAX_FETCH);
 
-            const processedRefs = (await Promise.allSettled(crossRefs.map(async ref => {
+            const refs = (await Promise.allSettled(fetchable.map(async ref => {
                 const refBookId = getBookId(ref.target_book);
                 const refBookName = refBookId ? numbersToBook.get(refBookId) : null;
-                if (!refBookId || !refBookName) {
-                    logger.warn(`[Crossref Command] Unknown target book "${ref.target_book}" — skipping`);
-                    return null;
-                }
-
-                const { target_chapter: refChapter, target_verse_start: startVerse, target_verse_end: endVerse } = ref;
-                const fetchEnd = endVerse || startVerse;
-
-                const verseData = await bibleWrapper.getVerses(refBookId, refChapter, startVerse, fetchEnd);
-                if (!verseData || verseData.length === 0) return null;
-
-                const verseText = verseData
-                    .map(v => v[translation])
-                    .filter(Boolean)
-                    .join(' ');
-                if (!verseText) return null;
-
-                const refLabel = formatRefRange(refBookName, refChapter, startVerse, endVerse);
-                return `• **${refLabel}** - ${verseText}\n`;
+                if (!refBookId || !refBookName) return null;
+                const endVerse = ref.target_verse_end || ref.target_verse_start;
+                const data = await bibleWrapper.getVerses(refBookId, ref.target_chapter, ref.target_verse_start, endVerse);
+                if (!data || data.length === 0) return null;
+                const text = data.map(v => v[translation] || v.BSB).filter(Boolean).join(' ');
+                if (!text) return null;
+                return {
+                    label: formatRefRange(refBookName, ref.target_chapter, ref.target_verse_start, endVerse),
+                    text: text.length > 300 ? text.substring(0, 299) + '…' : text,
+                    bookId: refBookId,
+                    chapter: ref.target_chapter,
+                    startVerse: ref.target_verse_start
+                };
             })))
-                .filter(result => result.status === 'fulfilled' && result.value)
-                .map(result => result.value);
+                .filter(r => r.status === 'fulfilled' && r.value)
+                .map(r => r.value);
 
-            if (processedRefs.length === 0) {
-                logger.warn(`[Crossref Command] Found ${crossRefs.length} cross-ref rows but failed to fetch text for any in ${translation}`);
-                const noTextEmbed = new EmbedBuilder()
-                    .setTitle('📖 Cross References')
-                    .setDescription(`${originalVerseRef}\n${originalVerseText}\n\nCross-references were found, but I couldn't retrieve their text in the ${translation.toUpperCase()} translation.`)
-                    .setColor(embedColor)
-                    .setURL(process.env.WEBSITE)
-                    .setFooter({ text: process.env.EMBEDFOOTERTEXT, iconURL: process.env.EMBEDICONURL });
-                return interaction.editReply({ embeds: [noTextEmbed] });
+            if (refs.length === 0) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `Cross-references found for ${sourceLabel} but couldn't retrieve verse text in ${translation.toUpperCase()}.`
+                    )]
+                });
             }
 
-            const pages = [];
-            let currentPageContent = `${originalVerseRef}\n${originalVerseText}\n\n**🔗 Cross References:**\n`;
+            const data = { sourceLabel, sourceText, translation, refs, totalRefCount };
+            const totalPages = Math.ceil(refs.length / REFS_PER_PAGE);
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            for (const refText of processedRefs) {
-                if ((currentPageContent + refText).length > MAX_CHARS_PER_PAGE) {
-                    pages.push(currentPageContent.trim());
-                    currentPageContent = `${originalVerseRef}\n*Continued...*\n\n**🔗 Cross References:**\n${refText}`;
-                } else {
-                    currentPageContent += refText;
-                }
-            }
-            pages.push(currentPageContent.trim());
-
-            const embed = new EmbedBuilder()
-                .setTitle('📖 Cross References')
-                .setDescription(pages[0])
-                .setColor(embedColor)
-                .setURL(process.env.WEBSITE)
-                .setFooter(generateFooter(translation, 0, pages.length));
-
-            if (pages.length === 1) {
-                return interaction.editReply({ embeds: [embed] });
-            }
-
-            let currentPageIndex = 0;
-            const message = await interaction.editReply({
-                embeds: [embed],
-                components: [createActionRow(currentPageIndex, pages.length)]
+            await interaction.editReply({
+                flags,
+                components: buildCrossrefPage({ data, pageIdx, totalPages })
             });
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                componentType: ComponentType.Button,
-                time: COLLECTOR_TIMEOUT_MS
-            });
+            if (totalPages <= 1) return;
+
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_next') {
-                        currentPageIndex = (currentPageIndex + 1) % pages.length;
-                    } else if (i.customId === 'page_back') {
-                        currentPageIndex = (currentPageIndex - 1 + pages.length) % pages.length;
-                    }
-
-                    embed.setDescription(pages[currentPageIndex])
-                        .setFooter(generateFooter(translation, currentPageIndex, pages.length));
-
-                    await i.editReply({ embeds: [embed], components: [createActionRow(currentPageIndex, pages.length)] });
-                } catch (collectError) {
-                    logger.error(`[Crossref Command] Error updating pagination: ${collectError}`);
-                    try {
-                        await i.followUp({ content: 'There was an error changing the page.', flags: MessageFlags.Ephemeral });
-                    } catch { /* Ignore */ }
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildCrossrefPage({ data, pageIdx, totalPages })
+                    });
+                } catch (err) {
+                    logger.error(`[Crossref Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
-                logger.info(`[Crossref Command] Pagination collector ended for ${bookName} ${chapter}:${verse}`);
-                const timedOutRow = createActionRow(currentPageIndex, pages.length, true);
-                message.edit({ components: [timedOutRow] }).catch(editError => {
-                    logger.error(`[Crossref Command] Error disabling buttons after timeout: ${editError}`);
-                });
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildCrossrefPage({ data, pageIdx, totalPages, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Crossref Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
             logger.error(`[Crossref Command] Error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: 'Sorry, there was an error processing your cross-reference request. Please try again later.',
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ An error occurred processing your cross-reference request.`)]
                 });
             } catch (replyError) {
                 logger.error(`[Crossref Command] Failed to send error reply: ${replyError}`);

@@ -1,253 +1,158 @@
-import { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    SectionBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import { numbersToBook, bibleWrapper, bookAbbreviations } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 
-const MAX_VERSES_PER_PAGE = 2;
-const MAX_EMBED_CHARS = 1900;
-const PAGINATION_TIMEOUT_MS = 900000;
-const OPENAI_MODEL = "gpt-4o-mini";
+const VERSES_PER_PAGE = 5;
+const PAGINATION_TIMEOUT_MS = 900_000;
+const OPENAI_MODEL = 'gpt-4o-mini';
 const OPENAI_MAX_TOKENS = 500;
 const OPENAI_TEMPERATURE = 0.7;
-
-function generateFooter(translation = "BSB", page, maxPages = 2) {
-    return { text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()} | Page ${page + 1}/${maxPages}`, iconURL: process.env.EMBEDICONURL };
-}
-
-function joinPage(page, maxChars) {
-    return page.join("\n").slice(0, maxChars);
-}
+const VERSE_TEXT_TRUNCATE = 300;
 
 async function fetchAndParseVerseReferences(topic) {
     const prompt = `You are a Bible verse finder. Please find5 to 10 relevant verses about "${topic}" and respond ONLY with a JSON array in this exact format: [{"book": "abbreviated_name", "chapter": "chapter_number", "startVerse": "verse_number", "endVerse": "verse_number"}]. Use only these abbreviated names: gen, exo, lev, num, deu, jos, jdg, rut, 1sa, 2sa, 1ki, 2ki, 1ch, 2ch, ezr, neh, est, job, psa, pro, ecc, sos, isa, jer, lam, eze, dan, hos, joe, amo, oba, jon, mic, nah, hab, zep, hag, zec, mal, mat, mar, luk, joh, act, rom, 1co, 2co, gal, eph, php, col, 1th, 2th, 1ti, 2ti, tit, phm, heb, jam, 1pe, 2pe, 1jo, 2jo, 3jo, jde, rev. If no relevant verses are found, return an empty JSON array []. Do not include any text before or after the JSON array.`;
 
-    try {
-        const apiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
-            "model": OPENAI_MODEL,
-            "messages": [{ "role": "user", "content": prompt }],
-            "temperature": OPENAI_TEMPERATURE,
-            "max_tokens": OPENAI_MAX_TOKENS
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.OPENAIKEY}`
-            }
-        });
-
-        logger.info(`[Find Command] OpenAI raw response: ${JSON.stringify(apiResponse.data)}`);
-
-        const content = apiResponse?.data?.choices?.[0]?.message?.content;
-        if (!content) {
-            logger.error('[Find Command] Invalid API response structure from OpenAI');
-            throw new Error('Received an invalid response structure from the AI.');
+    const apiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
+        model: OPENAI_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: OPENAI_TEMPERATURE,
+        max_tokens: OPENAI_MAX_TOKENS
+    }, {
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAIKEY}`
         }
+    });
 
-        let parsedVerses;
-        try {
-            parsedVerses = JSON.parse(content.trim());
-        } catch (parseError) {
-            logger.error(`[Find Command] JSON parse error: ${parseError.message}. Content: "${content}"`);
-            throw new Error('Received an incorrectly formatted response from the AI.');
-        }
+    const content = apiResponse?.data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error('Received an invalid response structure from the AI.');
 
-        if (!Array.isArray(parsedVerses)) {
-            logger.error(`[Find Command] Parsed response is not an array. Content: "${content}"`);
-            throw new Error('Received an unexpected response format from the AI.');
-        }
-
-        for (const verse of parsedVerses) {
-            if (!verse || typeof verse !== 'object' || !verse.book || !verse.chapter || !verse.startVerse) {
-                logger.error(`[Find Command] Invalid verse object format in parsed response: ${JSON.stringify(verse)}`);
-                throw new Error('Received improperly structured verse data from the AI.');
-            }
-            if (!bookAbbreviations.has(verse.book.toLowerCase())) {
-                logger.warn(`[Find Command] OpenAI returned invalid book abbreviation: ${verse.book}`);
-            }
-        }
-
-        logger.info(`[Find Command] Parsed verses: ${JSON.stringify(parsedVerses)}`);
-        return parsedVerses;
-    } catch (error) {
-        if (axios.isAxiosError(error)) {
-            logger.error(`[Find Command] OpenAI API error: ${error.message}`);
-            if (error.response) {
-                logger.error(`[Find Command] OpenAI API error details: Status ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`);
-            }
-            throw new Error('Failed to communicate with the AI service.');
-        }
-        throw error;
-    }
+    const parsed = JSON.parse(content.trim());
+    if (!Array.isArray(parsed)) throw new Error('AI response was not an array.');
+    return parsed;
 }
 
-async function formatVerseDescriptions(parsedVerses, translation) {
-    let description = [];
-    let validVerseCount = 0;
-
-    for (const verseRef of parsedVerses) {
-        const book = verseRef.book.toLowerCase();
+async function resolveVerses(parsedVerses, translation) {
+    const resolved = [];
+    for (const ref of parsedVerses) {
+        const book = ref.book?.toLowerCase();
         const bookId = bookAbbreviations.get(book);
-        const chapter = parseInt(verseRef.chapter);
-        const startVerse = parseInt(verseRef.startVerse);
-        const endVerse = parseInt(verseRef.endVerse) || startVerse;
-
-        logger.info(`[Find Command] Processing verse reference - Book: ${book}, Chapter: ${chapter}, Verses: ${startVerse}-${endVerse}, BookId: ${bookId}`);
+        const chapter = parseInt(ref.chapter);
+        const startVerse = parseInt(ref.startVerse);
+        const endVerse = parseInt(ref.endVerse) || startVerse;
 
         if (!bookId || isNaN(chapter) || chapter <= 0 || isNaN(startVerse) || startVerse <= 0 || isNaN(endVerse) || endVerse < startVerse) {
-            logger.warn(`[Find Command] Invalid verse data from AI - Ref: ${JSON.stringify(verseRef)}, Parsed: BookId=${bookId}, C=${chapter}, S=${startVerse}, E=${endVerse}`);
+            logger.warn(`[Find Command] Invalid AI ref: ${JSON.stringify(ref)}`);
             continue;
         }
 
         try {
-            let versesFromAPI = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse);
+            const data = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse);
+            if (!data || data.length === 0) continue;
 
-            if (!versesFromAPI || versesFromAPI.length === 0) {
-                logger.warn(`[Find Command] No verses returned from Bible API for ${book} ${chapter}:${startVerse}-${endVerse} (${translation})`);
-                continue;
-            }
+            const text = data.map((v, idx) => {
+                const num = idx + startVerse;
+                const t = v[translation];
+                if (!t) return `[${translation} unavailable]`;
+                return (idx > 0 ? ` **${num}** ` : '') + t;
+            }).join('');
 
-            let verseText = versesFromAPI.map((verseData, index) => {
-                const number = index + startVerse;
-                const text = verseData[translation];
-                if (!text) {
-                    logger.warn(`[Find Command] Translation '${translation}' not found for ${book} ${chapter}:${number}. Available: ${Object.keys(verseData)}`);
-                    return `[Translation ${translation} not available]`;
-                }
-                return (index > 0 ? ` <**${number}**> ` : "") + text;
-            }).join("");
+            if (!text) continue;
 
-            const prettyBookName = numbersToBook.get(bookId);
-            const verseRange = startVerse === endVerse ? startVerse : `${startVerse}-${endVerse}`;
+            const bookName = numbersToBook.get(bookId);
+            const rangeLabel = endVerse !== startVerse
+                ? `${bookName} ${chapter}:${startVerse}-${endVerse}`
+                : `${bookName} ${chapter}:${startVerse}`;
+            const truncatedText = text.length > VERSE_TEXT_TRUNCATE
+                ? text.substring(0, VERSE_TEXT_TRUNCATE - 1) + '…'
+                : text;
 
-            description.push(`**${prettyBookName} ${chapter}:${verseRange}**: ${verseText}\n`);
-            validVerseCount++;
-        } catch (bibleApiError) {
-            logger.error(`[Find Command] Error fetching from Bible API for ${book} ${chapter}:${startVerse}-${endVerse}: ${bibleApiError.message}`);
-            continue;
+            resolved.push({
+                bookId, bookName, chapter, startVerse, endVerse,
+                rangeLabel,
+                text: truncatedText
+            });
+        } catch (err) {
+            logger.error(`[Find Command] Error fetching ${book} ${chapter}:${startVerse}-${endVerse}: ${err.message}`);
         }
     }
-
-    return { description, validVerseCount };
+    return resolved;
 }
 
-async function sendPaginatedReply(interaction, embed, description, translation, requestedTopic) {
-    let pages = [];
-    let tempArr = [];
-    for (const verse of description) {
-        if (tempArr.length === MAX_VERSES_PER_PAGE) {
-            pages.push(tempArr);
-            tempArr = [];
-        }
-        tempArr.push(verse);
-    }
-    if (tempArr.length > 0) {
-        pages.push(tempArr);
+function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav = false }) {
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+    const start = pageIdx * VERSES_PER_PAGE;
+    const end = Math.min(start + VERSES_PER_PAGE, verses.length);
+    const pageVerses = verses.slice(start, end);
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔍 Verses about "${topic}"${pageInfo}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`*AI-suggested passages. Tap Open on any verse for full exploration.*`));
+
+    const components = [container];
+
+    for (const v of pageVerses) {
+        const section = new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${v.rangeLabel}** — ${v.text}`))
+            .setButtonAccessory(
+                new ButtonBuilder()
+                    .setCustomId(`openverse:bible:${v.bookId}:${v.chapter}:${v.startVerse}`)
+                    .setLabel('Open')
+                    .setEmoji({ name: '📖' })
+                    .setStyle(ButtonStyle.Secondary)
+            );
+        components.push(section);
     }
 
-    if (pages.length <= 1) {
-        const defaultFooter = { text: process.env.EMBEDFOOTERTEXT + ` | Translation: ${translation.toUpperCase()}`, iconURL: process.env.EMBEDICONURL };
-        embed.setFooter(defaultFooter).setDescription(joinPage(pages[0] || [], MAX_EMBED_CHARS));
+    components.push(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}`
+    ));
 
-        const disclaimerButton = new ButtonBuilder()
+    // Bottom row: pagination (if multi-page) + AI disclaimer button.
+    // The disclaimer button (customId 'bias_alert') is handled globally by
+    // src/components/buttons/bias.js — no local collector needed for it.
+    const rowButtons = [];
+    if (totalPages > 1) {
+        rowButtons.push(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        );
+    }
+    rowButtons.push(
+        new ButtonBuilder()
+            .setCustomId('bias_alert')
+            .setEmoji({ name: '💡' })
+            .setLabel('Disclaimer')
             .setStyle(ButtonStyle.Secondary)
-            .setLabel("💡 Disclaimer")
-            .setCustomId("bias_alert");
-        const row = new ActionRowBuilder().addComponents(disclaimerButton);
+    );
+    components.push(new ActionRowBuilder().addComponents(...rowButtons));
 
-        const replyMessage = await interaction.editReply({ embeds: [embed], components: [row], fetchReply: true });
-
-        const singlePageCollector = replyMessage.createMessageComponentCollector({
-            componentType: ComponentType.Button,
-            time: PAGINATION_TIMEOUT_MS
-        });
-
-        singlePageCollector.on('collect', async i => {
-            if (i.user.id !== interaction.user.id) {
-                try { await i.deferUpdate(); } catch (e) {
-                    logger.warn(`[Find Command] Failed to defer user check interaction: ${e.message}`);
-                }
-                await i.followUp({ content: 'You cannot use this button.', flags: MessageFlags.Ephemeral });
-                return;
-            }
-        });
-
-        singlePageCollector.on('end', _collected => {
-            logger.info(`[Find Command] Disclaimer collector ended for single-page topic "${requestedTopic}".`);
-            _collected;
-            interaction.editReply({ embeds: [embed], components: [] })
-                .catch(editError => {
-                    logger.warn(`[Find Command] Failed to remove disclaimer button after timeout: ${editError.message}`);
-                });
-        });
-
-        return;
-    }
-
-    const paginationButtons = [
-        new ButtonBuilder().setStyle(ButtonStyle.Secondary).setEmoji("◀️").setLabel("Previous").setCustomId("page_back"),
-        new ButtonBuilder().setStyle(ButtonStyle.Secondary).setEmoji("▶️").setLabel("Next").setCustomId("page_next"),
-    ];
-    const actionRow = new ActionRowBuilder().addComponents(...paginationButtons);
-    const disclaimerButton = new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("💡 Disclaimer").setCustomId("bias_alert");
-    const secondRow = new ActionRowBuilder().addComponents(disclaimerButton);
-
-    let currentPage = 0;
-
-    const messagePayload = {
-        embeds: [embed.setFooter(generateFooter(translation, currentPage, pages.length)).setDescription(joinPage(pages[currentPage], MAX_EMBED_CHARS))],
-        components: [actionRow, secondRow],
-        fetchReply: true
-    };
-
-    const replyMessage = await interaction.editReply(messagePayload);
-
-    const collector = replyMessage.createMessageComponentCollector({
-        componentType: ComponentType.Button,
-        time: PAGINATION_TIMEOUT_MS
-    });
-
-    collector.on('collect', async i => {
-        if (i.user.id !== interaction.user.id) {
-            try { await i.deferUpdate(); } catch (e) {
-                logger.warn(`[Find Command] Failed to defer user check interaction: ${e.message}`);
-            }
-            await i.followUp({ content: 'You cannot use this button.', flags: MessageFlags.Ephemeral });
-            return;
-        }
-
-        try {
-            await i.deferUpdate();
-
-            if (i.customId === 'page_next') {
-                currentPage = (currentPage + 1) % pages.length;
-            } else if (i.customId === 'page_back') {
-                currentPage = (currentPage - 1 + pages.length) % pages.length;
-            }
-
-            const updatedEmbed = EmbedBuilder.from(embed)
-                .setFooter(generateFooter(translation, currentPage, pages.length))
-                .setDescription(joinPage(pages[currentPage], MAX_EMBED_CHARS));
-
-            await i.editReply({
-                embeds: [updatedEmbed],
-                components: [actionRow, secondRow]
-            });
-        } catch (updateError) {
-            logger.warn(`[Find Command] Failed to update interaction after pagination: ${updateError.message} (Code: ${updateError.code})`);
-        }
-    });
-
-    collector.on('end', collected => {
-        logger.info(`[Find Command] Pagination collector ended for topic "${requestedTopic}". Collected ${collected.size} interactions.`);
-        const finalEmbed = EmbedBuilder.from(embed)
-            .setFooter(generateFooter(translation, currentPage, pages.length) + ' | Buttons inactive')
-            .setDescription(joinPage(pages[currentPage], MAX_EMBED_CHARS));
-
-        interaction.editReply({ embeds: [finalEmbed], components: [] })
-            .catch(editError => {
-                logger.warn(`[Find Command] Failed to edit message after collector timeout: ${editError.message}`);
-            });
-    });
+    return components;
 }
 
 export default {
@@ -280,60 +185,100 @@ export default {
                 )),
 
     async execute(interaction, database) {
-        await interaction.deferReply();
-        const requestedTopic = swearWordFilter(interaction.options.getString('topic'));
-        logger.info(`[Find Command] User ${interaction.user.id} searching for topic: "${requestedTopic}"`);
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
+            const topic = swearWordFilter(interaction.options.getString('topic'));
             const defaultTranslation = await database.getUserValue(interaction.user.id);
             const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
-            logger.info(`[Find Command] Using translation: ${translation}`);
+            logger.info(`[Find Command] User ${interaction.user.id} topic: "${topic}" (${translation})`);
 
             let parsedVerses;
             try {
-                parsedVerses = await fetchAndParseVerseReferences(requestedTopic);
-            } catch (error) {
-                logger.error(`[Find Command] Error fetching/parsing verses: ${error.message}`);
-                return interaction.editReply({ content: `⚠️ Sorry, I encountered an issue while trying to understand the AI's response for "${requestedTopic}". Please try again. (${error.message})` });
+                parsedVerses = await fetchAndParseVerseReferences(topic);
+            } catch (err) {
+                logger.error(`[Find Command] AI fetch error: ${err.message}`);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `⚠️ Couldn't process AI response for "${topic}". ${err.message}`
+                    )]
+                });
             }
 
             if (!parsedVerses || parsedVerses.length === 0) {
-                logger.info(`[Find Command] No relevant verses found by AI for topic: ${requestedTopic}`);
-                return interaction.editReply({ content: `ℹ️ I couldn't find any specific verses directly related to "${requestedTopic}". Perhaps try rephrasing your topic?` });
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `ℹ️ I couldn't find any specific verses directly related to "${topic}". Try rephrasing.`
+                    )]
+                });
             }
 
-            const { description, validVerseCount } = await formatVerseDescriptions(parsedVerses, translation);
-
-            if (validVerseCount === 0) {
-                logger.warn(`[Find Command] No valid verses could be fetched or formatted for topic: ${requestedTopic}, despite AI providing references.`);
-                return interaction.editReply({ content: `⚠️ Although the AI suggested some verses for "${requestedTopic}", I couldn't retrieve or format them correctly. Please try again later.` });
+            const verses = await resolveVerses(parsedVerses, translation);
+            if (verses.length === 0) {
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `⚠️ The AI suggested verses for "${topic}" but I couldn't retrieve text for any of them.`
+                    )]
+                });
             }
 
-            let embedColor = 0x0099FF;
-            if (process.env.EMBEDCOLOR) {
+            const totalPages = Math.ceil(verses.length / VERSES_PER_PAGE);
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
+
+            await interaction.editReply({
+                flags,
+                components: buildFindPage({ verses, pageIdx, totalPages, topic, translation })
+            });
+
+            if (totalPages <= 1) return;
+
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: PAGINATION_TIMEOUT_MS });
+
+            collector.on('collect', async i => {
                 try {
-                    embedColor = parseInt(process.env.EMBEDCOLOR.replace(/^#/, ''), 16);
-                } catch (e) {
-                    logger.warn(`[Find Command] Invalid EMBEDCOLOR format: ${process.env.EMBEDCOLOR}. Using default.`);
+                    await i.deferUpdate();
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+                    await i.editReply({
+                        flags,
+                        components: buildFindPage({ verses, pageIdx, totalPages, topic, translation })
+                    });
+                } catch (err) {
+                    logger.error(`[Find Command] Pagination error: ${err.message}`);
                 }
-            }
+            });
 
-            const embed = new EmbedBuilder()
-                .setTitle(`Verses regarding "${requestedTopic}"`)
-                .setColor(embedColor)
-                .setURL(process.env.WEBSITE);
-
-            logger.debug(`Embed color being used: ${embedColor.toString(16)}`);
-
-            await sendPaginatedReply(interaction, embed, description, translation, requestedTopic);
+            collector.on('end', async () => {
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Find Command] End error: ${err.message}`);
+                    }
+                }
+            });
         } catch (error) {
-            logger.error(`[Find Command] Unhandled error in execute: ${error.message}`);
-            logger.error(error.stack);
-            if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: '⚠️ An unexpected error occurred while processing your request.', flags: MessageFlags.Ephemeral });
-            } else {
-                await interaction.editReply({ content: '⚠️ An unexpected error occurred while processing your request.' });
+            logger.error(`[Find Command] Unhandled error: ${error.message}`, error.stack);
+            try {
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `⚠️ An unexpected error occurred while processing your request.`
+                    )]
+                });
+            } catch (replyError) {
+                logger.error(`[Find Command] Failed to send error reply: ${replyError}`);
             }
         }
-    },
+    }
 };

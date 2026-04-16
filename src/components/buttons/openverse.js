@@ -11,6 +11,7 @@ import { bibleWrapper, numbersToBook, getBookId } from '../../utils/bibleHelper.
 import { commentaryWrapper, crossRefWrapper, toCommentaryBookCodes, COMMENTATORS } from '../../utils/studyHelper.js';
 import { renderInterlinearEphemeral } from '../../utils/interlinearRenderer.js';
 import { renderParallelEphemeral } from '../../utils/parallelRenderer.js';
+import { renderBibleEphemeral } from '../../utils/bibleRenderer.js';
 import logger from '../../utils/logger.js';
 import 'dotenv/config';
 
@@ -57,6 +58,10 @@ function standardFooter(extra = '') {
 
 async function handleInterlinear({ interaction, bookId, chapter, verse, translation }) {
     await renderInterlinearEphemeral({ interaction, bookId, chapter, verse, translation });
+}
+
+async function handleBible({ interaction, bookId, chapter, verse, translation }) {
+    await renderBibleEphemeral({ interaction, bookId, chapter, verse, translation });
 }
 
 // --- Commentary (with fallback chain + commentator dropdown) -------------
@@ -358,6 +363,8 @@ export default {
 
         try {
             switch (action) {
+                case 'bible':
+                    return await handleBible({ interaction, bookId, chapter, verse, translation });
                 case 'interlinear':
                     return await handleInterlinear({ interaction, bookId, chapter, verse, translation });
                 case 'commentary':

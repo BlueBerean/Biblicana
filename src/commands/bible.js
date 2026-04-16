@@ -1,43 +1,13 @@
 import {
     SlashCommandBuilder,
-    ContainerBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
     MessageFlags,
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import { getBookId } from '../utils/bibleHelper.js';
+import { fetchBibleVerseData, buildBibleComponents } from '../utils/bibleRenderer.js';
 import logger from '../utils/logger.js';
-
-const MAX_BODY_CHARS = 3800;
-
-function buildVerseActionRow(bookId, chapter, verse) {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId(`openverse:interlinear:${bookId}:${chapter}:${verse}`)
-            .setLabel('Interlinear')
-            .setEmoji({ name: '📖' })
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId(`openverse:commentary:${bookId}:${chapter}:${verse}`)
-            .setLabel('Commentary')
-            .setEmoji({ name: '📚' })
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId(`openverse:xref:${bookId}:${chapter}:${verse}`)
-            .setLabel('Cross-refs')
-            .setEmoji({ name: '🔗' })
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId(`openverse:parallel:${bookId}:${chapter}:${verse}`)
-            .setLabel('Parallel')
-            .setEmoji({ name: '📑' })
-            .setStyle(ButtonStyle.Secondary)
-    );
-}
 
 export default {
     data: new SlashCommandBuilder()
@@ -73,10 +43,7 @@ export default {
 
     async execute(interaction, database) {
         const rawBook = interaction.options.getString('book').split(" ").join("");
-        logger.info(`[Bible Command] Raw book input: ${rawBook}`);
-
         const bookId = getBookId(rawBook);
-        logger.info(`[Bible Command] Book ID lookup result: ${bookId}`);
 
         if (!bookId) {
             logger.warn(`[Bible Command] Could not find book ID for: ${rawBook}`);
@@ -102,75 +69,23 @@ export default {
         try {
             const defaultTranslation = await database.getUserValue(interaction.user.id);
             const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
-            const bookName = numbersToBook.get(bookId);
-            const rangeLabel = endVerse !== startVerse
-                ? `${bookName} ${chapter}:${startVerse}-${endVerse}`
-                : `${bookName} ${chapter}:${startVerse}`;
 
-            logger.info(`[Bible Command] Looking up ${bookId} (${bookName}) ${chapter}:${startVerse}-${endVerse} in ${translation}`);
+            logger.info(`[Bible Command] Looking up ${bookId} ${chapter}:${startVerse}-${endVerse} in ${translation}`);
 
-            const verses = await bibleWrapper.getVerses(bookId, chapter, startVerse, endVerse, translation);
-
-            if (!verses || verses.length === 0) {
+            const data = await fetchBibleVerseData({ bookId, chapter, startVerse, endVerse, translation });
+            if (!data) {
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(`❌ I couldn't find any verses for ${rangeLabel}!`)]
+                    components: [new TextDisplayBuilder().setContent(`❌ No verse text available for this reference in ${translation.toUpperCase()}.`)]
                 });
-            }
-
-            verses.sort((a, b) => a.verse - b.verse);
-
-            let body = '';
-            let truncated = false;
-            for (let i = 0; i < verses.length; i++) {
-                const verseNum = verses[i].verse;
-                const text = verses[i][translation];
-                if (!text) continue;
-
-                const nextChunk = (body ? ' ' : '') + `**${verseNum}** ${text}`;
-                if (body.length + nextChunk.length > MAX_BODY_CHARS) {
-                    truncated = true;
-                    break;
-                }
-                body += nextChunk;
-            }
-
-            if (!body) {
-                return interaction.editReply({
-                    flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(`❌ No text available for ${rangeLabel} in ${translation.toUpperCase()}.`)]
-                });
-            }
-
-            if (truncated) {
-                body += '\n\n*Truncated — try a smaller range.*';
-            }
-
-            const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
-            const footer = `${process.env.EMBEDFOOTERTEXT || ''} | Translation: ${translation.toUpperCase()}`.trim();
-
-            const container = new ContainerBuilder()
-                .setAccentColor(accentColor)
-                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${rangeLabel}`))
-                .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
-                .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${footer}`));
-
-            const components = [container];
-
-            // Only attach action buttons for single-verse lookups — range lookups
-            // have no single verse to run commentary/crossref/etc. against.
-            if (startVerse === endVerse) {
-                components.push(buildVerseActionRow(bookId, chapter, startVerse));
             }
 
             return interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components
+                components: buildBibleComponents({ data, includeActionRow: true })
             });
         } catch (error) {
-            logger.error(`[Bible Command] Error processing request: ${error.message}`);
-            logger.error(error.stack);
-
+            logger.error(`[Bible Command] Error processing request: ${error.message}`, error.stack);
             try {
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,

@@ -1,4 +1,15 @@
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    ContainerBuilder,
+    SectionBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags,
+    ApplicationIntegrationType,
+    InteractionContextType
+} from 'discord.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
@@ -6,10 +17,12 @@ import { numbersToBook } from '../utils/bibleHelper.js';
 import { commentaryWrapper, fromCommentaryBookCode } from '../utils/studyHelper.js';
 import 'dotenv/config';
 
-const MAX_CHARS_PER_CHUNK = 3800;
+const MAX_CHARS_PER_CHUNK = 3500;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 
-function formatScriptureRef(p) {
+// Returns { label, bookId, chapter, verse } — or null if no usable reference.
+// bookId/chapter/verse are populated only when resolvable enough for an openverse button.
+function resolveScriptureRef(p) {
     const bookId = fromCommentaryBookCode(p.referenceBook);
     const bookName = bookId ? numbersToBook.get(bookId) : p.referenceBook;
     if (!bookName) return null;
@@ -19,41 +32,90 @@ function formatScriptureRef(p) {
     const endChapter = p.referenceEndChapter;
     const endVerse = p.referenceEndVerse;
 
-    if (!chapter) return bookName;
+    if (!chapter) return { label: bookName, bookId: null, chapter: null, verse: null };
 
+    let label;
     if (endChapter && endChapter !== chapter) {
         const endPart = endVerse ? `${endChapter}:${endVerse}` : `${endChapter}`;
-        return `${bookName} ${chapter}:${verse} – ${endPart}`;
+        label = `${bookName} ${chapter}:${verse} – ${endPart}`;
+    } else if (endVerse && endVerse !== verse) {
+        label = `${bookName} ${chapter}:${verse}-${endVerse}`;
+    } else {
+        label = verse ? `${bookName} ${chapter}:${verse}` : `${bookName} ${chapter}`;
     }
-    if (endVerse && endVerse !== verse) {
-        return `${bookName} ${chapter}:${verse}-${endVerse}`;
-    }
-    return verse ? `${bookName} ${chapter}:${verse}` : `${bookName} ${chapter}`;
-}
 
-function generateFooter(page, maxPages, source) {
-    const pageText = maxPages > 1 ? ` | Page ${page + 1}/${maxPages}` : '';
+    const openable = bookId && chapter && verse;
     return {
-        text: `${process.env.EMBEDFOOTERTEXT} | ${source}${pageText}`,
-        iconURL: process.env.EMBEDICONURL
+        label,
+        bookId: openable ? bookId : null,
+        chapter: openable ? chapter : null,
+        verse: openable ? verse : null
     };
 }
 
-const createActionRow = (currentPage, totalPages, isEnd = false) => new ActionRowBuilder()
-    .addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji('◀️')
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji('▶️')
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(isEnd || currentPage === totalPages - 1)
-    );
+function buildProfilePage({ page, pageIdx, totalPages, matchType, rawTopic, disableNav = false }) {
+    const { profile, chunk, chunkIdx, totalChunksForProfile } = page;
+    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
+
+    const titleBase = matchType === 'fuzzy'
+        ? `Profile: ${profile.subject} (match for "${rawTopic}")`
+        : `Profile: ${profile.subject}`;
+    const chunkSuffix = totalChunksForProfile > 1
+        ? ` (${chunkIdx + 1}/${totalChunksForProfile})`
+        : '';
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor)
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📚 ${titleBase}${chunkSuffix}${pageInfo}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(chunk));
+
+    // Primary Reference — only on the first chunk of each profile, to avoid repetition.
+    if (chunkIdx === 0) {
+        const ref = resolveScriptureRef(profile);
+        if (ref) {
+            if (ref.bookId && ref.chapter && ref.verse) {
+                // Resolvable to a specific verse → Section with [📖 Open passage] button
+                const section = new SectionBuilder()
+                    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 Primary Reference:** ${ref.label}`))
+                    .setButtonAccessory(
+                        new ButtonBuilder()
+                            .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.verse}`)
+                            .setLabel('Open passage')
+                            .setEmoji({ name: '📖' })
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                container.addSectionComponents(section);
+            } else {
+                // Book-only or ambiguous — just show the reference as text
+                container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**📖 Primary Reference:** ${ref.label}`));
+            }
+        }
+    }
+
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${profile.commentaryName || 'Tyndale Open Study Notes'}${pageInfo}`
+    ));
+
+    const components = [container];
+    if (totalPages > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('page_back')
+                .setEmoji({ name: '◀️' })
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === 0),
+            new ButtonBuilder()
+                .setCustomId('page_next')
+                .setEmoji({ name: '▶️' })
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disableNav || pageIdx === totalPages - 1)
+        ));
+    }
+    return components;
+}
 
 export default {
     data: new SlashCommandBuilder()
@@ -69,119 +131,86 @@ export default {
                 .setMaxLength(100)),
 
     async execute(interaction) {
-        await interaction.deferReply();
+        const rawTopic = interaction.options.getString('topic').trim();
+        const cleanTopic = swearWordFilter(rawTopic);
+        if (!cleanTopic) {
+            return interaction.reply({ content: 'Please provide a valid topic.', flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const rawTopic = interaction.options.getString('topic').trim();
-            const cleanTopic = swearWordFilter(rawTopic);
-            if (!cleanTopic) {
-                return interaction.editReply({ content: 'Please provide a valid topic.', flags: MessageFlags.Ephemeral });
-            }
-
             logger.info(`[Profile Command] Searching: "${cleanTopic}"`);
-
             const { results, matchType } = await commentaryWrapper.searchProfiles(cleanTopic);
 
             if (!results || results.length === 0) {
                 return interaction.editReply({
-                    content: `❌ No profile found for "${rawTopic}". Try names like Abraham, David, Mary, or groups like "The Pharisees".`,
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `❌ No profile found for "${rawTopic}". Try names like Abraham, David, Mary, or groups like "The Pharisees".`
+                    )]
                 });
             }
 
             logger.info(`[Profile Command] Found ${results.length} profile(s), matchType=${matchType}`);
 
             const pages = [];
-            for (const p of results) {
-                const ref = formatScriptureRef(p);
-                const chunks = splitString(p.content || '(No content)', MAX_CHARS_PER_CHUNK);
+            for (const profile of results) {
+                const chunks = splitString(profile.content || '(No content)', MAX_CHARS_PER_CHUNK);
                 chunks.forEach((chunk, chunkIdx) => {
-                    pages.push({
-                        chunk,
-                        subject: p.subject,
-                        reference: ref,
-                        source: p.commentaryName || 'Tyndale Open Study Notes',
-                        chunkIdx,
-                        totalChunksForProfile: chunks.length,
-                    });
+                    pages.push({ profile, chunk, chunkIdx, totalChunksForProfile: chunks.length });
                 });
             }
 
-            if (pages.length === 0) {
-                return interaction.editReply({ content: 'An error occurred while formatting the profile.', flags: MessageFlags.Ephemeral });
-            }
-
             const totalPages = pages.length;
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
+            let pageIdx = 0;
+            const flags = MessageFlags.IsComponentsV2;
 
-            const buildEmbed = (idx) => {
-                const p = pages[idx];
-                const titleBase = matchType === 'fuzzy'
-                    ? `📚 Profile: ${p.subject} (match for "${rawTopic}")`
-                    : `📚 Profile: ${p.subject}`;
-                const chunkSuffix = p.totalChunksForProfile > 1
-                    ? ` (${p.chunkIdx + 1}/${p.totalChunksForProfile})`
-                    : '';
-
-                const embed = new EmbedBuilder()
-                    .setTitle(`${titleBase}${chunkSuffix}`)
-                    .setDescription(p.chunk)
-                    .setColor(embedColor)
-                    .setURL(process.env.WEBSITE)
-                    .setFooter(generateFooter(idx, totalPages, p.source));
-
-                if (p.chunkIdx === 0 && p.reference) {
-                    embed.addFields({ name: '📖 Primary Reference', value: p.reference, inline: true });
-                }
-
-                return embed;
-            };
-
-            let currentPageIndex = 0;
-            const message = await interaction.editReply({
-                embeds: [buildEmbed(currentPageIndex)],
-                components: totalPages > 1 ? [createActionRow(currentPageIndex, totalPages)] : []
+            await interaction.editReply({
+                flags,
+                components: buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic })
             });
 
             if (totalPages <= 1) return;
 
-            const filter = i => i.user.id === interaction.user.id;
-            const collector = message.createMessageComponentCollector({
-                filter,
-                componentType: ComponentType.Button,
-                time: COLLECTOR_TIMEOUT_MS
-            });
+            const message = await interaction.fetchReply();
+            const filter = i => i.user.id === interaction.user.id &&
+                (i.customId === 'page_back' || i.customId === 'page_next');
+            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
             collector.on('collect', async i => {
                 try {
                     await i.deferUpdate();
-                    if (i.customId === 'page_back') {
-                        currentPageIndex = Math.max(0, currentPageIndex - 1);
-                    } else if (i.customId === 'page_next') {
-                        currentPageIndex = Math.min(totalPages - 1, currentPageIndex + 1);
-                    }
+                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
+                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
                     await i.editReply({
-                        embeds: [buildEmbed(currentPageIndex)],
-                        components: [createActionRow(currentPageIndex, totalPages)]
+                        flags,
+                        components: buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic })
                     });
-                } catch (collectError) {
-                    logger.error(`[Profile Command] Pagination error: ${collectError}`);
+                } catch (err) {
+                    logger.error(`[Profile Command] Pagination error: ${err.message}`);
                 }
             });
 
-            collector.on('end', () => {
+            collector.on('end', async () => {
                 logger.info(`[Profile Command] Pagination collector ended for "${rawTopic}"`);
-                const finalComponents = createActionRow(currentPageIndex, totalPages, true);
-                message.edit({ components: [finalComponents] }).catch(editError => {
-                    if (editError.code !== 10008) logger.error(`[Profile Command] Error disabling buttons: ${editError}`);
-                });
+                try {
+                    await interaction.editReply({
+                        flags,
+                        components: buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic, disableNav: true })
+                    });
+                } catch (err) {
+                    if (err.code !== 10008 && err.code !== 10062) {
+                        logger.error(`[Profile Command] End error: ${err.message}`);
+                    }
+                }
             });
         } catch (error) {
             logger.error(`[Profile Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({
-                    content: 'An unexpected error occurred. Please try again later.',
-                    flags: MessageFlags.Ephemeral
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(`❌ An unexpected error occurred. Please try again later.`)]
                 });
             } catch (replyError) {
                 logger.error(`[Profile Command] Failed to send error reply: ${replyError}`);
