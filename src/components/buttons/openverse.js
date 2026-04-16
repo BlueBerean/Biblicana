@@ -10,6 +10,7 @@ import {
 import { bibleWrapper, numbersToBook, getBookId } from '../../utils/bibleHelper.js';
 import { commentaryWrapper, crossRefWrapper, toCommentaryBookCodes, COMMENTATORS } from '../../utils/studyHelper.js';
 import { renderInterlinearEphemeral } from '../../utils/interlinearRenderer.js';
+import { renderParallelEphemeral } from '../../utils/parallelRenderer.js';
 import logger from '../../utils/logger.js';
 import 'dotenv/config';
 
@@ -28,13 +29,6 @@ const COMMENTARY_FALLBACK_ORDER = [
     'adam-clarke',
     'keil-delitzsch',
     'tyndale'
-];
-
-// Subset of bible.db 'english' table columns that carry translation text.
-const TRANSLATION_COLUMNS = [
-    'BSB', 'NASB', 'KJV', 'NKJV', 'ASV', 'AKJV',
-    'CPDV', 'DBT', 'DRB', 'ERV', 'JPSWEY',
-    'NHEB', 'SLT', 'WBT', 'WEB', 'YLT'
 ];
 
 async function userTranslation(database, userId) {
@@ -334,121 +328,8 @@ async function handleCrossref({ interaction, bookId, chapter, verse, bookName, t
 
 // --- Parallel (single page, all translations local) ----------------------
 
-const PARALLEL_MAX_CHARS_PER_PAGE = 3800;
-
-async function handleParallel({ interaction, bookId, chapter, verse, bookName }) {
-    const rows = await bibleWrapper.getVerses(bookId, chapter, verse, verse);
-    if (!rows || rows.length === 0) {
-        return interaction.reply({
-            content: `Couldn't fetch ${bookName} ${chapter}:${verse}.`,
-            flags: MessageFlags.Ephemeral
-        });
-    }
-
-    const row = rows[0];
-    const lines = [];
-    for (const col of TRANSLATION_COLUMNS) {
-        const text = row[col];
-        if (text && typeof text === 'string' && text.trim()) {
-            const label = col === 'JPSWEY' ? 'JPS/WEY' : col;
-            lines.push(`**${label}**: ${text.trim()}`);
-        }
-    }
-
-    if (lines.length === 0) {
-        return interaction.reply({
-            content: `No translations found for ${bookName} ${chapter}:${verse}.`,
-            flags: MessageFlags.Ephemeral
-        });
-    }
-
-    // Adaptive packing: fit as many translations per page as the char budget allows.
-    // Short verses (e.g. John 3:16) collapse to one page; long verses (Esther 8:9) get several.
-    const pages = [];
-    let currentPage = [];
-    let currentLength = 0;
-    for (const line of lines) {
-        const addedLength = line.length + (currentPage.length > 0 ? 2 : 0); // +2 for the "\n\n" separator
-        if (currentLength + addedLength > PARALLEL_MAX_CHARS_PER_PAGE && currentPage.length > 0) {
-            pages.push(currentPage);
-            currentPage = [line];
-            currentLength = line.length;
-        } else {
-            currentPage.push(line);
-            currentLength += addedLength;
-        }
-    }
-    if (currentPage.length > 0) pages.push(currentPage);
-
-    const totalPages = pages.length;
-    let currentPageIdx = 0;
-
-    const buildEmbed = (pageIdx) => new EmbedBuilder()
-        .setColor(baseEmbedColor())
-        .setTitle(`📑 Parallel Translations — ${bookName} ${chapter}:${verse}`)
-        .setDescription(pages[pageIdx].join('\n\n'))
-        .setURL(process.env.WEBSITE)
-        .setFooter(standardFooter(
-            totalPages > 1
-                ? `${lines.length} translations | Page ${pageIdx + 1}/${totalPages}`
-                : `${lines.length} translations`
-        ));
-
-    const buildRow = (pageIdx, disabled = false) => new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji({ name: '◀️' })
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled || pageIdx === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji({ name: '▶️' })
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disabled || pageIdx === totalPages - 1)
-    );
-
-    await interaction.reply({
-        embeds: [buildEmbed(0)],
-        components: totalPages > 1 ? [buildRow(0)] : [],
-        flags: MessageFlags.Ephemeral
-    });
-
-    if (totalPages <= 1) return;
-
-    try {
-        const message = await interaction.fetchReply();
-        const filter = i => i.user.id === interaction.user.id &&
-            (i.customId === 'page_back' || i.customId === 'page_next');
-        const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-        collector.on('collect', async i => {
-            try {
-                await i.deferUpdate();
-                if (i.customId === 'page_next') currentPageIdx = Math.min(totalPages - 1, currentPageIdx + 1);
-                else currentPageIdx = Math.max(0, currentPageIdx - 1);
-                await i.editReply({ embeds: [buildEmbed(currentPageIdx)], components: [buildRow(currentPageIdx)] });
-            } catch (err) {
-                logger.error(`[OpenVerse Parallel] Pagination error: ${err.message}`);
-            }
-        });
-
-        collector.on('end', async () => {
-            try {
-                await interaction.editReply({
-                    embeds: [buildEmbed(currentPageIdx)],
-                    components: [buildRow(currentPageIdx, true)]
-                });
-            } catch (err) {
-                if (err.code !== 10008 && err.code !== 10062) {
-                    logger.error(`[OpenVerse Parallel] End error: ${err.message}`);
-                }
-            }
-        });
-    } catch (err) {
-        logger.error(`[OpenVerse Parallel] Setup error: ${err.message}`);
-    }
+async function handleParallel({ interaction, bookId, chapter, verse, translation }) {
+    await renderParallelEphemeral({ interaction, bookId, chapter, verse, primaryTranslation: translation });
 }
 
 // --- Dispatcher -----------------------------------------------------------
@@ -484,7 +365,7 @@ export default {
                 case 'xref':
                     return await handleCrossref({ interaction, bookId, chapter, verse, bookName, translation });
                 case 'parallel':
-                    return await handleParallel({ interaction, bookId, chapter, verse, bookName });
+                    return await handleParallel({ interaction, bookId, chapter, verse, translation });
                 default:
                     return interaction.reply({ content: `Unknown action: ${action}`, flags: MessageFlags.Ephemeral });
             }

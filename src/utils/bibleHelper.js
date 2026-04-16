@@ -92,6 +92,29 @@ class BibleWrapper {
             [book, chapter, verse]
         );
     }
+
+    /**
+     * Returns a single random verse row, optionally scoped to a book or a
+     * specific chapter within a book. Returns undefined if no row matches.
+     */
+    async getRandomVerse(filterBookId = null, filterChapter = null) {
+        const db = await this.db;
+        const conditions = [];
+        const params = [];
+        if (filterBookId) {
+            conditions.push('bookID = ?');
+            params.push(filterBookId);
+        }
+        if (filterChapter) {
+            conditions.push('chapter = ?');
+            params.push(filterChapter);
+        }
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        return db.get(
+            `SELECT * FROM english ${whereClause} ORDER BY RANDOM() LIMIT 1`,
+            params
+        );
+    }
 }
 
 class StrongsWrapper {
