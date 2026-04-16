@@ -12,6 +12,7 @@ import {
 import { createRequire } from 'node:module';
 import logger from '../utils/logger.js';
 import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
 const require = createRequire(import.meta.url);
@@ -33,18 +34,17 @@ function parseVOTDReference(refString) {
 }
 
 function buildPassageOfTheDayResponse({ bookId, bookName, chapter, startVerse, endVerse, body, translation, dateString }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const rangeLabel = endVerse > startVerse
         ? `${bookName} ${chapter}:${startVerse}-${endVerse}`
         : `${bookName} ${chapter}:${startVerse}`;
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📅 Daily Passage — ${dateString}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### ${rangeLabel}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}`
+            footerLine(`Translation: ${translation.toUpperCase()}`)
         ));
 
     // Action row: Open passage (range-aware), plus per-verse chain actions on startVerse.

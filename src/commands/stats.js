@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
+import { accentColor } from '../utils/theme.js';
 import 'dotenv/config';
 
 function formatUptime(ms) {
@@ -36,11 +37,9 @@ export default {
             const guildCount = client.guilds.cache.size;
             const userCount = client.users.cache.size;
 
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR) : 0x0099FF;
-
             const embed = new EmbedBuilder()
                 .setTitle('📊 Bot Statistics')
-                .setColor(embedColor)
+                .setColor(accentColor())
                 .setURL(process.env.WEBSITE)
                 .setDescription(`Here are the current stats for ${client.user.username}:`)
                 .addFields(

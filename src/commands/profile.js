@@ -3,7 +3,6 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -15,10 +14,11 @@ import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
 import { numbersToBook } from '../utils/bibleHelper.js';
 import { commentaryWrapper, fromCommentaryBookCode } from '../utils/studyHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 const MAX_CHARS_PER_CHUNK = 3500;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 
 // Returns { label, bookId, chapter, verse } — or null if no usable reference.
 // bookId/chapter/verse are populated only when resolvable enough for an openverse button.
@@ -55,7 +55,6 @@ function resolveScriptureRef(p) {
 
 function buildProfilePage({ page, pageIdx, totalPages, matchType, rawTopic, disableNav = false }) {
     const { profile, chunk, chunkIdx, totalChunksForProfile } = page;
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
 
     const titleBase = matchType === 'fuzzy'
         ? `Profile: ${profile.subject} (match for "${rawTopic}")`
@@ -66,7 +65,7 @@ function buildProfilePage({ page, pageIdx, totalPages, matchType, rawTopic, disa
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📚 ${titleBase}${chunkSuffix}${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(chunk));
 
@@ -93,26 +92,15 @@ function buildProfilePage({ page, pageIdx, totalPages, matchType, rawTopic, disa
         }
     }
 
+    const commentaryLabel = profile.commentaryName || 'Tyndale Open Study Notes';
+    const pageSuffix = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${profile.commentaryName || 'Tyndale Open Study Notes'}${pageInfo}`
+        footerLine(`${commentaryLabel}${pageSuffix}`)
     ));
 
     const components = [container];
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
     return components;
 }
@@ -163,47 +151,18 @@ export default {
             }
 
             const totalPages = pages.length;
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildProfilePage({ page: pages[0], pageIdx: 0, totalPages, matchType, rawTopic })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic })
-                    });
-                } catch (err) {
-                    logger.error(`[Profile Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                logger.info(`[Profile Command] Pagination collector ended for "${rawTopic}"`);
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Profile Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Profile Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic, disableNav })
             });
         } catch (error) {
             logger.error(`[Profile Command] Unhandled error: ${error.message}`, error.stack);

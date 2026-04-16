@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
+import { accentColor } from '../utils/theme.js';
 import 'dotenv/config';
 
 export default {
@@ -53,12 +54,10 @@ export default {
                 throw new Error('Database operation returned unsuccessful status.');
             }
 
-            const embedColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x0099FF;
-
             let embed = new EmbedBuilder()
                 .setTitle('✅ Default Translation Set')
                 .setDescription(`Your default Bible translation has been set to **${translation}**. Commands like \`/find\` will now use this by default.`)
-                .setColor(embedColor)
+                .setColor(accentColor())
                 .setURL(process.env.WEBSITE)
                 .setFooter({
                     text: process.env.EMBEDFOOTERTEXT,

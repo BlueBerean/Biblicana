@@ -7,6 +7,7 @@ import {
     MessageFlags
 } from 'discord.js';
 import { bibleWrapper, numbersToBook } from './bibleHelper.js';
+import { accentColor, footerLine } from './theme.js';
 import logger from './logger.js';
 
 const MAX_CHARS_PER_PAGE = 3800;
@@ -79,18 +80,16 @@ export function packParallelPages(lines) {
  */
 export function buildParallelPage({ data, pages, pageIdx = 0, includePaginationRow = true, disableNav = false }) {
     const totalPages = pages.length;
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
-
     const pageInfo = totalPages > 1 ? ` (Page ${pageIdx + 1}/${totalPages})` : '';
-    const footerLine = totalPages > 1
-        ? `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${data.lines.length} translations | Page ${pageIdx + 1}/${totalPages}`
-        : `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${data.lines.length} translations`;
+    const footerSuffix = totalPages > 1
+        ? `${data.lines.length} translations | Page ${pageIdx + 1}/${totalPages}`
+        : `${data.lines.length} translations`;
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📑 Parallel Translations — ${data.bookName} ${data.chapter}:${data.verse}${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(pages[pageIdx].join('\n\n')))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerLine));
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerLine(footerSuffix)));
 
     const components = [container];
 

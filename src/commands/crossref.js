@@ -3,7 +3,6 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -12,11 +11,12 @@ import {
 } from 'discord.js';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import { crossRefWrapper } from '../utils/studyHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 import 'dotenv/config';
 
 const REFS_PER_PAGE = 8;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_FETCH = 80; // cap on total refs we'll fetch text for
 
 function formatRefRange(book, chapter, startVerse, endVerse) {
@@ -27,7 +27,6 @@ function formatRefRange(book, chapter, startVerse, endVerse) {
 }
 
 function buildCrossrefPage({ data, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const start = pageIdx * REFS_PER_PAGE;
     const end = Math.min(start + REFS_PER_PAGE, data.refs.length);
     const pageRefs = data.refs.slice(start, end);
@@ -35,7 +34,7 @@ function buildCrossrefPage({ data, pageIdx, totalPages, disableNav = false }) {
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔗 Cross References — ${data.sourceLabel}${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${data.translation.toUpperCase()}:** ${data.sourceText}`));
 
@@ -56,28 +55,14 @@ function buildCrossrefPage({ data, pageIdx, totalPages, disableNav = false }) {
     });
 
     const totalRefs = data.totalRefCount ?? data.refs.length;
-    const footerSuffix = totalRefs > data.refs.length ? ` | ${data.refs.length} of ${totalRefs} shown` : '';
+    const shownSuffix = totalRefs > data.refs.length ? ` | ${data.refs.length} of ${totalRefs} shown` : '';
     components.push(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${data.translation.toUpperCase()}${footerSuffix}`
+        footerLine(`Translation: ${data.translation.toUpperCase()}${shownSuffix}`)
     ));
 
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
-
     return components;
 }
 
@@ -177,7 +162,7 @@ export default {
                     flags: MessageFlags.IsComponentsV2,
                     components: [
                         new ContainerBuilder()
-                            .setAccentColor(process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459)
+                            .setAccentColor(accentColor())
                             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔗 Cross References — ${sourceLabel}`))
                             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${translation.toUpperCase()}:** ${sourceText}`))
                             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`\n*No cross-references found for this verse.*`))
@@ -221,46 +206,19 @@ export default {
 
             const data = { sourceLabel, sourceText, translation, refs, totalRefCount };
             const totalPages = Math.ceil(refs.length / REFS_PER_PAGE);
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
 
-            await interaction.editReply({
-                flags,
-                components: buildCrossrefPage({ data, pageIdx, totalPages })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildCrossrefPage({ data, pageIdx: 0, totalPages })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildCrossrefPage({ data, pageIdx, totalPages })
-                    });
-                } catch (err) {
-                    logger.error(`[Crossref Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildCrossrefPage({ data, pageIdx, totalPages, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Crossref Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Crossref Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildCrossrefPage({ data, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
             logger.error(`[Crossref Command] Error: ${error.message}`, error.stack);

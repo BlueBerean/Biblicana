@@ -14,13 +14,14 @@ import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import logger from '../utils/logger.js';
 import { getBookId } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 const RESULTS_PER_PAGE = 6;
 const MAX_RESULTS_FROM_API = 30;
 const MAX_CONTEXT_CHARS = 80;
 const MAX_TEXT_CHARS = 500;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const API_TIMEOUT_MS = 8000;
 
 // Parses context strings like "Matthew 5:17", "1 Corinthians 13:4-7", etc.
@@ -45,13 +46,12 @@ function truncate(text, max) {
 }
 
 function buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const start = pageIdx * RESULTS_PER_PAGE;
     const pageResults = results.slice(start, start + RESULTS_PER_PAGE);
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `## 📚 Topic Study: ${rawTopic}${pageInfo}`
         ))
@@ -93,8 +93,9 @@ function buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav = f
         container.addSectionComponents(section);
     });
 
+    const pageSuffix = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${results.length} result${results.length === 1 ? '' : 's'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+        footerLine(`${results.length} result${results.length === 1 ? '' : 's'}${pageSuffix}`)
     ));
 
     const components = [container];
@@ -209,46 +210,18 @@ export default {
             }
 
             const totalPages = Math.ceil(results.length / RESULTS_PER_PAGE);
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildTopicPage({ results, pageIdx, totalPages, rawTopic })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildTopicPage({ results, pageIdx: 0, totalPages, rawTopic })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildTopicPage({ results, pageIdx, totalPages, rawTopic })
-                    });
-                } catch (err) {
-                    logger.error(`[Topic Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Topic Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Topic Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav })
             });
         } catch (error) {
             logger.error(`[Topic Command] Unhandled error: ${error.message}`, error.stack);

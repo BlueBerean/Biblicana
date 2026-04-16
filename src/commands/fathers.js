@@ -11,12 +11,13 @@ import {
 } from 'discord.js';
 import { fathersWrapper, toCommentaryBookVariants } from '../utils/studyHelper.js';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
 const MAX_TEXT_LENGTH = 3500;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 
 function truncate(text, max) {
     if (!text) return '';
@@ -25,7 +26,6 @@ function truncate(text, max) {
 }
 
 function buildFatherPage({ entry, bookId, bookName, chapter, verse, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const pageInfo = totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : '';
 
     const headerLines = [`## 📜 ${entry.father_name} on ${bookName} ${chapter}:${verse}${pageInfo}`];
@@ -34,13 +34,13 @@ function buildFatherPage({ entry, bookId, bookName, chapter, verse, pageIdx, tot
     }
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(headerLines.join('\n')))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             truncate(entry.txt || '*No commentary text available.*', MAX_TEXT_LENGTH)
         ))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${entry.father_name}${totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : ''}`
+            footerLine(`${entry.father_name}${totalPages > 1 ? ` · ${pageIdx + 1}/${totalPages}` : ''}`)
         ));
 
     const components = [container];
@@ -75,22 +75,8 @@ function buildFatherPage({ entry, bookId, bookName, chapter, verse, pageIdx, tot
     }
 
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
-
     return components;
 }
 
@@ -155,59 +141,27 @@ export default {
 
             logger.info(`[Fathers Command] Found ${results.length} entries`);
 
-            let pageIdx = 0;
             const totalPages = results.length;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
                 components: buildFatherPage({
-                    entry: results[pageIdx],
+                    entry: results[0],
                     bookId, bookName: canonicalBookName, chapter, verse,
-                    pageIdx, totalPages
+                    pageIdx: 0, totalPages
                 })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildFatherPage({
-                            entry: results[pageIdx],
-                            bookId, bookName: canonicalBookName, chapter, verse,
-                            pageIdx, totalPages
-                        })
-                    });
-                } catch (err) {
-                    logger.error(`[Fathers Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildFatherPage({
-                            entry: results[pageIdx],
-                            bookId, bookName: canonicalBookName, chapter, verse,
-                            pageIdx, totalPages, disableNav: true
-                        })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Fathers Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Fathers Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildFatherPage({
+                        entry: results[pageIdx],
+                        bookId, bookName: canonicalBookName, chapter, verse,
+                        pageIdx, totalPages, disableNav
+                    })
             });
         } catch (error) {
             logger.error(`[Fathers Command] Unhandled error: ${error.message}`, error.stack);

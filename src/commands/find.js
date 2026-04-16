@@ -13,6 +13,8 @@ import {
 import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import { numbersToBook, bibleWrapper, bookAbbreviations } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 
 const VERSES_PER_PAGE = 5;
@@ -96,14 +98,13 @@ async function resolveVerses(parsedVerses, translation) {
 }
 
 function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const start = pageIdx * VERSES_PER_PAGE;
     const end = Math.min(start + VERSES_PER_PAGE, verses.length);
     const pageVerses = verses.slice(start, end);
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔍 Verses about "${topic}"${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`*AI-suggested passages. Tap Open on any verse for full exploration.*`));
 
@@ -124,7 +125,7 @@ function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disabl
     });
 
     components.push(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}`
+        footerLine(`Translation: ${translation.toUpperCase()}`)
     ));
 
     // Bottom row: pagination (if multi-page) + AI disclaimer button.
@@ -241,46 +242,19 @@ export default {
             }
 
             const totalPages = Math.ceil(verses.length / VERSES_PER_PAGE);
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildFindPage({ verses, pageIdx, totalPages, topic, translation })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildFindPage({ verses, pageIdx: 0, totalPages, topic, translation })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: PAGINATION_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildFindPage({ verses, pageIdx, totalPages, topic, translation })
-                    });
-                } catch (err) {
-                    logger.error(`[Find Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Find Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Find Command]',
+                timeoutMs: PAGINATION_TIMEOUT_MS,
+                render: (pageIdx, { disableNav }) =>
+                    buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav })
             });
         } catch (error) {
             logger.error(`[Find Command] Unhandled error: ${error.message}`, error.stack);

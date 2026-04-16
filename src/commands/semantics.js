@@ -2,21 +2,19 @@ import {
     SlashCommandBuilder,
     ContainerBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
     MessageFlags,
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import axios from 'axios';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import splitString from '../utils/splitString.js';
+import { fetchIQBible } from '../utils/rapidApi.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 const MAX_CHARS_PER_PAGE = 3800;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const API_TIMEOUT_MS = 6000;
 
 function formatRelationType(type) {
@@ -35,36 +33,22 @@ function getRelationEmoji(type) {
 }
 
 function buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `## 🧠 Semantic Relations — "${rawWord}"${pageInfo}`
         ))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(chunks[pageIdx]))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+            footerLine(totalPages > 1 ? `Page ${pageIdx + 1}/${totalPages}` : '')
         ));
 
     const components = [container];
 
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
 
     return components;
@@ -95,22 +79,9 @@ export default {
         try {
             logger.info(`[Semantics Command] Looking up: "${word}"`);
 
-            const options = {
-                method: 'GET',
-                url: 'https://iq-bible.p.rapidapi.com/GetSemanticRelations',
-                params: { word },
-                headers: {
-                    'x-rapidapi-key': process.env.RAPIDAPIKEY,
-                    'x-rapidapi-host': 'iq-bible.p.rapidapi.com'
-                }
-            };
-
             let apiResponseData;
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-                const response = await axios.request({ ...options, signal: controller.signal });
-                clearTimeout(timeoutId);
+                const response = await fetchIQBible('GetSemanticRelations', { word }, { timeoutMs: API_TIMEOUT_MS });
                 apiResponseData = response.data;
             } catch (apiError) {
                 logger.error(`[Semantics Command] API request failed for "${word}": ${apiError.message}`);
@@ -158,46 +129,18 @@ export default {
 
             const chunks = splitString(combinedContent.trim(), MAX_CHARS_PER_PAGE);
             const totalPages = chunks.length;
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildSemanticsPage({ chunks, pageIdx: 0, totalPages, rawWord })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord })
-                    });
-                } catch (err) {
-                    logger.error(`[Semantics Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Semantics Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Semantics Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord, disableNav })
             });
         } catch (error) {
             logger.error(`[Semantics Command] Unhandled error: ${error.message}`, error.stack);

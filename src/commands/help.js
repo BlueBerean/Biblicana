@@ -9,6 +9,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
+import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
 const COLLECTOR_TIMEOUT_MS = 600_000;
@@ -153,14 +154,13 @@ const CATEGORIES = [
 
 function buildHelpPage(currentId) {
     const category = CATEGORIES.find(c => c.id === currentId) || CATEGORIES[0];
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${category.emoji} ${category.label}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(category.body))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Pick any category below to navigate.`
+            footerLine('Pick any category below to navigate.')
         ));
 
     const selectRow = new ActionRowBuilder().addComponents(

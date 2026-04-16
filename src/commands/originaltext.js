@@ -10,10 +10,11 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import axios from 'axios';
 import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
+import { fetchIQBible } from '../utils/rapidApi.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 // Discord's 40-component tree cap: 2 (header) + 10*3 (word Sections) + 3
@@ -21,7 +22,6 @@ import 'dotenv/config';
 // Greek verse and paginates long Hebrew ones across a few pages.
 const WORDS_PER_PAGE_NO_NAV = 11;
 const WORDS_PER_PAGE_WITH_NAV = 10;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const HEBREW_COLOR = 0x3498DB;
 const GREEK_COLOR = 0x9B59B6;
 const MAX_SECTION_TEXT = 280;
@@ -147,20 +147,7 @@ function buildOriginalTextPage({
     ));
 
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
 
     return components;
@@ -229,18 +216,8 @@ export default {
             const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verseInput.toString().padStart(3, '0')}`;
             logger.info(`[OriginalText Command] Request: ${bookName} ${chapter}:${verseInput} (ID: ${verseId}, Translation: ${translation})`);
 
-            const apiOptions = {
-                method: 'GET',
-                url: 'https://iq-bible.p.rapidapi.com/GetOriginalText',
-                params: { verseId },
-                headers: {
-                    'x-rapidapi-key': process.env.RAPIDAPIKEY,
-                    'x-rapidapi-host': 'iq-bible.p.rapidapi.com'
-                }
-            };
-
             const [originalTextResult, englishVerseResult] = await Promise.allSettled([
-                axios.request(apiOptions),
+                fetchIQBible('GetOriginalText', { verseId }),
                 bibleWrapper.getVerses(bookId, chapter, verseInput, verseInput)
             ]);
 
@@ -291,15 +268,13 @@ export default {
             const needsPagination = words.length > WORDS_PER_PAGE_NO_NAV;
             const wordsPerPage = needsPagination ? WORDS_PER_PAGE_WITH_NAV : WORDS_PER_PAGE_NO_NAV;
             const totalPages = needsPagination ? Math.ceil(words.length / wordsPerPage) : 1;
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
 
             logger.info(`[OriginalText Command] ${words.length} words across ${totalPages} page(s).`);
 
-            await interaction.editReply({
-                flags,
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
                 components: buildOriginalTextPage({
-                    words, pageIdx, wordsPerPage, totalPages,
+                    words, pageIdx: 0, wordsPerPage, totalPages,
                     bookId, bookName, chapter, verse: verseInput,
                     translation, englishVerseText, originalJoined, languageType
                 })
@@ -307,45 +282,15 @@ export default {
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildOriginalTextPage({
-                            words, pageIdx, wordsPerPage, totalPages,
-                            bookId, bookName, chapter, verse: verseInput,
-                            translation, englishVerseText, originalJoined, languageType
-                        })
-                    });
-                } catch (err) {
-                    logger.error(`[OriginalText Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildOriginalTextPage({
-                            words, pageIdx, wordsPerPage, totalPages,
-                            bookId, bookName, chapter, verse: verseInput,
-                            translation, englishVerseText, originalJoined, languageType,
-                            disableNav: true
-                        })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[OriginalText Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[OriginalText Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildOriginalTextPage({
+                        words, pageIdx, wordsPerPage, totalPages,
+                        bookId, bookName, chapter, verse: verseInput,
+                        translation, englishVerseText, originalJoined, languageType, disableNav
+                    })
             });
         } catch (error) {
             logger.error(`[OriginalText Command] Unhandled error: ${error.message}`, error.stack);

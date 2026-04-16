@@ -11,11 +11,12 @@ import {
 } from 'discord.js';
 import { placesWrapper } from '../utils/studyHelper.js';
 import { getBookId } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_DESC_LENGTH = 3000;
 
 // uniqueName format: "PlaceName_Book.Chapter.Verse" (e.g., "Akeldama_Mat.27.7").
@@ -69,7 +70,6 @@ function buildMapsLink(lonlat) {
 }
 
 function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const { name, firstRef, structured } = displayName(place.unique_name);
     const displayTitle = place.openbible_name || name;
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
@@ -83,7 +83,7 @@ function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
     if (place.lonlat) facts.push(`**🧭 Coordinates:** ${place.lonlat}`);
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📍 ${displayTitle}${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(description));
 
@@ -92,7 +92,7 @@ function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
     }
 
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` | Result ${pageIdx + 1}/${totalPages}` : ''}`
+        footerLine(totalPages > 1 ? `Result ${pageIdx + 1}/${totalPages}` : '')
     ));
 
     const components = [container];
@@ -147,21 +147,7 @@ function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
     }
 
     if (totalPages > 1) {
-        const navRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        );
-        components.push(navRow);
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
 
     return components;
@@ -202,47 +188,19 @@ export default {
 
             logger.info(`[Places Command] Found ${results.length} match(es)`);
 
-            let currentPage = 0;
             const totalPages = results.length;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildPlacePage({ place: results[currentPage], pageIdx: currentPage, totalPages })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildPlacePage({ place: results[0], pageIdx: 0, totalPages })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') currentPage = Math.max(0, currentPage - 1);
-                    else if (i.customId === 'page_next') currentPage = Math.min(totalPages - 1, currentPage + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildPlacePage({ place: results[currentPage], pageIdx: currentPage, totalPages })
-                    });
-                } catch (err) {
-                    logger.error(`[Places Command] Collector error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildPlacePage({ place: results[currentPage], pageIdx: currentPage, totalPages, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Places Command] Error disabling pagination: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Places Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildPlacePage({ place: results[pageIdx], pageIdx, totalPages, disableNav })
             });
         } catch (error) {
             logger.error(`[Places Command] Unhandled error: ${error.message}`, error.stack);

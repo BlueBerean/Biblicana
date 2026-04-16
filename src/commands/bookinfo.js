@@ -3,22 +3,22 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
+import { fetchIQBible } from '../utils/rapidApi.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 const MAX_PROSE_CHARS = 3500;
 const REFS_PER_PAGE = 8;
-const COLLECTOR_TIMEOUT_MS = 600_000;
 
 // Parses "Genesis 1:1", "1 Samuel 7:12", "Psalm 22:1-5", etc.
 // Returns null when unparseable so the button can be disabled.
@@ -138,13 +138,12 @@ function buildPages(bookInfo) {
 }
 
 function buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const page = pages[pageIdx];
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     const chunkSuffix = page.totalChunks > 1 ? ` (${page.chunkIdx + 1}/${page.totalChunks})` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `## 📖 ${bookName}${pageInfo}`
         ))
@@ -184,28 +183,13 @@ function buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav = 
     }
 
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${bookName}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+        footerLine(`${bookName}${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`)
     ));
 
     const components = [container];
-
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
-
     return components;
 }
 
@@ -237,20 +221,10 @@ export default {
         try {
             logger.info(`[BookInfo Command] Looking up book: ${bookName} (ID: ${bookId})`);
 
-            const options = {
-                method: 'GET',
-                url: 'https://iq-bible.p.rapidapi.com/GetBookInfo',
-                params: {
-                    bookId: bookId.toString().padStart(2, '0'),
-                    language: 'english'
-                },
-                headers: {
-                    'x-rapidapi-key': process.env.RAPIDAPIKEY,
-                    'x-rapidapi-host': 'iq-bible.p.rapidapi.com'
-                }
-            };
-
-            const response = await axios.request(options);
+            const response = await fetchIQBible('GetBookInfo', {
+                bookId: bookId.toString().padStart(2, '0'),
+                language: 'english'
+            });
             const bookInfo = response.data;
 
             if (!bookInfo) {
@@ -269,46 +243,20 @@ export default {
             }
 
             const totalPages = pages.length;
-            let pageIdx = 0;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildBookInfoPage({ bookName, pages, pageIdx, totalPages })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildBookInfoPage({ bookName, pages, pageIdx: 0, totalPages })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildBookInfoPage({ bookName, pages, pageIdx, totalPages })
-                    });
-                } catch (err) {
-                    logger.error(`[BookInfo Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[BookInfo Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction,
+                message,
+                totalPages,
+                logLabel: '[BookInfo Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
             logger.error(`[BookInfo Command] Error: ${error.message}`, error.stack);

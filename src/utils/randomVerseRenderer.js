@@ -6,6 +6,7 @@ import {
     ButtonStyle
 } from 'discord.js';
 import { bibleWrapper, numbersToBook } from './bibleHelper.js';
+import { accentColor, footerLine } from './theme.js';
 
 /**
  * Fetches a single random verse row (optionally filtered by book/chapter) and
@@ -59,7 +60,6 @@ export async function fetchRandomVerseData({ filterBookId = null, filterChapter 
  * Pass 0 (or null) for "no filter".
  */
 export function buildRandomVerseComponents({ data, filterBookId = 0, filterChapter = 0 }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const scopeHint = filterBookId && filterChapter
         ? ` (filtered to ${numbersToBook.get(filterBookId)} ${filterChapter})`
         : filterBookId
@@ -67,10 +67,12 @@ export function buildRandomVerseComponents({ data, filterBookId = 0, filterChapt
             : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🎲 Random Verse — ${data.bookName} ${data.chapter}:${data.verse}${scopeHint}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${data.verse}** ${data.text}`))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${data.translation.toUpperCase()}`));
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            footerLine(`Translation: ${data.translation.toUpperCase()}`)
+        ));
 
     const actionRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()

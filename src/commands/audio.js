@@ -10,41 +10,28 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
+import { fetchIQBible } from '../utils/rapidApi.js';
+import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
-const API_TIMEOUT_MS = 15000;
 const HARDCODED_VERSION = 'kjv';
 
 async function fetchAudioNarration(bookId, chapter, version) {
-    const options = {
-        method: 'GET',
-        url: 'https://iq-bible.p.rapidapi.com/GetAudioNarration',
-        params: {
-            bookId: bookId.toString().padStart(2, '0'),
-            chapterId: chapter.toString().padStart(3, '0'),
-            versionId: version
-        },
-        headers: {
-            'x-rapidapi-key': process.env.RAPIDAPIKEY,
-            'x-rapidapi-host': 'iq-bible.p.rapidapi.com'
-        },
-        timeout: API_TIMEOUT_MS
+    const params = {
+        bookId: bookId.toString().padStart(2, '0'),
+        chapterId: chapter.toString().padStart(3, '0'),
+        versionId: version
     };
-
-    logger.info(`[Audio Command] Fetching audio:`, options.params);
-    const response = await axios.request(options);
-    return response;
+    logger.info(`[Audio Command] Fetching audio:`, params);
+    return fetchIQBible('GetAudioNarration', params);
 }
 
 function buildAudioResponse({ bookId, bookName, chapter, audioUrl }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
-
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `## 🔊 ${bookName} ${chapter} — Audio Narration (KJV)`
         ))
@@ -52,7 +39,7 @@ function buildAudioResponse({ bookId, bookName, chapter, audioUrl }) {
             `Listen to ${bookName} chapter ${chapter} narrated in the King James Version.\n\n💻 Audio player appears inline on desktop. 📱 Mobile users: tap **Download MP3** below.`
         ))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | MP3 format`
+            footerLine('MP3 format')
         ));
 
     // Row 1 — in-app actions routed through openverse

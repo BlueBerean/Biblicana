@@ -14,6 +14,7 @@ import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import { commentaryWrapper, toCommentaryBookCodes, COMMENTATORS } from '../utils/studyHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
 const MAX_CHARS_PER_PAGE = 3800;
@@ -109,18 +110,16 @@ function buildComponents({
     const chapterTag = isChapterLevel ? ' (chapter intro)' : '';
     const pageInfo = pages.length > 1 ? ` (Page ${pageIdx + 1}/${pages.length})` : '';
 
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
-
     const headerLines = [`## 📚 ${commentator.label}: ${titleRef}${chapterTag}${pageInfo}`];
     if (wasFallback && preferredLabel) {
         headerLines.push('', `*${preferredLabel} had no commentary on this reference — showing ${commentator.label} instead. Switch below.*`);
     }
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(headerLines.join('\n')))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(pages[pageIdx]))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${commentator.label}`));
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerLine(commentator.label)));
 
     const components = [container, buildCommentarySelect({ available, currentId: commentatorId, disabled: disableSelect })];
     if (pages.length > 1) {

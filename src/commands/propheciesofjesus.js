@@ -3,7 +3,6 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -15,13 +14,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import logger from '../utils/logger.js';
 import { getBookId } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PROPHECIES_PER_PAGE = 5;
-const PAGINATION_TIMEOUT_MS = 600_000;
 const MAX_DESCRIPTION_CHARS = 350;
 
 // Parses refs like "Isaiah 7:14", "Matthew 1:23", "Genesis 22:1-14", "2 Samuel 7:12".
@@ -54,13 +54,12 @@ function buildOpenCustomId(ref, uniqueSuffix) {
 }
 
 function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const start = pageIdx * PROPHECIES_PER_PAGE;
     const pageProphecies = prophecies.slice(start, start + PROPHECIES_PER_PAGE);
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `## 📜 Prophecies Fulfilled in Jesus${pageInfo}`
         ));
@@ -127,27 +126,15 @@ function buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav = false
         }
     });
 
+    const pageSuffix = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | ${prophecies.length} prophecies total${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+        footerLine(`${prophecies.length} prophecies total${pageSuffix}`)
     ));
 
     const components = [container];
 
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
     return components;
 }
@@ -187,47 +174,20 @@ export default {
         }
 
         const totalPages = Math.ceil(prophecies.length / PROPHECIES_PER_PAGE);
-        let pageIdx = 0;
-        const flags = MessageFlags.IsComponentsV2;
 
         try {
-            await interaction.editReply({
-                flags,
-                components: buildProphecyPage({ prophecies, pageIdx, totalPages })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildProphecyPage({ prophecies, pageIdx: 0, totalPages })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: PAGINATION_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildProphecyPage({ prophecies, pageIdx, totalPages })
-                    });
-                } catch (err) {
-                    logger.error(`[PropheciesOfJesus Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[PropheciesOfJesus Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[PropheciesOfJesus Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildProphecyPage({ prophecies, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
             logger.error(`[PropheciesOfJesus Command] Unhandled error: ${error.message}`, error.stack);

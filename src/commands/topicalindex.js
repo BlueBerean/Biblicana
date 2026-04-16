@@ -3,7 +3,6 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -13,11 +12,12 @@ import {
 import logger from '../utils/logger.js';
 import { bibleWrapper, getBookId, numbersToBook } from '../utils/bibleHelper.js';
 import { categoriesWrapper } from '../utils/studyHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import swearWordFilter from '../utils/filter.js';
 import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const VERSES_PER_PAGE = 8;
 const TOPICS_PER_PAGE = 24;
 const MAX_VERSE_PREVIEW_LENGTH = 260;
@@ -42,25 +42,7 @@ const CLASSICAL_97_TOPICS = [
     "worship"
 ];
 
-function buildNavRow(pageIdx, totalPages, disableNav = false) {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('page_back')
-            .setEmoji({ name: '◀️' })
-            .setLabel('Previous')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disableNav || pageIdx === 0),
-        new ButtonBuilder()
-            .setCustomId('page_next')
-            .setEmoji({ name: '▶️' })
-            .setLabel('Next')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(disableNav || pageIdx === totalPages - 1)
-    );
-}
-
 function buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     const start = pageIdx * TOPICS_PER_PAGE;
     const pageTopics = topics.slice(start, start + TOPICS_PER_PAGE);
@@ -72,25 +54,24 @@ function buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav =
         : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📚 Available Bible Topics${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`*Use \`/topicalindex topic:<name>\` to see verses for any of these topics.*`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(body + tailSuffix))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-            `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Showing ${pageTopics.length} of ${topics.length} classical topics${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`
+            footerLine(`Showing ${pageTopics.length} of ${topics.length} classical topics${totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : ''}`)
         ));
 
     const components = [container];
-    if (totalPages > 1) components.push(buildNavRow(pageIdx, totalPages, disableNav));
+    if (totalPages > 1) components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     return components;
 }
 
 function buildTopicSearchPage({ topic, rawTopic, pageEntries, pageIdx, totalPages, totalVerseCount, translation, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📖 Verses about "${rawTopic}"${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             `*Tap any verse to open the full passage.*\n**Total references:** ${totalVerseCount}`
@@ -125,12 +106,13 @@ function buildTopicSearchPage({ topic, rawTopic, pageEntries, pageIdx, totalPage
         container.addSectionComponents(section);
     });
 
+    const pageSuffix = totalPages > 1 ? ` | Page ${pageIdx + 1}/${totalPages}` : '';
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${translation.toUpperCase()}${totalPages > 1 ? ` | Page ${pageIdx + 1}/${totalPages}` : ''}`
+        footerLine(`Translation: ${translation.toUpperCase()}${pageSuffix}`)
     ));
 
     const components = [container];
-    if (totalPages > 1) components.push(buildNavRow(pageIdx, totalPages, disableNav));
+    if (totalPages > 1) components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     return components;
 }
 
@@ -212,8 +194,6 @@ export default {
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
-            const flags = MessageFlags.IsComponentsV2;
-
             // --- showall mode ---
             if (showAll) {
                 logger.info('[TopicalIndex Command] Listing all topics.');
@@ -221,42 +201,19 @@ export default {
                 const moreCount = Math.max(0, totalCategories - CLASSICAL_97_TOPICS.length);
                 const topics = [...CLASSICAL_97_TOPICS].sort();
                 const totalPages = Math.ceil(topics.length / TOPICS_PER_PAGE);
-                let pageIdx = 0;
 
-                await interaction.editReply({
-                    flags,
-                    components: buildShowAllPage({ topics, moreCount, pageIdx, totalPages })
+                const message = await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: buildShowAllPage({ topics, moreCount, pageIdx: 0, totalPages })
                 });
 
                 if (totalPages <= 1) return;
 
-                const message = await interaction.fetchReply();
-                const filter = i => i.user.id === interaction.user.id &&
-                    (i.customId === 'page_back' || i.customId === 'page_next');
-                const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-                collector.on('collect', async i => {
-                    try {
-                        await i.deferUpdate();
-                        if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                        else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                        await i.editReply({ flags, components: buildShowAllPage({ topics, moreCount, pageIdx, totalPages }) });
-                    } catch (err) {
-                        logger.error(`[TopicalIndex Command] ShowAll pagination error: ${err.message}`);
-                    }
-                });
-
-                collector.on('end', async () => {
-                    try {
-                        await interaction.editReply({
-                            flags,
-                            components: buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav: true })
-                        });
-                    } catch (err) {
-                        if (err.code !== 10008 && err.code !== 10062) {
-                            logger.error(`[TopicalIndex Command] ShowAll end error: ${err.message}`);
-                        }
-                    }
+                attachPageCollector({
+                    interaction, message, totalPages,
+                    logLabel: '[TopicalIndex Command ShowAll]',
+                    render: (pageIdx, { disableNav }) =>
+                        buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav })
                 });
                 return;
             }
@@ -276,7 +233,7 @@ export default {
             const refs = await categoriesWrapper.getRefsForTopic(topic);
             if (!refs || refs.length === 0) {
                 return interaction.editReply({
-                    flags,
+                    flags: MessageFlags.IsComponentsV2,
                     components: [new TextDisplayBuilder().setContent(
                         `❌ Topic "${topic}" not found. Use \`/topicalindex showall:true\` to see available topics.`
                     )]
@@ -288,7 +245,7 @@ export default {
 
             if (entries.length === 0) {
                 return interaction.editReply({
-                    flags,
+                    flags: MessageFlags.IsComponentsV2,
                     components: [new TextDisplayBuilder().setContent(
                         `❌ Found ${refs.length} references for "${topic}" but couldn't retrieve any verse text.`
                     )]
@@ -296,57 +253,26 @@ export default {
             }
 
             const totalPages = Math.ceil(entries.length / VERSES_PER_PAGE);
-            let pageIdx = 0;
-
             const pageEntries = (idx) => entries.slice(idx * VERSES_PER_PAGE, idx * VERSES_PER_PAGE + VERSES_PER_PAGE);
 
-            await interaction.editReply({
-                flags,
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
                 components: buildTopicSearchPage({
-                    topic, rawTopic, pageEntries: pageEntries(pageIdx),
-                    pageIdx, totalPages, totalVerseCount: refs.length, translation
+                    topic, rawTopic, pageEntries: pageEntries(0),
+                    pageIdx: 0, totalPages, totalVerseCount: refs.length, translation
                 })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildTopicSearchPage({
-                            topic, rawTopic, pageEntries: pageEntries(pageIdx),
-                            pageIdx, totalPages, totalVerseCount: refs.length, translation
-                        })
-                    });
-                } catch (err) {
-                    logger.error(`[TopicalIndex Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildTopicSearchPage({
-                            topic, rawTopic, pageEntries: pageEntries(pageIdx),
-                            pageIdx, totalPages, totalVerseCount: refs.length, translation,
-                            disableNav: true
-                        })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[TopicalIndex Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[TopicalIndex Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildTopicSearchPage({
+                        topic, rawTopic, pageEntries: pageEntries(pageIdx),
+                        pageIdx, totalPages, totalVerseCount: refs.length, translation, disableNav
+                    })
             });
         } catch (error) {
             logger.error(`[TopicalIndex Command] Unhandled error: ${error.message}`, error.stack);

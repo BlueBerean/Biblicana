@@ -3,7 +3,6 @@ import {
     ContainerBuilder,
     SectionBuilder,
     TextDisplayBuilder,
-    ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
@@ -12,11 +11,12 @@ import {
 } from 'discord.js';
 import { personsWrapper } from '../utils/studyHelper.js';
 import { getBookId } from '../utils/bibleHelper.js';
+import { accentColor, footerLine } from '../utils/theme.js';
+import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
-const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_DESC_LENGTH = 2500;
 const MAX_RELATION_LIST_CHARS = 400;
 
@@ -80,7 +80,6 @@ function truncate(text, max) {
 }
 
 function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
     const { name, firstRef, structured } = displayName(person.unique_name);
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
@@ -104,7 +103,7 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
     if (offspring) family.push(`**Offspring:** ${offspring}`);
 
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 👤 ${name}${pageInfo}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             truncate(person.ext_description || person.short_description || '*No description available.*', MAX_DESC_LENGTH)
@@ -149,26 +148,13 @@ function buildPersonPage({ person, pageIdx, totalPages, disableNav = false }) {
     }
 
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-        `-# ${process.env.EMBEDFOOTERTEXT || 'Biblicana'}${totalPages > 1 ? ` | Result ${pageIdx + 1}/${totalPages}` : ''}`
+        footerLine(totalPages > 1 ? `Result ${pageIdx + 1}/${totalPages}` : '')
     ));
 
     const components = [container];
 
     if (totalPages > 1) {
-        components.push(new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('page_back')
-                .setEmoji({ name: '◀️' })
-                .setLabel('Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === 0),
-            new ButtonBuilder()
-                .setCustomId('page_next')
-                .setEmoji({ name: '▶️' })
-                .setLabel('Next')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disableNav || pageIdx === totalPages - 1)
-        ));
+        components.push(buildPageNavRow({ pageIdx, totalPages, disabled: disableNav }));
     }
 
     return components;
@@ -210,47 +196,19 @@ export default {
 
             logger.info(`[Persons Command] Found ${results.length} match(es)`);
 
-            let pageIdx = 0;
             const totalPages = results.length;
-            const flags = MessageFlags.IsComponentsV2;
-
-            await interaction.editReply({
-                flags,
-                components: buildPersonPage({ person: results[pageIdx], pageIdx, totalPages })
+            const message = await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildPersonPage({ person: results[0], pageIdx: 0, totalPages })
             });
 
             if (totalPages <= 1) return;
 
-            const message = await interaction.fetchReply();
-            const filter = i => i.user.id === interaction.user.id &&
-                (i.customId === 'page_back' || i.customId === 'page_next');
-            const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
-
-            collector.on('collect', async i => {
-                try {
-                    await i.deferUpdate();
-                    if (i.customId === 'page_back') pageIdx = Math.max(0, pageIdx - 1);
-                    else if (i.customId === 'page_next') pageIdx = Math.min(totalPages - 1, pageIdx + 1);
-                    await i.editReply({
-                        flags,
-                        components: buildPersonPage({ person: results[pageIdx], pageIdx, totalPages })
-                    });
-                } catch (err) {
-                    logger.error(`[Persons Command] Pagination error: ${err.message}`);
-                }
-            });
-
-            collector.on('end', async () => {
-                try {
-                    await interaction.editReply({
-                        flags,
-                        components: buildPersonPage({ person: results[pageIdx], pageIdx, totalPages, disableNav: true })
-                    });
-                } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
-                        logger.error(`[Persons Command] End error: ${err.message}`);
-                    }
-                }
+            attachPageCollector({
+                interaction, message, totalPages,
+                logLabel: '[Persons Command]',
+                render: (pageIdx, { disableNav }) =>
+                    buildPersonPage({ person: results[pageIdx], pageIdx, totalPages, disableNav })
             });
         } catch (error) {
             logger.error(`[Persons Command] Unhandled error: ${error.message}`, error.stack);

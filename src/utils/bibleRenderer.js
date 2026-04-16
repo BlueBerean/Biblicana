@@ -7,6 +7,7 @@ import {
     MessageFlags
 } from 'discord.js';
 import { bibleWrapper, numbersToBook } from './bibleHelper.js';
+import { accentColor, footerLine } from './theme.js';
 
 const MAX_BODY_CHARS = 3800;
 
@@ -92,14 +93,13 @@ export async function fetchBibleVerseData({ bookId, chapter, startVerse, endVers
  * interlinear/commentary/etc on).
  */
 export function buildBibleComponents({ data, includeActionRow = true }) {
-    const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
-    const footer = `${process.env.EMBEDFOOTERTEXT || 'Biblicana'} | Translation: ${data.translation.toUpperCase()}`;
-
     const container = new ContainerBuilder()
-        .setAccentColor(accentColor)
+        .setAccentColor(accentColor())
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${data.rangeLabel}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(data.body))
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${footer}`));
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            footerLine(`Translation: ${data.translation.toUpperCase()}`)
+        ));
 
     const components = [container];
     if (includeActionRow && data.startVerse === data.endVerse) {
