@@ -67,7 +67,7 @@ async function resolveVerses(parsedVerses, translation) {
                 const num = idx + startVerse;
                 const t = v[translation];
                 if (!t) return `[${translation} unavailable]`;
-                return (idx > 0 ? ` <**${num}**> ` : '') + t;
+                return (idx > 0 ? ` **${num}** ` : '') + t;
             }).join('');
 
             if (!text) continue;
