@@ -53,6 +53,13 @@ class RedisPGWrapper {
         return this.RedisPGClient.deleteValue(`guild:${id}`);
     }
 
+    // Fixed-window rate limit on a (scope, userId) pair. Returns
+    // { allowed, count, retryAfterSeconds }. Fails open on Redis errors so
+    // a Redis blip doesn't brick paid commands for every user at once.
+    async checkRateLimit(scope, userId, { limit, windowSeconds }) {
+        return this.RedisPGClient.checkRateLimit(scope, userId, { limit, windowSeconds });
+    }
+
     async updateValue(key, value, schema) {
         const originalValue = await this.RedisPGClient.getValue(key);
 
@@ -191,6 +198,24 @@ class RedisPGClient {
         }
 
         return false;
+    }
+
+    async checkRateLimit(scope, userId, { limit, windowSeconds }) {
+        try {
+            const key = `ratelimit:${scope}:${userId}`;
+            const count = await this.redisClient.incr(key);
+            if (count === 1) {
+                await this.redisClient.expire(key, windowSeconds);
+            }
+            if (count > limit) {
+                const ttl = await this.redisClient.ttl(key);
+                return { allowed: false, count, retryAfterSeconds: ttl > 0 ? ttl : windowSeconds };
+            }
+            return { allowed: true, count, retryAfterSeconds: 0 };
+        } catch (error) {
+            logger.error(`[RateLimit] Redis failure (${scope}:${userId}): ${error.message}`);
+            return { allowed: true, count: 0, retryAfterSeconds: 0 };
+        }
     }
 
     async flushRedis() {

@@ -20,7 +20,9 @@ const PAGINATION_TIMEOUT_MS = 900_000;
 const OPENAI_MODEL = 'gpt-4o-mini';
 const OPENAI_MAX_TOKENS = 500;
 const OPENAI_TEMPERATURE = 0.7;
+const OPENAI_TIMEOUT_MS = 15_000;
 const VERSE_TEXT_TRUNCATE = 300;
+const RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
 
 async function fetchAndParseVerseReferences(topic) {
     const prompt = `You are a Bible verse finder. Please find5 to 10 relevant verses about "${topic}" and respond ONLY with a JSON array in this exact format: [{"book": "abbreviated_name", "chapter": "chapter_number", "startVerse": "verse_number", "endVerse": "verse_number"}]. Use only these abbreviated names: gen, exo, lev, num, deu, jos, jdg, rut, 1sa, 2sa, 1ki, 2ki, 1ch, 2ch, ezr, neh, est, job, psa, pro, ecc, sos, isa, jer, lam, eze, dan, hos, joe, amo, oba, jon, mic, nah, hab, zep, hag, zec, mal, mat, mar, luk, joh, act, rom, 1co, 2co, gal, eph, php, col, 1th, 2th, 1ti, 2ti, tit, phm, heb, jam, 1pe, 2pe, 1jo, 2jo, 3jo, jde, rev. If no relevant verses are found, return an empty JSON array []. Do not include any text before or after the JSON array.`;
@@ -34,7 +36,8 @@ async function fetchAndParseVerseReferences(topic) {
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${process.env.OPENAIKEY}`
-        }
+        },
+        timeout: OPENAI_TIMEOUT_MS
     });
 
     const content = apiResponse?.data?.choices?.[0]?.message?.content;
@@ -189,6 +192,17 @@ export default {
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
+            const rl = await database.checkRateLimit('find', interaction.user.id, RATE_LIMIT);
+            if (!rl.allowed) {
+                const mins = Math.ceil(rl.retryAfterSeconds / 60);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `⏳ You've used /find ${rl.count} times recently. Please try again in ~${mins} minute${mins === 1 ? '' : 's'}.`
+                    )]
+                });
+            }
+
             const topic = swearWordFilter(interaction.options.getString('topic'));
             const defaultTranslation = await database.getUserValue(interaction.user.id);
             const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';

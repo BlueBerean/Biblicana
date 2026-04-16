@@ -19,6 +19,7 @@ const INTENT_MODEL = 'gpt-4o-mini';
 const SUMMARY_MODEL = 'gpt-4o-mini';
 const INTENT_MAX_TOKENS = 10;
 const INTENT_TEMPERATURE = 0.1;
+const INTENT_TIMEOUT_MS = 10_000;
 const SUMMARY_MAX_TOKENS = 1500;
 const SUMMARY_TEMPERATURE = 0.7;
 const TAVILY_MAX_RESULTS = 5;
@@ -28,6 +29,7 @@ const TAVILY_MAX_RETRIES = 1;
 const MAX_CHARS_PER_PAGE = 3500;
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_BUTTON_LABEL = 80;
+const RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
 
 const rateLimit = {
     tavily: { lastRequest: 0, minDelay: TAVILY_RATE_LIMIT_MS }
@@ -110,10 +112,21 @@ export default {
                 .setMinLength(3)
                 .setMaxLength(250)),
 
-    async execute(interaction) {
+    async execute(interaction, database) {
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
+            const rl = await database.checkRateLimit('web', interaction.user.id, RATE_LIMIT);
+            if (!rl.allowed) {
+                const mins = Math.ceil(rl.retryAfterSeconds / 60);
+                return interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: [new TextDisplayBuilder().setContent(
+                        `⏳ You've used /web ${rl.count} times recently. Please try again in ~${mins} minute${mins === 1 ? '' : 's'}.`
+                    )]
+                });
+            }
+
             const query = interaction.options.getString('query');
             logger.info(`[Web Command] Processing query: "${query}"`);
 
@@ -139,7 +152,8 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                     headers: {
                         'Authorization': `Bearer ${process.env.OPENAIKEY}`,
                         'Content-Type': 'application/json'
-                    }
+                    },
+                    timeout: INTENT_TIMEOUT_MS
                 });
                 const intentResponse = intent_check.data.choices[0]?.message?.content?.trim().toLowerCase();
                 shouldAnswer = intentResponse === 'true';
