@@ -60,8 +60,8 @@ async function handleInterlinear({ interaction, bookId, chapter, verse, translat
     await renderInterlinearEphemeral({ interaction, bookId, chapter, verse, translation });
 }
 
-async function handleBible({ interaction, bookId, chapter, verse, translation }) {
-    await renderBibleEphemeral({ interaction, bookId, chapter, verse, translation });
+async function handleBible({ interaction, bookId, chapter, startVerse, endVerse, translation }) {
+    await renderBibleEphemeral({ interaction, bookId, chapter, startVerse, endVerse, translation });
 }
 
 // --- Commentary (with fallback chain + commentator dropdown) -------------
@@ -342,20 +342,24 @@ async function handleParallel({ interaction, bookId, chapter, verse, translation
 export default {
     id: 'openverse',
     async execute(interaction, database) {
-        // customId format: `openverse:<action>:<bookId>:<chapter>:<verse>`
+        // customId format: `openverse:<action>:<bookId>:<chapter>:<startVerse>[:<endVerse>]`
+        // The optional 6th part encodes an end verse for range lookups (used by
+        // /crossref and /find when the referenced passage spans multiple verses).
+        // Other actions only care about startVerse.
         const parts = interaction.customId.split(':');
-        if (parts.length !== 5) {
+        if (parts.length < 5 || parts.length > 6) {
             logger.warn(`[OpenVerse Button] Malformed customId: ${interaction.customId}`);
             return interaction.reply({ content: 'Invalid action.', flags: MessageFlags.Ephemeral });
         }
 
-        const [, action, bookIdStr, chapterStr, verseStr] = parts;
+        const [, action, bookIdStr, chapterStr, startVerseStr, endVerseStr] = parts;
         const bookId = parseInt(bookIdStr);
         const chapter = parseInt(chapterStr);
-        const verse = parseInt(verseStr);
+        const startVerse = parseInt(startVerseStr);
+        const endVerse = endVerseStr ? parseInt(endVerseStr) : startVerse;
         const bookName = numbersToBook.get(bookId);
 
-        if (!bookName || isNaN(chapter) || isNaN(verse)) {
+        if (!bookName || isNaN(chapter) || isNaN(startVerse) || isNaN(endVerse)) {
             return interaction.reply({ content: 'Invalid verse reference.', flags: MessageFlags.Ephemeral });
         }
 
@@ -364,20 +368,20 @@ export default {
         try {
             switch (action) {
                 case 'bible':
-                    return await handleBible({ interaction, bookId, chapter, verse, translation });
+                    return await handleBible({ interaction, bookId, chapter, startVerse, endVerse, translation });
                 case 'interlinear':
-                    return await handleInterlinear({ interaction, bookId, chapter, verse, translation });
+                    return await handleInterlinear({ interaction, bookId, chapter, verse: startVerse, translation });
                 case 'commentary':
-                    return await handleCommentary({ interaction, bookId, chapter, verse, bookName });
+                    return await handleCommentary({ interaction, bookId, chapter, verse: startVerse, bookName });
                 case 'xref':
-                    return await handleCrossref({ interaction, bookId, chapter, verse, bookName, translation });
+                    return await handleCrossref({ interaction, bookId, chapter, verse: startVerse, bookName, translation });
                 case 'parallel':
-                    return await handleParallel({ interaction, bookId, chapter, verse, translation });
+                    return await handleParallel({ interaction, bookId, chapter, verse: startVerse, translation });
                 default:
                     return interaction.reply({ content: `Unknown action: ${action}`, flags: MessageFlags.Ephemeral });
             }
         } catch (error) {
-            logger.error(`[OpenVerse Button] Error handling ${action} for ${bookName} ${chapter}:${verse}: ${error.message}`, error.stack);
+            logger.error(`[OpenVerse Button] Error handling ${action} for ${bookName} ${chapter}:${startVerse}: ${error.message}`, error.stack);
             try {
                 if (!interaction.replied && !interaction.deferred) {
                     await interaction.reply({

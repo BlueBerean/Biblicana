@@ -67,7 +67,7 @@ async function resolveVerses(parsedVerses, translation) {
                 const num = idx + startVerse;
                 const t = v[translation];
                 if (!t) return `[${translation} unavailable]`;
-                return (idx > 0 ? ` **${num}** ` : '') + t;
+                return (idx > 0 ? ` <**${num}**> ` : '') + t;
             }).join('');
 
             if (!text) continue;
@@ -111,7 +111,7 @@ function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disabl
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${v.rangeLabel}** — ${v.text}`))
             .setButtonAccessory(
                 new ButtonBuilder()
-                    .setCustomId(`openverse:bible:${v.bookId}:${v.chapter}:${v.startVerse}`)
+                    .setCustomId(`openverse:bible:${v.bookId}:${v.chapter}:${v.startVerse}:${v.endVerse}`)
                     .setLabel('Open')
                     .setEmoji({ name: '📖' })
                     .setStyle(ButtonStyle.Secondary)

@@ -46,7 +46,7 @@ function buildCrossrefPage({ data, pageIdx, totalPages, disableNav = false }) {
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${ref.label}** — ${ref.text}`))
             .setButtonAccessory(
                 new ButtonBuilder()
-                    .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}`)
+                    .setCustomId(`openverse:bible:${ref.bookId}:${ref.chapter}:${ref.startVerse}:${ref.endVerse}`)
                     .setLabel('Open')
                     .setEmoji({ name: '📖' })
                     .setStyle(ButtonStyle.Secondary)
@@ -202,7 +202,8 @@ export default {
                     text: text.length > 300 ? text.substring(0, 299) + '…' : text,
                     bookId: refBookId,
                     chapter: ref.target_chapter,
-                    startVerse: ref.target_verse_start
+                    startVerse: ref.target_verse_start,
+                    endVerse
                 };
             })))
                 .filter(r => r.status === 'fulfilled' && r.value)

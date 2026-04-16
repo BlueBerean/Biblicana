@@ -10,6 +10,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import { placesWrapper } from '../utils/studyHelper.js';
+import { getBookId } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
@@ -17,12 +18,39 @@ import 'dotenv/config';
 const COLLECTOR_TIMEOUT_MS = 600_000;
 const MAX_DESC_LENGTH = 3000;
 
+// uniqueName format: "PlaceName_Book.Chapter.Verse" (e.g., "Akeldama_Mat.27.7").
+// Returns display name, human-readable first-ref string, and a structured
+// { bookId, chapter, verse } when the ref is resolvable to an openverse target.
 function displayName(uniqueName) {
-    if (!uniqueName) return { name: 'Unknown', firstRef: '' };
+    if (!uniqueName) return { name: 'Unknown', firstRef: '', structured: null };
     const parts = uniqueName.split('_');
     const ref = parts[parts.length - 1];
     const name = parts.slice(0, -1).join(' ');
-    return { name, firstRef: ref.replace(/\./g, ' ') };
+
+    let structured = null;
+    const refParts = ref.split('.');
+    if (refParts.length === 3) {
+        const [bookCode, chapterStr, verseStr] = refParts;
+        const bookId = getBookId(bookCode.toLowerCase());
+        const chapter = parseInt(chapterStr);
+        const verse = parseInt(verseStr);
+        if (bookId && !isNaN(chapter) && !isNaN(verse)) {
+            structured = { bookId, chapter, verse };
+        }
+    }
+
+    return { name, firstRef: ref.replace(/\./g, ' '), structured };
+}
+
+// uStrong format: "G0184", "H1234", or occasionally "H1035G" (compound with
+// trailing noise — seen on Bethlehem). Leading zeros are stripped; anything
+// after the first complete H#### or G#### match is ignored.
+function parseStrongs(uStrong) {
+    if (!uStrong) return null;
+    const match = uStrong.match(/^([HGhg])0*(\d+)/);
+    if (!match) return null;
+    const lexicon = match[1].toUpperCase() === 'G' ? 'Greek' : 'Hebrew';
+    return { lexicon, strongsId: `${match[1].toUpperCase()}${match[2]}` };
 }
 
 function truncate(text, max) {
@@ -42,7 +70,7 @@ function buildMapsLink(lonlat) {
 
 function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
     const accentColor = process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : 0x083459;
-    const { name, firstRef } = displayName(place.unique_name);
+    const { name, firstRef, structured } = displayName(place.unique_name);
     const displayTitle = place.openbible_name || name;
     const pageInfo = totalPages > 1 ? ` (Result ${pageIdx + 1}/${totalPages})` : '';
 
@@ -69,7 +97,28 @@ function buildPlacePage({ place, pageIdx, totalPages, disableNav = false }) {
 
     const components = [container];
 
-    // External references as Link-style buttons — no custom_id, no handler.
+    // Row 1 — in-app action buttons (Secondary style, route through existing handlers).
+    const actionButtons = [];
+    if (structured) {
+        actionButtons.push(new ButtonBuilder()
+            .setCustomId(`openverse:bible:${structured.bookId}:${structured.chapter}:${structured.verse}`)
+            .setLabel('Open passage')
+            .setEmoji({ name: '📖' })
+            .setStyle(ButtonStyle.Secondary));
+    }
+    const strongs = parseStrongs(place.uStrong);
+    if (strongs) {
+        actionButtons.push(new ButtonBuilder()
+            .setCustomId(`strongs:${strongs.lexicon}:${strongs.strongsId}`)
+            .setLabel('Define')
+            .setEmoji({ name: '📚' })
+            .setStyle(ButtonStyle.Secondary));
+    }
+    if (actionButtons.length > 0) {
+        components.push(new ActionRowBuilder().addComponents(...actionButtons));
+    }
+
+    // Row 2 — external references (Link-style, no custom_id, no handler needed).
     const mapsLink = buildMapsLink(place.lonlat);
     const linkButtons = [];
     if (mapsLink) {

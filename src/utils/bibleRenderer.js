@@ -109,14 +109,15 @@ export function buildBibleComponents({ data, includeActionRow = true }) {
 }
 
 /**
- * Convenience helper for button handlers that need to render a verse ephemerally
- * — used by the openverse 'bible' action dispatched from /profile, /find, /crossref.
+ * Convenience helper for button handlers that need to render a verse or range
+ * ephemerally — used by the openverse 'bible' action dispatched from /profile,
+ * /find, /crossref. Range mode (endVerse > startVerse) skips the action row.
  */
-export async function renderBibleEphemeral({ interaction, bookId, chapter, verse, translation }) {
-    const data = await fetchBibleVerseData({ bookId, chapter, startVerse: verse, translation });
+export async function renderBibleEphemeral({ interaction, bookId, chapter, startVerse, endVerse = null, translation }) {
+    const data = await fetchBibleVerseData({ bookId, chapter, startVerse, endVerse, translation });
     if (!data) {
         await interaction.reply({
-            content: `Couldn't fetch this verse in ${translation.toUpperCase()}.`,
+            content: `Couldn't fetch this passage in ${translation.toUpperCase()}.`,
             flags: MessageFlags.Ephemeral
         });
         return;
