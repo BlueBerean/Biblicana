@@ -9,7 +9,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
+import { getBookId, bibleWrapper, numbersToBook, coerceTranslation } from '../utils/bibleHelper.js';
 import { crossRefWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
@@ -90,9 +90,7 @@ export default {
                 .setDescription('Bible translation to use (defaults to your saved preference or BSB)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" },
                     { name: "CPDV", value: "CPDV" },
@@ -136,7 +134,9 @@ export default {
             } catch (dbError) {
                 logger.error(`[Crossref Command] Failed to get user preference: ${dbError}`);
             }
-            translation = interaction.options.getString('translation') || translation;
+            translation = coerceTranslation(
+                interaction.options.getString('translation') || translation
+            );
 
             logger.info(`[Crossref Command] Looking up ${bookName} ${chapter}:${verseInput} (${translation})`);
 

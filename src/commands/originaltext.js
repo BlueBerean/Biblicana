@@ -10,7 +10,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { getBookId, bibleWrapper, numbersToBook } from '../utils/bibleHelper.js';
+import { getBookId, bibleWrapper, numbersToBook, coerceTranslation } from '../utils/bibleHelper.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
@@ -177,9 +177,7 @@ export default {
                 .setDescription('The translation to show in parallel')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" }
                 )),
@@ -211,7 +209,9 @@ export default {
             } catch (dbError) {
                 logger.error(`[OriginalText Command] Failed to get user preference: ${dbError}`);
             }
-            translation = interaction.options.getString('translation') || translation;
+            translation = coerceTranslation(
+                interaction.options.getString('translation') || translation
+            );
 
             const verseId = `${bookId.toString().padStart(2, '0')}${chapter.toString().padStart(3, '0')}${verseInput.toString().padStart(3, '0')}`;
             logger.info(`[OriginalText Command] Request: ${bookName} ${chapter}:${verseInput} (ID: ${verseId}, Translation: ${translation})`);

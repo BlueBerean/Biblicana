@@ -13,9 +13,12 @@ import logger from './logger.js';
 const MAX_CHARS_PER_PAGE = 3800;
 export const PARALLEL_PAGINATION_TIMEOUT_MS = 600_000;
 
-// Columns in bible.db `english` table carrying translation text.
+// Columns in bible.db `english` table carrying translation text we are
+// licensed to surface. NASB, NKJV, and AMPC exist in the DB but are
+// intentionally omitted here — we lack commercial redistribution rights,
+// so those columns must not appear in /parallel output.
 export const PARALLEL_TRANSLATION_COLUMNS = [
-    'BSB', 'NASB', 'KJV', 'NKJV', 'ASV', 'AKJV',
+    'BSB', 'KJV', 'ASV', 'AKJV',
     'CPDV', 'DBT', 'DRB', 'ERV', 'JPSWEY',
     'NHEB', 'SLT', 'WBT', 'WEB', 'YLT'
 ];

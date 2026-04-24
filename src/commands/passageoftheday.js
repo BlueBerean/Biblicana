@@ -11,7 +11,7 @@ import {
 } from 'discord.js';
 import { createRequire } from 'node:module';
 import logger from '../utils/logger.js';
-import { bibleWrapper, numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import { bibleWrapper, numbersToBook, getBookId, coerceTranslation } from '../utils/bibleHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
@@ -89,9 +89,7 @@ export default {
                 .setDescription('The translation to show the passage in (defaults to BSB)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" }
                 )),
@@ -107,7 +105,9 @@ export default {
             } catch (dbError) {
                 logger.error(`[PassageOfTheDay Command] Failed to get user preference: ${dbError}`);
             }
-            translation = interaction.options.getString('translation') || translation;
+            translation = coerceTranslation(
+                interaction.options.getString('translation') || translation
+            );
 
             const today = new Date();
             const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];

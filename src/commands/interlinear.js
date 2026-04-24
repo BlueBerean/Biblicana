@@ -4,7 +4,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { numbersToBook, getBookId } from '../utils/bibleHelper.js';
+import { numbersToBook, getBookId, coerceTranslation } from '../utils/bibleHelper.js';
 import {
     fetchInterlinearData,
     computeInterlinearPagination,
@@ -39,9 +39,7 @@ export default {
                 .setDescription('Parallel translation (defaults to your preference or BSB)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" },
                     { name: "CPDV", value: "CPDV" },
@@ -87,7 +85,9 @@ export default {
             } catch (dbError) {
                 logger.error(`[Interlinear Command] Failed to get user preference: ${dbError}`);
             }
-            translation = interaction.options.getString('translation') || translation;
+            translation = coerceTranslation(
+                interaction.options.getString('translation') || translation
+            );
 
             logger.info(`[Interlinear Command] Request: ${bookName} ${chapter}:${verseInput} (${translation})`);
 

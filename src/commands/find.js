@@ -12,7 +12,7 @@ import {
 } from 'discord.js';
 import axios from 'axios';
 import swearWordFilter, { escapeMarkdown } from '../utils/filter.js';
-import { numbersToBook, bibleWrapper, bookAbbreviations } from '../utils/bibleHelper.js';
+import { numbersToBook, bibleWrapper, bookAbbreviations, coerceTranslation } from '../utils/bibleHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
@@ -172,9 +172,7 @@ export default {
                 .setDescription('The translation you want to use')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" },
                     { name: "CPDV", value: "CPDV" },
@@ -206,7 +204,9 @@ export default {
 
             const topic = swearWordFilter(interaction.options.getString('topic'));
             const defaultTranslation = await database.getUserValue(interaction.user.id);
-            const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
+            const translation = coerceTranslation(
+                interaction.options.getString('translation') || defaultTranslation?.translation
+            );
             logger.info(`[Find Command] User ${interaction.user.id} topic: "${topic}" (${translation})`);
 
             let parsedVerses;

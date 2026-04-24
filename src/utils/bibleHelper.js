@@ -194,6 +194,29 @@ export const numbersToBook = new Map([
 export const strongsWrapper = new StrongsWrapper();
 export const bibleWrapper = new BibleWrapper();
 
+// Translation IDs we no longer surface to users because we don't currently
+// hold commercial redistribution rights. Reads that still receive one of
+// these values (e.g., from a stored user preference set before the removal)
+// fall back to BSB via coerceTranslation. The columns remain in bible.db so
+// data stays intact if we later secure a license; surfacing is gated at the
+// code layer.
+const DEPRECATED_TRANSLATIONS = new Set(['NASB', 'NKJV', 'AMPC']);
+
+/**
+ * Map any translation identifier to a surfacing-safe value. Null/undefined
+ * or empty input → 'BSB'. A translation in DEPRECATED_TRANSLATIONS → 'BSB'.
+ * Anything else → passed through unchanged.
+ *
+ * Used by every command that resolves a translation from slash-command
+ * options OR from the user's stored preference. Centralizing here means a
+ * single change (removing from the deprecated set, or adding a new one)
+ * propagates to every translation-aware command without touching them.
+ */
+export function coerceTranslation(translation) {
+    if (!translation) return 'BSB';
+    return DEPRECATED_TRANSLATIONS.has(translation) ? 'BSB' : translation;
+}
+
 // Case-insensitive book name lookup with fuzzy matching.
 // Called on every book-referencing command, sometimes 200+ times per invocation
 // (e.g., /topicalindex resolving a topic's references). Must stay quiet in prod;

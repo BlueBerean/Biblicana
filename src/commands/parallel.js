@@ -5,7 +5,7 @@ import {
     InteractionContextType,
     TextDisplayBuilder
 } from 'discord.js';
-import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import { getBookId, numbersToBook, coerceTranslation } from '../utils/bibleHelper.js';
 import {
     fetchParallelData,
     packParallelPages,
@@ -40,9 +40,7 @@ export default {
                 .setDescription('The translation to list first (defaults to your saved preference)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" }
                 )),
@@ -76,7 +74,8 @@ export default {
             } catch (dbError) {
                 logger.error(`[Parallel Command] Failed to get user preference: ${dbError}`);
             }
-            primaryTranslation = interaction.options.getString('translation') || primaryTranslation;
+            const rawPick = interaction.options.getString('translation') || primaryTranslation;
+            primaryTranslation = rawPick ? coerceTranslation(rawPick) : null;
 
             logger.info(`[Parallel Command] Request: ${bookName} ${chapter}:${verseInput} (first: ${primaryTranslation || 'default order'})`);
 

@@ -5,7 +5,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { getBookId } from '../utils/bibleHelper.js';
+import { getBookId, coerceTranslation } from '../utils/bibleHelper.js';
 import { fetchBibleVerseData, buildBibleComponents } from '../utils/bibleRenderer.js';
 import logger from '../utils/logger.js';
 
@@ -24,9 +24,7 @@ export default {
                 .setDescription('The translation you want to use')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" },
                     { name: "CPDV", value: "CPDV" },
@@ -68,7 +66,9 @@ export default {
 
         try {
             const defaultTranslation = await database.getUserValue(interaction.user.id);
-            const translation = interaction.options.getString('translation') || defaultTranslation?.translation || 'BSB';
+            const translation = coerceTranslation(
+                interaction.options.getString('translation') || defaultTranslation?.translation
+            );
 
             logger.info(`[Bible Command] Looking up ${bookId} ${chapter}:${startVerse}-${endVerse} in ${translation}`);
 

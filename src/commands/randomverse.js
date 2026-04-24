@@ -5,7 +5,7 @@ import {
     InteractionContextType,
     TextDisplayBuilder
 } from 'discord.js';
-import { getBookId } from '../utils/bibleHelper.js';
+import { getBookId, coerceTranslation } from '../utils/bibleHelper.js';
 import { fetchRandomVerseData, buildRandomVerseComponents } from '../utils/randomVerseRenderer.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
@@ -31,9 +31,7 @@ export default {
                 .setDescription('Translation to display (defaults to your preference or BSB)')
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" }
                 )),
@@ -74,7 +72,9 @@ export default {
             } catch (dbError) {
                 logger.error(`[RandomVerse Command] Failed to get user preference: ${dbError}`);
             }
-            preferredTranslation = interaction.options.getString('translation') || preferredTranslation;
+            preferredTranslation = coerceTranslation(
+                interaction.options.getString('translation') || preferredTranslation
+            );
 
             const data = await fetchRandomVerseData({ filterBookId, filterChapter, preferredTranslation });
             if (!data) {

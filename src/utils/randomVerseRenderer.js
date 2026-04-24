@@ -29,7 +29,9 @@ export async function fetchRandomVerseData({ filterBookId = null, filterChapter 
     if (!bookName) return null;
 
     // Choose translation column: preferred, then BSB, then first non-empty.
-    const candidates = [preferredTranslation, 'BSB', 'NASB', 'KJV', 'NKJV', 'ASV', 'AKJV'];
+    // Fallback list intentionally excludes NASB, NKJV, AMPC — those columns
+    // exist in bible.db but we lack the commercial license to surface them.
+    const candidates = [preferredTranslation, 'BSB', 'KJV', 'ASV', 'AKJV'];
     let translation = null;
     let text = null;
     for (const col of candidates) {

@@ -10,7 +10,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import logger from '../utils/logger.js';
-import { bibleWrapper, getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import { bibleWrapper, getBookId, numbersToBook, coerceTranslation } from '../utils/bibleHelper.js';
 import { categoriesWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
@@ -172,9 +172,7 @@ export default {
                 .setRequired(false)
                 .addChoices(
                     { name: 'BSB', value: 'BSB' },
-                    { name: "NASB", value: "NASB" },
                     { name: 'KJV', value: 'KJV' },
-                    { name: "NKJV", value: "NKJV" },
                     { name: 'ASV', value: 'ASV' },
                     { name: "AKJV", value: "AKJV" }
                 )),
@@ -226,7 +224,9 @@ export default {
             } catch (dbError) {
                 logger.error(`[TopicalIndex Command] Failed to get user preference: ${dbError}`);
             }
-            translation = interaction.options.getString('translation') || translation;
+            translation = coerceTranslation(
+                interaction.options.getString('translation') || translation
+            );
 
             logger.info(`[TopicalIndex Command] Searching topic: "${topic}" in ${translation}`);
 
