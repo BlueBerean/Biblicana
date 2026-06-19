@@ -6,8 +6,8 @@ import {
 } from 'discord.js';
 import { parseScriptureRefs } from './scriptureRefs.js';
 import { bibleWrapper } from './bibleHelper.js';
-import { toOSIS3Codes, toCommentaryVariants } from './bookNames.js';
-import { commentaryWrapper, fathersWrapper, pickMarqueeFather } from './studyHelper.js';
+import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
+import { commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, COMMENTATORS } from './studyHelper.js';
 import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
 import swearWordFilter from './filter.js';
@@ -272,8 +272,14 @@ async function buildRagContext(userMessage) {
             lines.push(`Adam Clarke, from his Commentary on the Bible, on ${refLabel}: "${clarkeRow.text.slice(0, MAX_RAG_CHARS_PER_SOURCE)}"`);
             gathered.push('Clarke');
         }
-        const leadName = pickMarqueeFather(fathers);
-        const leadRow = leadName ? fathers.find(r => r.father_name === leadName) : null;
+        // Only genuine patristic-era authors qualify as the lead "Father" in
+        // RAG. The collection includes medieval/modern writers (Aquinas, C.S.
+        // Lewis, even a living author) that must never be injected as "the early
+        // church" — same filter the lookup_father tool uses. classifyFather is a
+        // hoisted function declaration in the tools section below.
+        const patristicFathers = fathers.filter(row => classifyFather(row.default_year).patristic);
+        const leadName = pickMarqueeFather(patristicFathers);
+        const leadRow = leadName ? patristicFathers.find(r => r.father_name === leadName) : null;
         if (leadRow?.txt) {
             // source_title is what the AI should cite if asked for the work —
             // prevents hallucinations like "On the Trinity" when the actual
@@ -318,22 +324,362 @@ function trimMemoryToBudget(messages, memoryStartIdx, memoryEndIdx) {
     return dropped;
 }
 
-async function callOpenAI(messages) {
-    const response = await axios.post(OPENAI_URL, {
-        model: MODEL,
-        messages,
-        max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: TEMPERATURE,
-    }, {
+// ── AI lookup tools (model-driven retrieval) ───────────────────────────────
+//
+// The model can call these before answering, so topic questions ("commentary
+// on pride") and interpretation requests get grounded in Biblicana's actual
+// SQLite sources rather than the model's training data. Each executor returns a
+// STRING — including for errors — so a bad arg comes back as feedback the model
+// can correct from, never a thrown exception that kills the turn.
+
+const MAX_TOOL_ROUNDS = 2;          // tool rounds before we force a text answer
+const MAX_TOPIC_CITATIONS = 12;     // verses returned per lookup_topic
+const TOOL_COMMENTARY_CHARS = 900;  // per-commentary slice fed back to the model
+const TOOL_SCRIPTURE_CHARS = 600;
+
+// Default commentator fallback order (Keil is OT-only — skipped for NT books).
+const COMMENTARY_FALLBACK = [
+    'adam-clarke', 'jamieson-fausset-brown', 'john-gill', 'matthew-henry', 'keil-delitzsch',
+];
+
+// Commentators whose entries cover a PASSAGE rather than a single verse — low
+// verses-per-chapter in the data (Henry ≈3.6, Keil ≈7.3 vs 12-24 for the rest).
+// For these, a missing exact verse means "use the passage block that contains
+// it" (covering lookup). The verse-by-verse commentators stay exact-only: a
+// missing verse there is a genuine gap, and returning an adjacent verse's note
+// would misattribute it.
+const PASSAGE_GROUPED_COMMENTATORS = new Set(['matthew-henry', 'keil-delitzsch']);
+
+const AI_TOOLS = [
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_topic',
+            description: 'Find Bible verses indexed under a topic or theme (e.g. "pride", "anxiety", "forgiveness") from the Treasury of Scripture topical index. Use when the user asks about a theme without naming a specific verse. Returns a list of verse references.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    topic: { type: 'string', description: 'A short topic, ideally one or two words, e.g. "pride".' },
+                },
+                required: ['topic'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_commentary',
+            description: 'Get classic commentary on a specific Bible verse from Clarke, Jamieson-Fausset-Brown, Gill, Matthew Henry, or Keil-Delitzsch. Use to ground an interpretation in real commentary rather than your own training, especially when asked "what is a commentary on X".',
+            parameters: {
+                type: 'object',
+                properties: {
+                    reference: { type: 'string', description: 'A specific verse, e.g. "Proverbs 16:18".' },
+                    commentator: { type: 'string', description: 'Optional commentator name (e.g. "Clarke"). Omit for the default fallback order.' },
+                },
+                required: ['reference'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_father',
+            description: 'Get early Church Father commentary on a specific Bible verse (e.g. Augustine, John Chrysostom) from the 334-father collection. Use when the user asks what the early church, the Church Fathers, or a specific Father said about a passage. Optionally filter to one named Father.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    reference: { type: 'string', description: 'A specific verse, e.g. "John 3:16".' },
+                    father: { type: 'string', description: 'Optional Church Father name to filter to (e.g. "Augustine", "Chrysostom"). Omit for the lead Father on the verse.' },
+                },
+                required: ['reference'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_scripture',
+            description: 'Get the Berean Standard Bible text of a verse or short range. Use sparingly — normally you should reference verses inline rather than quote them.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    reference: { type: 'string', description: 'A verse or range, e.g. "John 3:16" or "Romans 8:28-30".' },
+                },
+                required: ['reference'],
+            },
+        },
+    },
+];
+
+// Injected as a system message so the model knows the tools exist and the
+// grounding/citation discipline. Kept out of the big SYSTEM_PROMPT literal to
+// avoid editing that block and to keep the tool contract beside the tools.
+const TOOLS_GUIDANCE = `You can look things up before answering:
+- lookup_topic(topic): verses indexed under a theme. Use for topic/theme questions with no explicit verse.
+- lookup_commentary(reference, commentator?): classic commentary on a verse. Use when asked for a commentary or interpretation.
+- lookup_father(reference, father?): what the early Church Fathers said about a verse (e.g. Augustine, Chrysostom). Use for "what did the early church / the fathers / a specific Father say about X".
+- lookup_scripture(reference): exact BSB wording. Use sparingly.
+
+Match your tool use to what the user actually asked for:
+
+- They want a LIST of verses ("what are some verses on X", "what does the Bible say about X", "verses about X"): call lookup_topic and present SEVERAL of the references. Do NOT fetch commentary and do NOT deep-dive a single verse — breadth is the point.
+
+- They want a COMMENTARY or interpretation of a TOPIC ("what's a commentary on X", "what does Matthew Henry say about X", "what did the early church think about X", "explain/interpret X"): this is a TWO-step chain — (1) lookup_topic to find the most fitting verse for the theme, then (2) lookup_commentary (or lookup_father if they asked about the Church Fathers / early church) on that verse — only then answer, grounded in what comes back and naming the source. A verse list alone is NOT a commentary; never answer such a request from the list or from your own training.
+
+- They named a SPECIFIC verse ("commentary on John 3:16", "what does Clarke say about Romans 8:28", "what did Augustine say about John 3:16"): skip lookup_topic and go straight to lookup_commentary or lookup_father (or lookup_scripture if they only want the wording).
+
+Whichever path, prefer what the tools return over your own training.
+
+Attribution is sacred here — never present one commentator's or Church Father's words as another's. If the user asked for a specific commentator or Father (e.g. "what does Matthew Henry say…", "what did Augustine say…") and the tool result is marked SUBSTITUTION, you MUST say so plainly before giving the alternative — e.g. "I couldn't find Matthew Henry on Philippians 4:6, but Adam Clarke notes…". If no one has the verse, say that honestly ("I couldn't find anything on this verse from Augustine") and do not fabricate one or pass off your own knowledge as theirs. When a result is a "passage note covering verse N", frame it as the commentator's note on the surrounding passage, not on that single verse.
+
+The Church Fathers collection actually spans the patristic era through modern times, so every lookup_father result is tagged with the author's era in [brackets]. ONLY call pre-AD-800 authors "the early church" or "a Church Father". If a result is tagged medieval or modern (e.g. Aquinas, C.S. Lewis, Tolkien), cite them by their own era and never imply they are a Father — for a plain "what did the early church say" the tool already returns only genuine Fathers.
+
+Name the commentator when you cite them ("Clarke notes…"). If a tool returns an error or suggestions, adjust and retry. Never invent commentary text or source titles. Keep the final answer in your normal tight, warm voice and reference verses inline rather than quoting them in full.`;
+
+function resolveCommentatorId(name) {
+    if (!name) return null;
+    const n = String(name).toLowerCase().trim();
+    return COMMENTATORS.find(c =>
+        c.id === n ||
+        c.label.toLowerCase() === n ||
+        c.label.toLowerCase().includes(n) ||
+        n.includes(c.label.toLowerCase().split(/[\s-]/)[0])
+    )?.id ?? null;
+}
+
+// Parse one verse reference into { bookId, bookName, chapter, startVerse, endVerse }
+// or return a string error message. Shared by the commentary/scripture tools.
+function parseSingleVerseRef(reference) {
+    if (!reference || typeof reference !== 'string') {
+        return 'Error: provide a "reference" like "John 3:16".';
+    }
+    const refs = parseScriptureRefs(reference);
+    if (refs.length === 0) {
+        return `Error: "${reference}" is not a recognizable verse reference. Use "Book chapter:verse".`;
+    }
+    const r = refs[0];
+    if (r.startVerse == null) {
+        return `Error: "${reference}" is a chapter, not a verse. Include a verse number like "${r.bookName} ${r.chapter}:1".`;
+    }
+    return r;
+}
+
+async function toolLookupTopic({ topic }) {
+    if (!topic || typeof topic !== 'string') return 'Error: provide a "topic" string like "pride".';
+    const refs = await categoriesWrapper.getRefsForTopic(topic);
+    if (!refs || refs.length === 0) {
+        const suggestions = await categoriesWrapper.searchTopics(topic).catch(() => []);
+        if (suggestions.length === 0) {
+            return `No topic "${topic}" in the index and no close matches. Answer from Scripture you know, or try a single-word topic.`;
+        }
+        return `No exact topic "${topic}". Closest indexed topics: ${suggestions.join(', ')}. Call lookup_topic again with one of these exact names if relevant.`;
+    }
+    const citations = [];
+    for (const ref of refs) {
+        const bookId = getBookId(ref.book, { silent: true });
+        if (!bookId) continue;
+        const bookName = numbersToBook.get(bookId);
+        const chapter = parseInt(ref.chapter, 10);
+        const startVerse = ref.verse != null ? parseInt(ref.verse, 10) : parseInt(ref.start_verse, 10);
+        if (!Number.isFinite(chapter) || !Number.isFinite(startVerse)) continue;
+        const endVerse = ref.end_verse != null ? parseInt(ref.end_verse, 10) : startVerse;
+        citations.push(endVerse > startVerse
+            ? `${bookName} ${chapter}:${startVerse}-${endVerse}`
+            : `${bookName} ${chapter}:${startVerse}`);
+        if (citations.length >= MAX_TOPIC_CITATIONS) break;
+    }
+    if (citations.length === 0) return `Topic "${topic}" found but no resolvable verses.`;
+    return `Topic "${topic}" — ${refs.length} verses indexed. References: ${citations.join('; ')}. These are references, NOT commentary. If the user wants a commentary or interpretation, you MUST now call lookup_commentary on the single most fitting one of these before answering — do not answer from this list alone. Reference verses inline (don't quote full text) so Biblicana expands them for the user.`;
+}
+
+async function toolLookupCommentary({ reference, commentator }) {
+    const r = parseSingleVerseRef(reference);
+    if (typeof r === 'string') return r;
+    const codes = toOSIS3Codes(r.bookId);
+    const isNT = r.bookId > 39;
+    const requested = resolveCommentatorId(commentator);
+    const requestedLabel = requested
+        ? (COMMENTATORS.find(c => c.id === requested)?.label ?? commentator)
+        : null;
+    const order = requested
+        ? [requested, ...COMMENTARY_FALLBACK.filter(id => id !== requested)]
+        : COMMENTARY_FALLBACK;
+    for (const id of order) {
+        if (id === 'keil-delitzsch' && isNT) continue;
+        // Passage-grouped commentators (Henry, Keil) key a whole block at its
+        // first verse, so an exact-verse query misses — use the covering block.
+        // Verse-by-verse commentators stay exact-only (a miss is a real gap).
+        const row = PASSAGE_GROUPED_COMMENTATORS.has(id)
+            ? await commentaryWrapper.getVerseCommentaryCovering(id, codes, r.chapter, r.startVerse).catch(() => null)
+            : await commentaryWrapper.getVerseCommentary(id, codes, r.chapter, r.startVerse).catch(() => null);
+        if (row?.text) {
+            const label = COMMENTATORS.find(c => c.id === id)?.label ?? id;
+            // If we matched a passage block rather than the exact verse (covering
+            // lookups return coveredFrom; exact lookups don't), tell the model so
+            // it phrases it as a passage note, not a verse-specific one.
+            const onRef = (row.coveredFrom && row.coveredFrom !== r.startVerse)
+                ? `${r.bookName} ${r.chapter} (passage note covering verse ${r.startVerse})`
+                : `${r.bookName} ${r.chapter}:${r.startVerse}`;
+            // Loud substitution signal: the user asked for a specific commentator
+            // who had nothing here, so the model MUST tell them and name both.
+            const substitution = (requested && id !== requested)
+                ? `SUBSTITUTION — ${requestedLabel} has no commentary on ${r.bookName} ${r.chapter}:${r.startVerse}. You MUST tell the user you couldn't find ${requestedLabel} for this verse, then offer ${label} instead. Do not present ${label}'s words as ${requestedLabel}'s. `
+                : '';
+            return `${substitution}${label} on ${onRef}: "${row.text.slice(0, TOOL_COMMENTARY_CHARS)}"`;
+        }
+    }
+    const who = requestedLabel ? `${requestedLabel}, or any of the other commentators,` : 'any commentator';
+    return `No commentary found for ${r.bookName} ${r.chapter}:${r.startVerse} from ${who}. Tell the user honestly that you couldn't find a commentary on this verse${requestedLabel ? ` from ${requestedLabel}` : ''} — do not invent one or attribute training-data content to a commentator.`;
+}
+
+// The "fathers" collection (extrabiblical_data) is actually 2,000 years of
+// Christian commentary mislabeled as Fathers — 275 patristic, 36 medieval
+// (Aquinas, Bernard…), 13 modern (C.S. Lewis, Tolkien, even a living author).
+// Classify by default_year (stored as TEXT — parseInt it) so the model never
+// presents a modern as "the early church". 9999 = pseudonymous/undated, which
+// is patristic-adjacent. The patristic era closes ~AD 800 (John of Damascus).
+function classifyFather(yearRaw) {
+    const y = parseInt(yearRaw, 10);
+    if (!Number.isFinite(y) || y === 9999) return { patristic: true, era: 'early Church Father, date uncertain' };
+    if (y <= 800) return { patristic: true, era: `early Church Father, c. AD ${y}` };
+    if (y <= 1499) return { patristic: false, era: `medieval writer (c. ${y}) — NOT a Church Father` };
+    if (y <= 1700) return { patristic: false, era: `Reformation-era writer (c. ${y}) — NOT a Church Father` };
+    return { patristic: false, era: `modern author (c. ${y}) — NOT a Church Father` };
+}
+
+function formatFatherResult(row, ref, prefix = '') {
+    const { era, patristic } = classifyFather(row.default_year);
+    const src = row.source_title ? ` (from ${row.source_title})` : '';
+    // Loud guard when a named author turns out NOT to be patristic, so the model
+    // attributes them to their real era instead of calling them a Father.
+    const caution = patristic ? '' : ` IMPORTANT: ${row.father_name} is a ${era}; do NOT call them a Church Father or imply "the early church" said this — attribute them to their own era. `;
+    return `${prefix}${caution}${row.father_name} [${era}]${src} on ${ref}: "${row.txt.slice(0, TOOL_COMMENTARY_CHARS)}"`;
+}
+
+async function toolLookupFather({ reference, father }) {
+    const r = parseSingleVerseRef(reference);
+    if (typeof r === 'string') return r;
+    const books = toCommentaryVariants(r.bookName);
+    const fatherFilter = (father && typeof father === 'string') ? father.trim() : null;
+    const ref = `${r.bookName} ${r.chapter}:${r.startVerse}`;
+    // getByPassage uses location_start <= loc <= location_end, so passage-spanning
+    // entries resolve natively — no covering workaround needed.
+    const pickPatristic = async () => {
+        const all = await fathersWrapper.getByPassage(books, r.chapter, r.startVerse).catch(() => []);
+        const fathers = all.filter(row => classifyFather(row.default_year).patristic);
+        if (fathers.length === 0) return null;
+        const leadName = pickMarqueeFather(fathers);
+        return fathers.find(x => x.father_name === leadName) || fathers[0];
+    };
+
+    if (fatherFilter) {
+        // User named a specific writer (any era) — return them, era-tagged.
+        const rows = await fathersWrapper.getByPassage(books, r.chapter, r.startVerse, fatherFilter).catch(() => []);
+        if (rows.length > 0) {
+            return formatFatherResult(rows[0], ref);
+        }
+        // Named writer is silent here → substitute a genuine patristic Father.
+        const lead = await pickPatristic();
+        if (!lead) {
+            return `No commentary found on ${ref} from ${father} or any Church Father. Tell the user honestly — do not invent one.`;
+        }
+        return formatFatherResult(lead, ref,
+            `SUBSTITUTION — ${father} has no commentary on ${ref}. You MUST tell the user you couldn't find ${father}, then offer the following instead (name the era). `);
+    }
+
+    // No writer named → "what did the early church / the fathers say". Restrict
+    // to genuine patristic authors so a modern (C.S. Lewis) is never surfaced as
+    // "the early church".
+    const lead = await pickPatristic();
+    if (!lead) {
+        return `No early Church Father commentary found on ${ref}. Tell the user honestly — do not cite a medieval or modern writer as a Father.`;
+    }
+    return formatFatherResult(lead, ref);
+}
+
+async function toolLookupScripture({ reference }) {
+    const r = parseSingleVerseRef(reference);
+    if (typeof r === 'string') return r;
+    const rows = await bibleWrapper.getVerses(r.bookId, r.chapter, r.startVerse, r.endVerse ?? r.startVerse).catch(() => []);
+    const text = rows.map(v => v.BSB || v.KJV).filter(Boolean).join(' ');
+    if (!text) return `No verse text found for ${r.bookName} ${r.chapter}:${r.startVerse}.`;
+    const label = (r.endVerse && r.endVerse !== r.startVerse)
+        ? `${r.bookName} ${r.chapter}:${r.startVerse}-${r.endVerse}`
+        : `${r.bookName} ${r.chapter}:${r.startVerse}`;
+    return `${label} (BSB): ${text.slice(0, TOOL_SCRIPTURE_CHARS)}`;
+}
+
+async function executeTool(name, argsJson) {
+    let args;
+    try {
+        args = JSON.parse(argsJson || '{}');
+    } catch {
+        return 'Error: could not parse tool arguments as JSON.';
+    }
+    try {
+        switch (name) {
+            case 'lookup_topic': return await toolLookupTopic(args);
+            case 'lookup_commentary': return await toolLookupCommentary(args);
+            case 'lookup_father': return await toolLookupFather(args);
+            case 'lookup_scripture': return await toolLookupScripture(args);
+            default: return `Error: unknown tool "${name}".`;
+        }
+    } catch (err) {
+        logger.error(`[AiChat tool] ${name} threw: ${err.message}`);
+        return `Error running ${name}: ${err.message}`;
+    }
+}
+
+async function postChat(body) {
+    const response = await axios.post(OPENAI_URL, body, {
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${process.env.OPENAIKEY}`,
         },
         timeout: TIMEOUT_MS,
     });
-    const content = response?.data?.choices?.[0]?.message?.content;
-    if (!content) throw new Error('Empty response from OpenAI');
-    return content.trim();
+    const msg = response?.data?.choices?.[0]?.message;
+    if (!msg) throw new Error('Empty response from OpenAI');
+    return msg;
+}
+
+// Tool-calling loop. Offers tools for up to MAX_TOOL_ROUNDS rounds; if the model
+// keeps requesting tools past that, the final round omits tools to force a text
+// answer (guarantees termination). Works on a COPY of `messages` so the tool
+// plumbing never leaks into the array the caller persists to memory.
+async function callOpenAI(messages) {
+    const convo = [...messages];
+    for (let round = 0; ; round++) {
+        const offerTools = round < MAX_TOOL_ROUNDS;
+        const body = {
+            model: MODEL,
+            messages: convo,
+            max_tokens: MAX_OUTPUT_TOKENS,
+            temperature: TEMPERATURE,
+        };
+        if (offerTools) {
+            body.tools = AI_TOOLS;
+            body.tool_choice = 'auto';
+        }
+
+        const msg = await postChat(body);
+
+        if (offerTools && msg.tool_calls?.length) {
+            convo.push(msg);   // assistant turn carrying the tool_calls
+            for (const call of msg.tool_calls) {
+                const { name, arguments: rawArgs } = call.function;
+                logger.info(`[AiChat tool] ${name}(${(rawArgs || '').slice(0, 120)})`);
+                const result = await executeTool(name, rawArgs);
+                logger.info(`[AiChat tool] ${name} → ${result.slice(0, 140)}`);
+                convo.push({ role: 'tool', tool_call_id: call.id, content: result });
+            }
+            continue;
+        }
+
+        const content = msg.content;
+        if (!content) throw new Error('Empty response from OpenAI');
+        return content.trim();
+    }
 }
 
 // ── Public entry ──────────────────────────────────────────────────────────
@@ -446,6 +792,7 @@ export async function handleAiChat(message, database, options = {}) {
         const messages = [
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'system', content: `${speakerNote}${hadProfanity ? ' Their most recent message contained some profanity; gently encourage more respectful language while still engaging sincerely with their question.' : ''}` },
+            { role: 'system', content: TOOLS_GUIDANCE },
         ];
         if (ragContext) {
             messages.push({ role: 'system', content: ragContext });

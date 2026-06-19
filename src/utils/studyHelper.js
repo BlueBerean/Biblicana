@@ -264,6 +264,23 @@ class CategoriesWrapper {
         const row = await db.get(`SELECT COUNT(*) AS cnt FROM categories`);
         return row?.cnt ?? 0;
     }
+
+    // Fuzzy topic-name search for suggestion fallbacks. getRefsForTopic requires
+    // an exact (case-insensitive) name match; when an AI tool-call passes a topic
+    // that doesn't match exactly, this surfaces the closest indexed names so the
+    // model can retry with a real one. Shortest names first (closest to the bare
+    // topic, e.g. "Pride" before "The Spirit Of Pride").
+    async searchTopics(partial, limit = 12) {
+        const db = await this.db;
+        const rows = await db.all(
+            `SELECT DISTINCT name FROM categories
+             WHERE LOWER(name) LIKE LOWER(?)
+             ORDER BY LENGTH(name) ASC, name
+             LIMIT ?`,
+            [`%${partial}%`, limit]
+        );
+        return rows.map(r => r.name);
+    }
 }
 
 class CommentaryWrapper {
@@ -316,6 +333,32 @@ class CommentaryWrapper {
              LIMIT 1`,
             [commentaryId, ...codes, chapter, verse]
         );
+    }
+
+    // Like getVerseCommentary, but when no exact verse-level entry exists, falls
+    // back to the commentary block that COVERS the verse — the entry with the
+    // greatest start-verse <= the target in that chapter. Necessary because some
+    // commentators are passage-grouped rather than verse-by-verse: Matthew Henry's
+    // entire note on Philippians 4:1-9 is keyed only at verse 1, so an exact lookup
+    // for 4:6 misses entirely and silently falls back to a different commentator.
+    // Returns { text, coveredFrom } — coveredFrom is the block's start verse (equals
+    // the requested verse on an exact hit) so callers can label a passage note
+    // accurately — or null if the commentator has nothing at/ before the verse.
+    async getVerseCommentaryCovering(commentaryId, bookCodes, chapter, verse) {
+        const db = await this.db;
+        const codes = Array.isArray(bookCodes) ? bookCodes : [bookCodes];
+        if (codes.length === 0) return null;
+        const placeholders = codes.map(() => '?').join(',');
+        const row = await db.get(
+            `SELECT text, number FROM CommentaryChapterVerse
+             WHERE commentaryId = ? AND bookId IN (${placeholders})
+             AND chapterNumber = ? AND number <= ?
+             ORDER BY number DESC
+             LIMIT 1`,
+            [commentaryId, ...codes, chapter, verse]
+        );
+        if (!row?.text) return null;
+        return { text: row.text, coveredFrom: row.number };
     }
 
     async getChapterCommentary(commentaryId, bookCodes, chapter) {
