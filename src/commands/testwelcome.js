@@ -19,6 +19,16 @@ export default {
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
     async execute(interaction, database) {
+        // Ship-gate: this is a dev-only preview command. Even though it's
+        // admin-gated and ideally kept out of the global registry, guard the
+        // execute too so it's inert if it ever does reach a production deploy.
+        if (process.env.NODE_ENV === 'production') {
+            return interaction.reply({
+                content: 'This is a development-only command and is disabled in production.',
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         // Read stored guild state so the card reflects current settings

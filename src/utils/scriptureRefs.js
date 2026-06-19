@@ -34,6 +34,11 @@ const SCRIPTURE_REGEX = /\b(?:([1-3]|I{1,3})\s*)?([A-Za-z]+(?:\s+of\s+[A-Za-z]+)
  */
 export function parseScriptureRefs(text) {
     if (!text || typeof text !== 'string') return [];
+    // Clamp before scanning. A single Discord message is ~4000 chars, but the
+    // reaction path (extractSearchText) concatenates embeds + nested V2 text and
+    // can exceed that. The rewind loop is O(n·m) worst case; bounding n keeps an
+    // adversarially crafted blob from costing more than a couple ms.
+    if (text.length > 8000) text = text.slice(0, 8000);
 
     const results = [];
     // Manual exec loop (not matchAll) because we rewind lastIndex on validation

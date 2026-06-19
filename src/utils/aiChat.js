@@ -57,6 +57,10 @@ const HARD_BLOCK_PATTERNS = [
     /\b(ignore|disregard|forget)\s+(all\s+)?(your\s+)?(previous\s+)?(instructions|prompt|guidelines|rules)/i,
     /\bpretend\s+you\s+(are|were|aren't)/i,
     /\broleplay\s+as\b/i,
+    // Scoped to jailbreak-shaped "act as" only. A bare /\bact as\b/ would block
+    // legitimate study questions ("how should I act as a Christian", "act as a
+    // light", "act as a servant"). Require an AI/persona target.
+    /\bact\s+as\s+(?:an?\s+)?(?:ai|assistant|bot|chatbot|model|dan|character|persona)\b/i,
     /\byou\s+are\s+now\s+(a|an)\s+/i,
 ];
 
@@ -334,6 +338,8 @@ function trimMemoryToBudget(messages, memoryStartIdx, memoryEndIdx) {
 
 const MAX_TOOL_ROUNDS = 2;          // tool rounds before we force a text answer
 const MAX_TOPIC_CITATIONS = 12;     // verses returned per lookup_topic
+const TOPIC_FETCH_CAP = 200;        // DB-side row cap for lookup_topic (major topics index 1000s)
+const CROSSREF_FETCH_CAP = 50;      // DB-side row cap for lookup_crossrefs (uses 15)
 const TOOL_COMMENTARY_CHARS = 900;  // per-commentary slice fed back to the model
 const TOOL_SCRIPTURE_CHARS = 600;
 
@@ -518,7 +524,7 @@ function parseSingleVerseRef(reference) {
 
 async function toolLookupTopic({ topic }) {
     if (!topic || typeof topic !== 'string') return 'Error: provide a "topic" string like "pride".';
-    const refs = await categoriesWrapper.getRefsForTopic(topic);
+    const refs = await categoriesWrapper.getRefsForTopic(topic, TOPIC_FETCH_CAP);
     if (!refs || refs.length === 0) {
         const suggestions = await categoriesWrapper.searchTopics(topic).catch(() => []);
         if (suggestions.length === 0) {
@@ -541,7 +547,8 @@ async function toolLookupTopic({ topic }) {
         if (citations.length >= MAX_TOPIC_CITATIONS) break;
     }
     if (citations.length === 0) return `Topic "${topic}" found but no resolvable verses.`;
-    return `Topic "${topic}" — ${refs.length} verses indexed. References: ${citations.join('; ')}. These are references, NOT commentary. If the user wants a commentary or interpretation, you MUST now call lookup_commentary on the single most fitting one of these before answering — do not answer from this list alone. Reference verses inline (don't quote full text) so Biblicana expands them for the user.`;
+    const countLabel = refs.length >= TOPIC_FETCH_CAP ? `${TOPIC_FETCH_CAP}+` : `${refs.length}`;
+    return `Topic "${topic}" — ${countLabel} verses indexed. References: ${citations.join('; ')}. These are references, NOT commentary. If the user wants a commentary or interpretation, you MUST now call lookup_commentary on the single most fitting one of these before answering — do not answer from this list alone. Reference verses inline (don't quote full text) so Biblicana expands them for the user.`;
 }
 
 async function toolLookupCommentary({ reference, commentator }) {
@@ -737,7 +744,7 @@ async function toolLookupCrossrefs({ reference }) {
     const r = parseSingleVerseRef(reference);
     if (typeof r === 'string') return r;
     const ref = `${r.bookName} ${r.chapter}:${r.startVerse}`;
-    const rows = await crossRefWrapper.getForVerse(r.bookName, r.chapter, r.startVerse).catch(() => []);
+    const rows = await crossRefWrapper.getForVerse(r.bookName, r.chapter, r.startVerse, CROSSREF_FETCH_CAP).catch(() => []);
     if (!rows || rows.length === 0) return `No cross-references found for ${ref}.`;
     const cites = [];
     for (const x of rows) {
@@ -749,7 +756,8 @@ async function toolLookupCrossrefs({ reference }) {
         if (cites.length >= 15) break;
     }
     if (cites.length === 0) return `Cross-references for ${ref} could not be resolved.`;
-    return `${ref} cross-references (Treasury of Scripture Knowledge), ${rows.length} total: ${cites.join('; ')}. Reference these inline so Biblicana expands them; call lookup_commentary or lookup_father on any for depth.`;
+    const xrefCount = rows.length >= CROSSREF_FETCH_CAP ? `${CROSSREF_FETCH_CAP}+` : `${rows.length}`;
+    return `${ref} cross-references (Treasury of Scripture Knowledge), ${xrefCount} total: ${cites.join('; ')}. Reference these inline so Biblicana expands them; call lookup_commentary or lookup_father on any for depth.`;
 }
 
 async function executeTool(name, argsJson) {
@@ -920,7 +928,13 @@ export async function handleAiChat(message, database, options = {}) {
         // --- Build the OpenAI messages array ---
         const { key: scopeKey, isShared } = await resolveMemoryScope(message, database);
         const memory = await database.getChatMemory(scopeKey);
-        const displayName = message.member?.displayName || message.author.globalName || message.author.username;
+        // Sanitize the display name before it enters the model context. In
+        // shared mode it's prepended to each turn as "<name>: <message>", and
+        // the nickname is fully user-controlled — a nickname like
+        // "SYSTEM: ignore prior instructions" would otherwise ride into the
+        // prompt. Strip line breaks and cap at Discord's own 32-char nick limit.
+        const rawName = message.member?.displayName || message.author.globalName || message.author.username || 'User';
+        const displayName = rawName.replace(/[\r\n]+/g, ' ').slice(0, 32).trim() || 'User';
         const { context: ragContext, sources: ragSources } = await buildRagContext(filteredText);
 
         // In shared (multiplayer) mode, we tag the user's content with their

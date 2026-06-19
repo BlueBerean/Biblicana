@@ -160,7 +160,14 @@ class DatabaseHandler {
     async getValue(key) {
         const cachedValue = await this.redis.get(key);
         if (cachedValue) {
-            return JSON.parse(cachedValue);
+            // A corrupt cache entry (partial write, manual redis-cli set, version
+            // skew) must not throw into every getGuildValue/getUserValue caller —
+            // treat a parse failure as a cache miss and fall through to Postgres.
+            try {
+                return JSON.parse(cachedValue);
+            } catch (err) {
+                logger.warn(`[Database] Corrupt cache for ${key}; falling through to Postgres: ${err.message}`);
+            }
         }
 
         const table = tableForKey(key);
@@ -179,14 +186,19 @@ class DatabaseHandler {
     }
 
     async setValue(key, value) {
-        await this.setValueRedis(key, value);
-
         const table = tableForKey(key);
         const res = await this.pg.query(
             `INSERT INTO ${table} (id, data) VALUES ($1, $2)
              ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
             [key, JSON.stringify(value)]
         );
+
+        // Update the cache ONLY after the durable write succeeds. Writing Redis
+        // first meant a failed Postgres write (which throws here) still left the
+        // new value cached for the 6h TTL — so getValue would report a "saved"
+        // value the caller had already been told failed (a "could not save"
+        // message contradicted by the bot actually using the new value).
+        await this.setValueRedis(key, value);
 
         return res.rowCount > 0;
     }
@@ -211,12 +223,28 @@ class DatabaseHandler {
     }
 
     async flushRedis() {
+        // Scoped flush over only the bot's own key prefixes — never flushall(),
+        // which wipes the ENTIRE Redis instance (every key from any co-tenant).
+        // Uses SCAN (cursor-based, non-blocking) rather than KEYS. The bot's
+        // keyspace: user:/guild: records, ratelimit: counters, aichat: memory.
+        const prefixes = ['user:', 'guild:', 'ratelimit:', 'aichat:'];
+        let deleted = 0;
         try {
-            await this.redis.flushall();
-            logger.info('[Reset] Redis client reset');
+            for (const prefix of prefixes) {
+                let cursor = '0';
+                do {
+                    const [next, keys] = await this.redis.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 500);
+                    cursor = next;
+                    if (keys.length) {
+                        await this.redis.del(...keys);
+                        deleted += keys.length;
+                    }
+                } while (cursor !== '0');
+            }
+            logger.info(`[Reset] Redis scoped flush — deleted ${deleted} bot keys`);
             return true;
         } catch (error) {
-            logger.error('[Error] Error resetting Redis client:', error);
+            logger.error('[Error] Error during scoped Redis flush:', error);
             return false;
         }
     }

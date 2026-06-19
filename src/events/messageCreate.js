@@ -51,45 +51,56 @@ async function shouldAiFire({ message, botId, isDM, isMention }) {
 export default {
     name: Events.MessageCreate,
     async execute(message, database) {
-        if (message.author.bot) return;
-        if (!message.content || message.content.length < 2) return;
-
-        const botId = message.client.user?.id;
-        const isDM = !message.guild;
-        const isMention = botId ? message.mentions.users.has(botId) : false;
-
-        // AI dispatch path — triggered by explicit address:
-        //   - @mention in a guild channel, or
-        //   - reply (Discord's reply button) to any bot message, or
-        //   - any DM (DMs always mean "talking to the bot")
-        const aiTriggered = botId
-            ? await shouldAiFire({ message, botId, isDM, isMention })
-            : false;
-
-        if (aiTriggered) {
-            // Per-guild opt-in. DMs bypass the gate — a user DMing the bot
-            // has explicitly chosen to talk to it, no server admin consent
-            // relevant there.
-            if (!isDM) {
-                const enabled = await readAiEnabled(database, message.guild.id);
-                if (!enabled) return;  // mentioned in a server that hasn't opted in — silent
-            }
-            await handleAiChat(message, database);
-            return;
-        }
-
-        // Passive scripture detection — guild-only. Respects per-guild mode.
-        if (!message.guild) return;
-        let mode = 'silent';
+        // Outer guard: this is the only gateway listener without a top-level
+        // catch. It runs on every message in 512 servers; one unhandled throw
+        // here would otherwise surface as an unhandledRejection.
         try {
-            const guildData = await database.getGuildValue(message.guild.id);
-            if (guildData?.passiveMode) mode = guildData.passiveMode;
-        } catch (err) {
-            logger.debug(`[Passive] Failed to read guild config for ${message.guild.id}: ${err.message}`);
-            return;
-        }
-        if (mode === 'silent') return;
+            if (message.author.bot) return;
+            if (!message.content || message.content.length < 2) return;
 
-        await handleMessageForPassiveDetection(message, mode, database);
+            const botId = message.client.user?.id;
+            const isDM = !message.guild;
+            const isMention = botId ? message.mentions.users.has(botId) : false;
+
+            // Resolve AI eligibility with the CHEAP gate before the expensive
+            // one. shouldAiFire does a Discord REST reply-fetch on every reply;
+            // running it in an AI-disabled guild would burn REST quota on a
+            // feature that can't fire there. So in a guild, only consult
+            // shouldAiFire once the cached per-guild AI flag says AI is on (and
+            // only when the message could even be AI: a mention or a reply).
+            // DMs are always eligible (no admin opt-in relevant).
+            let aiEligible = isDM;
+            if (!isDM && botId) {
+                const couldBeAi = isMention || Boolean(message.reference?.messageId);
+                if (couldBeAi) {
+                    aiEligible = await readAiEnabled(database, message.guild.id);
+                }
+            }
+
+            const aiTriggered = (aiEligible && botId)
+                ? await shouldAiFire({ message, botId, isDM, isMention })
+                : false;
+
+            if (aiTriggered) {
+                await handleAiChat(message, database);
+                return;
+            }
+
+            // Passive scripture detection — guild-only. Respects per-guild mode.
+            if (!message.guild) return;
+            let mode = 'silent';
+            try {
+                const guildData = await database.getGuildValue(message.guild.id);
+                if (guildData?.passiveMode) mode = guildData.passiveMode;
+            } catch (err) {
+                logger.debug(`[Passive] Failed to read guild config for ${message.guild.id}: ${err.message}`);
+                return;
+            }
+            if (mode === 'silent') return;
+
+            await handleMessageForPassiveDetection(message, mode, database);
+        } catch (err) {
+            logger.error(`[MessageCreate] Unhandled: ${err.message}`);
+        }
     },
 };

@@ -68,6 +68,12 @@ async function startBot() {
             GatewayIntentBits.GuildMessages,
             GatewayIntentBits.MessageContent,
             GatewayIntentBits.GuildMessageReactions,
+            // DirectMessages: the AI-chat path treats a DM to the bot as a
+            // first-class trigger (see shouldAiFire / handleAiChat). Without
+            // this intent MessageCreate never fires for DMs, so the advertised
+            // "DM Biblicana directly" flow is silently dead. Pairs with
+            // Partials.Channel below (DM channels arrive uncached).
+            GatewayIntentBits.DirectMessages,
         ],
         partials: [
             Partials.Channel,
@@ -168,6 +174,14 @@ async function startBot() {
     };
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
+
+    // Last-resort safety net: an unhandled promise rejection terminates the
+    // Node process (Node 18+), which under PM2 means a restart cycle hitting all
+    // ~512 servers at once. A single transient DB/Discord blip in any handler
+    // that forgot a catch shouldn't take the bot down — log it and stay up.
+    process.on('unhandledRejection', (reason) => {
+        logger.error(`[Bot] Unhandled promise rejection: ${reason instanceof Error ? reason.stack : reason}`);
+    });
 
     // Loud startup warnings for dev bypass flags. These should never be set
     // in production; if they are, flooding the logs makes that obvious.

@@ -53,38 +53,75 @@ async function postDailyVerseToGuild(guild, dailyVerse, database) {
     }
 }
 
+// In-memory record of guilds already posted-to this process, keyed
+// `${guildId}:${YYYY-MM-DD}`. The durable dedupe marker is `lastPostedDate` in
+// the guild record, but if that write fails (a routine Postgres blip), the next
+// 5-min tick re-reads no marker and re-posts — up to 12 times in the matching
+// hour, across every affected guild. This process-lifetime guard makes a
+// successful post idempotent even when the durable write fails. Bounded to one
+// day's entries (cleared on date rollover); a restart re-reads lastPostedDate.
+const postedThisProcess = new Set();
+let memoDate = null;
+
+// Overlap guard: a slow tick (DB latency / Discord rate-limiting across many
+// guilds) could still be running when the next 5-min interval fires, doubling
+// concurrent work and racing the dedupe. Skip if one is already in flight.
+let tickInFlight = false;
+
 export async function runDailyVerseTick(client, database) {
-    const now = new Date();
-    const currentHourUTC = now.getUTCHours();
-    const today = todayUTCDateString();
-
-    let candidates = 0;
-    let posted = 0;
-
-    for (const guild of client.guilds.cache.values()) {
-        try {
-            const g = await database.getGuildValue(guild.id);
-            const dv = g?.dailyVerse;
-            if (!dv?.enabled) continue;
-            if (!dv.channelId || typeof dv.hour !== 'number') continue;
-            if (dv.hour !== currentHourUTC) continue;
-            if (dv.lastPostedDate === today) continue;
-
-            candidates++;
-            const success = await postDailyVerseToGuild(guild, dv, database);
-            if (success) {
-                // Mark posted regardless — if we got here we tried.
-                // Prevents retry-storm if e.g. rate-limit hits on first post.
-                await saveDailyVerseConfig(database, guild.id, { lastPostedDate: today });
-                posted++;
-            }
-        } catch (err) {
-            logger.error(`[DailyVerse] Tick error for guild ${guild.id}: ${err.message}`);
-        }
+    if (tickInFlight) {
+        logger.warn('[DailyVerse] Previous tick still in flight; skipping this tick.');
+        return;
     }
+    tickInFlight = true;
+    try {
+        const now = new Date();
+        const currentHourUTC = now.getUTCHours();
+        const today = todayUTCDateString();
 
-    if (candidates > 0) {
-        logger.info(`[DailyVerse] Tick complete: hour=${currentHourUTC}UTC candidates=${candidates} posted=${posted}`);
+        // Keep the in-memory guard bounded to the current day.
+        if (memoDate !== today) {
+            postedThisProcess.clear();
+            memoDate = today;
+        }
+
+        let candidates = 0;
+        let posted = 0;
+
+        for (const guild of client.guilds.cache.values()) {
+            try {
+                const g = await database.getGuildValue(guild.id);
+                const dv = g?.dailyVerse;
+                if (!dv?.enabled) continue;
+                if (!dv.channelId || typeof dv.hour !== 'number') continue;
+                if (dv.hour !== currentHourUTC) continue;
+                if (dv.lastPostedDate === today) continue;
+
+                const memoKey = `${guild.id}:${today}`;
+                if (postedThisProcess.has(memoKey)) continue;   // posted this process; durable write may have failed
+
+                candidates++;
+                const success = await postDailyVerseToGuild(guild, dv, database);
+                if (success) {
+                    // Mark in-memory FIRST so a failed durable write can't cause a
+                    // re-post on the next tick within this process lifetime.
+                    postedThisProcess.add(memoKey);
+                    const persisted = await saveDailyVerseConfig(database, guild.id, { lastPostedDate: today });
+                    if (persisted === false) {
+                        logger.error(`[DailyVerse] Posted to ${guild.id} but FAILED to persist lastPostedDate — in-memory guard prevents re-post until restart.`);
+                    }
+                    posted++;
+                }
+            } catch (err) {
+                logger.error(`[DailyVerse] Tick error for guild ${guild.id}: ${err.message}`);
+            }
+        }
+
+        if (candidates > 0) {
+            logger.info(`[DailyVerse] Tick complete: hour=${currentHourUTC}UTC candidates=${candidates} posted=${posted}`);
+        }
+    } finally {
+        tickInFlight = false;
     }
 }
 

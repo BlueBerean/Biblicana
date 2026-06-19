@@ -101,16 +101,15 @@ class StrongsWrapper {
         this.db = strongsPromise;
     }
 
-    /** @deprecated */
-    async getStrongsUnicode(language, unicode) {
-        const db = await this.db;
-        return db.get(`SELECT * FROM ${language} WHERE unicode = ?`, [unicode]);
-    }
-
     async getStrongsEnglish(language, english) {
         const db = await this.db;
+        // `language` is interpolated into the table name, so it must come from a
+        // fixed allowlist — never the raw argument. Mirrors getStrongsId below.
+        // (Today's caller passes a Discord choice-enforced value, but this keeps
+        // the method safe regardless of caller.)
+        const tableName = String(language).toLowerCase() === 'greek' ? 'greek' : 'hebrew';
         const query = await db.all(
-            `SELECT * FROM ${language} WHERE kjvdef LIKE ?`,
+            `SELECT * FROM ${tableName} WHERE kjvdef LIKE ?`,
             [`%${english}%`]
         );
         if (query.length == 0) return null;

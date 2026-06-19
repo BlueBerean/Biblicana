@@ -231,14 +231,18 @@ class DictionaryWrapper {
 class CrossRefWrapper {
     constructor() { this.db = crossRefPromise; }
 
-    async getForVerse(canonicalBookName, chapter, verse) {
+    // `limit` is optional: the AI tool passes a small cap so a verse with many
+    // TSK refs doesn't pull the whole set into memory just to use the first 15.
+    // Slash callers (/crossref) omit it — they paginate through every ref.
+    async getForVerse(canonicalBookName, chapter, verse, limit = null) {
         const db = await this.db;
         const sourceBook = toTSKSource(canonicalBookName);
+        const cap = Number.isInteger(limit) && limit > 0 ? ` LIMIT ${limit}` : '';
         return db.all(
             `SELECT target_book, target_chapter, target_verse_start, target_verse_end
              FROM cross_references
              WHERE source_book = ? AND source_chapter = ? AND source_verse = ?
-             ORDER BY id`,
+             ORDER BY id${cap}`,
             [sourceBook, chapter, verse]
         );
     }
@@ -247,14 +251,18 @@ class CrossRefWrapper {
 class CategoriesWrapper {
     constructor() { this.db = categoriesPromise; }
 
-    async getRefsForTopic(topicName) {
+    // `limit` is optional: the AI tool passes a cap (a major topic like "love"
+    // indexes thousands of refs, but the tool only surfaces ~12). /topicalindex
+    // omits it — it paginates the full set, so it needs every row.
+    async getRefsForTopic(topicName, limit = null) {
         const db = await this.db;
+        const cap = Number.isInteger(limit) && limit > 0 ? ` LIMIT ${limit}` : '';
         return db.all(
             `SELECT cr.book, cr.chapter, cr.verse, cr.start_verse, cr.end_verse
              FROM category_references cr
              JOIN categories c ON c.id = cr.category_id
              WHERE LOWER(c.name) = LOWER(?)
-             ORDER BY cr.id`,
+             ORDER BY cr.id${cap}`,
             [topicName]
         );
     }
