@@ -12,12 +12,14 @@ import {
 } from 'discord.js';
 import axios from 'axios';
 import swearWordFilter, { escapeMarkdown } from '../utils/filter.js';
-import { numbersToBook, bibleWrapper, bookAbbreviations, coerceTranslation } from '../utils/bibleHelper.js';
+import { bibleWrapper, coerceTranslation } from '../utils/bibleHelper.js';
+import { numbersToBook, bookAbbreviations, getBookId } from '../utils/bookNames.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector } from '../utils/paginationHelper.js';
+import { checkAckStatus, buildAckDisclosureV2 } from '../utils/aiAck.js';
 import logger from '../utils/logger.js';
 
-const VERSES_PER_PAGE = 5;
+export const VERSES_PER_PAGE = 5;
 const PAGINATION_TIMEOUT_MS = 900_000;
 const OPENAI_MODEL = 'gpt-4o-mini';
 const OPENAI_MAX_TOKENS = 500;
@@ -53,8 +55,11 @@ async function fetchAndParseVerseReferences(topic) {
 async function resolveVerses(parsedVerses, translation) {
     const resolved = [];
     for (const ref of parsedVerses) {
-        const book = ref.book?.toLowerCase();
-        const bookId = bookAbbreviations.get(book);
+        // OpenAI occasionally returns the code with surrounding whitespace
+        // (" psa") — trim before lookup. Fall back to the full resolver in case
+        // the model returns a name/abbreviation outside the prompted shortCodes.
+        const book = ref.book?.toLowerCase().trim();
+        const bookId = bookAbbreviations.get(book) ?? getBookId(book, { silent: true });
         const chapter = parseInt(ref.chapter);
         const startVerse = parseInt(ref.startVerse);
         const endVerse = parseInt(ref.endVerse) || startVerse;
@@ -97,7 +102,7 @@ async function resolveVerses(parsedVerses, translation) {
     return resolved;
 }
 
-function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav = false }) {
+export function buildFindPage({ verses, pageIdx, totalPages, topic, translation, disableNav = false }) {
     const start = pageIdx * VERSES_PER_PAGE;
     const end = Math.min(start + VERSES_PER_PAGE, verses.length);
     const pageVerses = verses.slice(start, end);
@@ -191,6 +196,22 @@ export default {
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
+            // First-use Terms acknowledgment gate. Sits above rate-limit and
+            // OpenAI: unacked users don't burn their /find quota and don't
+            // hit OpenAI until they've seen and clicked the disclosure.
+            const ack = await checkAckStatus(database, interaction.user.id);
+            if (!ack.valid) {
+                const kind = ack.reason === 'stale' ? 'updated' : 'first_time';
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: buildAckDisclosureV2(interaction.user.id, {
+                        kind,
+                        lastAckedAt: ack.ackedAt ?? null,
+                    })
+                });
+                return;
+            }
+
             const rl = await database.checkRateLimit('find', interaction.user.id, RATE_LIMIT);
             if (!rl.allowed) {
                 const mins = Math.ceil(rl.retryAfterSeconds / 60);

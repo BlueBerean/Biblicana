@@ -9,7 +9,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { fetchIQBible } from '../utils/rapidApi.js';

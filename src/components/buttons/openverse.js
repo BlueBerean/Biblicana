@@ -7,16 +7,17 @@ import {
     ButtonBuilder,
     ButtonStyle,
     StringSelectMenuBuilder,
-    ComponentType,
     MessageFlags
 } from 'discord.js';
-import { bibleWrapper, numbersToBook, getBookId } from '../../utils/bibleHelper.js';
-import { commentaryWrapper, crossRefWrapper, toCommentaryBookCodes, COMMENTATORS } from '../../utils/studyHelper.js';
+import { bibleWrapper } from '../../utils/bibleHelper.js';
+import { numbersToBook, getBookId, toOSIS3Codes, toCommentaryVariants } from '../../utils/bookNames.js';
+import { commentaryWrapper, crossRefWrapper, fathersWrapper, pickMarqueeFather, COMMENTATORS } from '../../utils/studyHelper.js';
 import { renderInterlinearEphemeral } from '../../utils/interlinearRenderer.js';
 import { renderParallelEphemeral } from '../../utils/parallelRenderer.js';
 import { renderBibleEphemeral } from '../../utils/bibleRenderer.js';
 import { accentColor, footerLine } from '../../utils/theme.js';
-import { attachPageCollector, buildPageNavRow } from '../../utils/paginationHelper.js';
+import { attachPageCollector, buildPageNavRow, isExpiredInteractionError } from '../../utils/paginationHelper.js';
+import splitString from '../../utils/splitString.js';
 import logger from '../../utils/logger.js';
 import 'dotenv/config';
 
@@ -84,17 +85,13 @@ async function handleChapter({ interaction, bookId, chapter, translation }) {
 
 // --- Commentary (with fallback chain + commentator dropdown) -------------
 
-function buildChapterCommentaryEmbed({ commentator, text, bookName, chapter }) {
-    const truncated = text.length > COMMENTARY_MAX_CHARS;
-    const body = truncated ? text.substring(0, COMMENTARY_MAX_CHARS - 3) + '...' : text;
-    const hint = truncated
-        ? `\n\n*Truncated. Run \`/commentary book:${bookName} chapter:${chapter} commentator:${commentator.id}\` for the full text.*`
-        : '';
-
+function buildChapterCommentaryEmbed({ commentator, pages, pageIdx, bookName, chapter }) {
+    const totalPages = pages.length;
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
     return new EmbedBuilder()
         .setColor(baseEmbedColor())
-        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter} (chapter intro)`)
-        .setDescription(body + hint)
+        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter} (chapter intro)${pageInfo}`)
+        .setDescription(pages[pageIdx] ?? '')
         .setURL(process.env.WEBSITE)
         .setFooter(standardFooter(commentator.label));
 }
@@ -130,50 +127,66 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
 
     const available = COMMENTATORS.filter(c => availableIds.includes(c.id));
     let currentId = found.commentatorId;
-    const current = COMMENTATORS.find(c => c.id === currentId);
+    let pages = splitString(found.text, COMMENTARY_MAX_CHARS);
+    let pageIdx = 0;
+
+    const renderEmbed = () => buildChapterCommentaryEmbed({
+        commentator: COMMENTATORS.find(c => c.id === currentId),
+        pages, pageIdx, bookName, chapter
+    });
+    const renderComponents = ({ disabled = false } = {}) => {
+        const rows = [buildCommentarySelect({ availableCommentators: available, currentId, disabled })];
+        if (pages.length > 1) {
+            rows.push(buildPageNavRow({ pageIdx, totalPages: pages.length, disabled }));
+        }
+        return rows;
+    };
 
     await interaction.reply({
-        embeds: [buildChapterCommentaryEmbed({ commentator: current, text: found.text, bookName, chapter })],
-        components: [buildCommentarySelect({ availableCommentators: available, currentId })],
+        embeds: [renderEmbed()],
+        components: renderComponents(),
         flags: MessageFlags.Ephemeral
     });
 
     try {
         const message = await interaction.fetchReply();
-        const filter = i => i.user.id === interaction.user.id && i.customId === 'cmtr_select';
-        const collector = message.createMessageComponentCollector({
-            filter,
-            componentType: ComponentType.StringSelect,
-            time: COLLECTOR_TIMEOUT_MS
-        });
+        const filter = i => i.user.id === interaction.user.id &&
+            (i.customId === 'cmtr_select' || i.customId === 'page_back' || i.customId === 'page_next');
+        const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
         collector.on('collect', async i => {
             try {
                 await i.deferUpdate();
-                const pickedId = i.values[0];
-                const picked = COMMENTATORS.find(c => c.id === pickedId);
-                if (!picked) return;
+                if (i.customId === 'cmtr_select') {
+                    const pickedId = i.values[0];
+                    const picked = COMMENTATORS.find(c => c.id === pickedId);
+                    if (!picked) return;
 
-                const row = await commentaryWrapper.getChapterCommentary(pickedId, bookCodes, chapter);
-                if (!row?.introduction) {
-                    const noDataEmbed = new EmbedBuilder()
-                        .setColor(baseEmbedColor())
-                        .setTitle(`📚 ${picked.label}: ${bookName} ${chapter} (chapter intro)`)
-                        .setDescription(`*${picked.label} doesn't have a chapter-level introduction for **${bookName} ${chapter}**. Pick another commentator from the dropdown.*`)
-                        .setURL(process.env.WEBSITE)
-                        .setFooter(standardFooter(picked.label));
-                    await i.editReply({
-                        embeds: [noDataEmbed],
-                        components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
-                    });
-                    return;
+                    const row = await commentaryWrapper.getChapterCommentary(pickedId, bookCodes, chapter);
+                    if (!row?.introduction) {
+                        const noDataEmbed = new EmbedBuilder()
+                            .setColor(baseEmbedColor())
+                            .setTitle(`📚 ${picked.label}: ${bookName} ${chapter} (chapter intro)`)
+                            .setDescription(`*${picked.label} doesn't have a chapter-level introduction for **${bookName} ${chapter}**. Pick another commentator from the dropdown.*`)
+                            .setURL(process.env.WEBSITE)
+                            .setFooter(standardFooter(picked.label));
+                        await i.editReply({
+                            embeds: [noDataEmbed],
+                            components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
+                        });
+                        return;
+                    }
+
+                    currentId = pickedId;
+                    pages = splitString(row.introduction, COMMENTARY_MAX_CHARS);
+                    pageIdx = 0;
+                } else if (i.customId === 'page_back') {
+                    pageIdx = Math.max(0, pageIdx - 1);
+                } else if (i.customId === 'page_next') {
+                    pageIdx = Math.min(pages.length - 1, pageIdx + 1);
                 }
 
-                currentId = pickedId;
-                await i.editReply({
-                    embeds: [buildChapterCommentaryEmbed({ commentator: picked, text: row.introduction, bookName, chapter })],
-                    components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
-                });
+                await i.editReply({ embeds: [renderEmbed()], components: renderComponents() });
             } catch (err) {
                 logger.error(`[OpenVerse ChapterCommentary] Collector error: ${err.message}`);
             }
@@ -181,11 +194,9 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
 
         collector.on('end', async () => {
             try {
-                await interaction.editReply({
-                    components: [buildCommentarySelect({ availableCommentators: available, currentId, disabled: true })]
-                });
+                await interaction.editReply({ components: renderComponents({ disabled: true }) });
             } catch (err) {
-                if (err.code !== 10008 && err.code !== 10062) {
+                if (!isExpiredInteractionError(err)) {
                     logger.error(`[OpenVerse ChapterCommentary] End error: ${err.message}`);
                 }
             }
@@ -196,7 +207,7 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
 }
 
 async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId = 'adam-clarke' }) {
-    const bookCodes = toCommentaryBookCodes(bookId);
+    const bookCodes = toOSIS3Codes(bookId);
     if (bookCodes.length === 0) return null;
 
     const isNT = bookId > 39;
@@ -211,21 +222,22 @@ async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId
     return null;
 }
 
-function buildCommentaryEmbed({ commentator, text, bookName, chapter, verse, wasFallback = false, preferredLabel = null }) {
-    const truncated = text.length > COMMENTARY_MAX_CHARS;
-    const body = truncated ? text.substring(0, COMMENTARY_MAX_CHARS - 3) + '...' : text;
-    const notes = [];
-    if (wasFallback && preferredLabel) {
-        notes.push(`*${preferredLabel} had no commentary on this verse — showing ${commentator.label} instead. Switch commentators below.*`);
-    }
-    if (truncated) {
-        notes.push(`*Truncated. Run \`/commentary book:${bookName} chapter:${chapter} verse:${verse} commentator:${commentator.id}\` for full text.*`);
-    }
-    const description = notes.length > 0 ? `${notes.join('\n\n')}\n\n${body}` : body;
+// Renders one page of an already-split commentary. `pages` comes from
+// splitString(text, COMMENTARY_MAX_CHARS) so long commentary (e.g. Clarke on
+// Matthew 5:1) paginates inline rather than truncating. The fallback note shows
+// only on page 0 — it refers to the initial commentator pick and shouldn't
+// repeat across pages or eat the later pages' character budget.
+function buildCommentaryEmbed({ commentator, pages, pageIdx, bookName, chapter, verse, wasFallback = false, preferredLabel = null }) {
+    const totalPages = pages.length;
+    const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
+    const body = pages[pageIdx] ?? '';
+    const description = (wasFallback && preferredLabel && pageIdx === 0)
+        ? `*${preferredLabel} had no commentary on this verse — showing ${commentator.label} instead. Switch commentators below.*\n\n${body}`
+        : body;
 
     return new EmbedBuilder()
         .setColor(baseEmbedColor())
-        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter}:${verse}`)
+        .setTitle(`📚 ${commentator.label}: ${bookName} ${chapter}:${verse}${pageInfo}`)
         .setDescription(description)
         .setURL(process.env.WEBSITE)
         .setFooter(standardFooter(commentator.label));
@@ -246,7 +258,7 @@ function buildCommentarySelect({ availableCommentators, currentId, disabled = fa
 }
 
 async function handleCommentary({ interaction, bookId, chapter, verse, bookName }) {
-    const bookCodes = toCommentaryBookCodes(bookId);
+    const bookCodes = toOSIS3Codes(bookId);
     if (bookCodes.length === 0) {
         return interaction.reply({
             content: `Commentary isn't supported for ${bookName}.`,
@@ -270,65 +282,82 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
     }
 
     const preferredId = COMMENTARY_FALLBACK_ORDER[0]; // Adam Clarke
-    const wasFallback = result.commentatorId !== preferredId;
     const preferred = COMMENTATORS.find(c => c.id === preferredId);
-    let currentId = result.commentatorId;
-    const current = COMMENTATORS.find(c => c.id === currentId);
+    const initialWasFallback = result.commentatorId !== preferredId;
 
     const isNT = bookId > 39;
     const available = COMMENTATORS.filter(c => !(c.id === 'keil-delitzsch' && isNT));
 
-    const embed = buildCommentaryEmbed({
-        commentator: current,
-        text: result.text,
-        bookName, chapter, verse,
-        wasFallback,
+    // Mutable view state, driven by the single collector below. Switching
+    // commentator re-splits the new text and resets to page 0; the nav buttons
+    // walk pageIdx. The fallback note only shows while still on the auto-picked
+    // fallback commentator (clears once the user switches manually).
+    let currentId = result.commentatorId;
+    let pages = splitString(result.text, COMMENTARY_MAX_CHARS);
+    let pageIdx = 0;
+
+    const renderEmbed = () => buildCommentaryEmbed({
+        commentator: COMMENTATORS.find(c => c.id === currentId),
+        pages, pageIdx, bookName, chapter, verse,
+        wasFallback: currentId === result.commentatorId && initialWasFallback,
         preferredLabel: preferred?.label
     });
-    const selectRow = buildCommentarySelect({ availableCommentators: available, currentId });
+    const renderComponents = ({ disabled = false } = {}) => {
+        const rows = [buildCommentarySelect({ availableCommentators: available, currentId, disabled })];
+        if (pages.length > 1) {
+            rows.push(buildPageNavRow({ pageIdx, totalPages: pages.length, disabled }));
+        }
+        return rows;
+    };
 
     await interaction.reply({
-        embeds: [embed],
-        components: [selectRow],
+        embeds: [renderEmbed()],
+        components: renderComponents(),
         flags: MessageFlags.Ephemeral
     });
 
     try {
         const message = await interaction.fetchReply();
-        const filter = i => i.user.id === interaction.user.id && i.customId === 'cmtr_select';
-        const collector = message.createMessageComponentCollector({
-            filter,
-            componentType: ComponentType.StringSelect,
-            time: COLLECTOR_TIMEOUT_MS
-        });
+        // One collector for BOTH the commentator dropdown and the page-nav
+        // buttons — so no componentType restriction (that would drop button
+        // clicks and was the original reason long commentary had no working nav).
+        const filter = i => i.user.id === interaction.user.id &&
+            (i.customId === 'cmtr_select' || i.customId === 'page_back' || i.customId === 'page_next');
+        const collector = message.createMessageComponentCollector({ filter, time: COLLECTOR_TIMEOUT_MS });
 
         collector.on('collect', async i => {
             try {
                 await i.deferUpdate();
-                const pickedId = i.values[0];
-                const picked = COMMENTATORS.find(c => c.id === pickedId);
-                if (!picked) return;
+                if (i.customId === 'cmtr_select') {
+                    const pickedId = i.values[0];
+                    const picked = COMMENTATORS.find(c => c.id === pickedId);
+                    if (!picked) return;
 
-                const row = await commentaryWrapper.getVerseCommentary(pickedId, bookCodes, chapter, verse);
-                if (!row?.text) {
-                    const noDataEmbed = new EmbedBuilder()
-                        .setColor(baseEmbedColor())
-                        .setTitle(`📚 ${picked.label}: ${bookName} ${chapter}:${verse}`)
-                        .setDescription(`*${picked.label} doesn't have commentary on **${bookName} ${chapter}:${verse}**. Pick another commentator from the dropdown.*`)
-                        .setURL(process.env.WEBSITE)
-                        .setFooter(standardFooter(picked.label));
-                    await i.editReply({
-                        embeds: [noDataEmbed],
-                        components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
-                    });
-                    return;
+                    const row = await commentaryWrapper.getVerseCommentary(pickedId, bookCodes, chapter, verse);
+                    if (!row?.text) {
+                        const noDataEmbed = new EmbedBuilder()
+                            .setColor(baseEmbedColor())
+                            .setTitle(`📚 ${picked.label}: ${bookName} ${chapter}:${verse}`)
+                            .setDescription(`*${picked.label} doesn't have commentary on **${bookName} ${chapter}:${verse}**. Pick another commentator from the dropdown.*`)
+                            .setURL(process.env.WEBSITE)
+                            .setFooter(standardFooter(picked.label));
+                        await i.editReply({
+                            embeds: [noDataEmbed],
+                            components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
+                        });
+                        return;
+                    }
+
+                    currentId = pickedId;
+                    pages = splitString(row.text, COMMENTARY_MAX_CHARS);
+                    pageIdx = 0;
+                } else if (i.customId === 'page_back') {
+                    pageIdx = Math.max(0, pageIdx - 1);
+                } else if (i.customId === 'page_next') {
+                    pageIdx = Math.min(pages.length - 1, pageIdx + 1);
                 }
 
-                currentId = pickedId;
-                await i.editReply({
-                    embeds: [buildCommentaryEmbed({ commentator: picked, text: row.text, bookName, chapter, verse })],
-                    components: [buildCommentarySelect({ availableCommentators: available, currentId: pickedId })]
-                });
+                await i.editReply({ embeds: [renderEmbed()], components: renderComponents() });
             } catch (err) {
                 logger.error(`[OpenVerse Commentary] Collector error: ${err.message}`);
             }
@@ -336,11 +365,9 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
 
         collector.on('end', async () => {
             try {
-                await interaction.editReply({
-                    components: [buildCommentarySelect({ availableCommentators: available, currentId, disabled: true })]
-                });
+                await interaction.editReply({ components: renderComponents({ disabled: true }) });
             } catch (err) {
-                if (err.code !== 10008 && err.code !== 10062) {
+                if (!isExpiredInteractionError(err)) {
                     logger.error(`[OpenVerse Commentary] End error: ${err.message}`);
                 }
             }
@@ -482,6 +509,191 @@ async function handleParallel({ interaction, bookId, chapter, verse, translation
     await renderParallelEphemeral({ interaction, bookId, chapter, verse, primaryTranslation: translation });
 }
 
+// --- Church Fathers (one-shot ephemeral first-Father preview) -------------
+// Full paginated view lives in /fathers; this button is a quick look that
+// leads with whoever the extrabiblical_data.sqlite query returns first
+// alphabetically (canonically starts with "Augustine of Hippo" / "Ambrose"
+// for most well-commented verses). Users wanting the full list are nudged
+// toward /fathers.
+const FATHERS_PREVIEW_LIMIT = 2500;
+
+const FATHERS_DROPDOWN_CAP = 25;              // Discord select-menu hard cap
+const FATHERS_COLLECTOR_TIMEOUT_MS = 1_800_000; // 30 min — matches /commentary
+
+async function handleFathers({ interaction, bookId, chapter, verse, bookName }) {
+    const bookVariants = toCommentaryVariants(bookName);
+    const rows = await fathersWrapper.getByPassage(bookVariants, chapter, verse);
+    if (!rows || rows.length === 0) {
+        return interaction.reply({
+            content: `No Church Fathers commentary found for ${bookName} ${chapter}:${verse}.`,
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+
+    // Group rows by father_name. Augustine (and others) may have multiple
+    // entries on a single verse — we want one dropdown option per Father.
+    const byName = new Map();
+    for (const r of rows) {
+        if (!byName.has(r.father_name)) byName.set(r.father_name, []);
+        byName.get(r.father_name).push(r);
+    }
+
+    // Marquee-prioritized ordering: the lead Father matches whatever the
+    // reaction-expansion stat line advertised. Remaining Fathers keep their
+    // alphabetical order from the SQL.
+    const leadName = pickMarqueeFather(rows);
+    const orderedNames = [...byName.keys()];
+    if (leadName) {
+        const idx = orderedNames.indexOf(leadName);
+        if (idx > 0) { orderedNames.splice(idx, 1); orderedNames.unshift(leadName); }
+    }
+    const cappedNames = orderedNames.slice(0, FATHERS_DROPDOWN_CAP);
+    const truncatedFathers = orderedNames.length > FATHERS_DROPDOWN_CAP;
+
+    // State maintained in closure. pageIdx is a flat index across ALL pages
+    // of the currently-selected Father's entries (e.g., Augustine's 2 entries
+    // of 3 pages each = 6 total positions, Prev/Next walks linearly).
+    let selectedName = leadName ?? cappedNames[0];
+    let pageIdx = 0;
+
+    // Lazy per-Father pagination cache so Prev/Next doesn't re-split.
+    const pagesCache = new Map();
+    const pagesFor = (name) => {
+        if (!pagesCache.has(name)) {
+            const rows = byName.get(name) ?? [];
+            const pages = [];
+            rows.forEach((entry, entryIdx) => {
+                const chunks = splitString(entry.txt || '*No commentary text available.*', FATHERS_PREVIEW_LIMIT);
+                chunks.forEach((text, pageInEntryIdx) => {
+                    pages.push({ entry, entryIdx, pageInEntryIdx, pagesInEntry: chunks.length, text });
+                });
+            });
+            pagesCache.set(name, pages);
+        }
+        return pagesCache.get(name);
+    };
+
+    const renderView = ({ disabled = false } = {}) => {
+        const pages = pagesFor(selectedName);
+        const clampedIdx = Math.max(0, Math.min(pageIdx, pages.length - 1));
+        const current = pages[clampedIdx];
+        const entry = current.entry;
+        const entryCount = (byName.get(selectedName) ?? []).length;
+
+        let suffix = '';
+        if (entryCount > 1) suffix += ` · entry ${current.entryIdx + 1}/${entryCount}`;
+        if (current.pagesInEntry > 1) suffix += ` · page ${current.pageInEntryIdx + 1}/${current.pagesInEntry}`;
+
+        const truncNote = truncatedFathers
+            ? `\n-# Showing top ${FATHERS_DROPDOWN_CAP} of ${orderedNames.length} Fathers. Full list: \`/fathers\`.`
+            : '';
+
+        const container = new ContainerBuilder()
+            .setAccentColor(accentColor())
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+                `## 📜 ${selectedName} on ${bookName} ${chapter}:${verse}${suffix}`
+            ))
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(current.text + truncNote))
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+                footerLine(entry.source_title || 'Church Fathers')
+            ));
+
+        const components = [container];
+
+        // Nav row: visible when the Father has >1 total page (across entries).
+        if (pages.length > 1) {
+            components.push(new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('fathers_prev')
+                    .setLabel('Previous')
+                    .setEmoji({ name: '◀️' })
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(disabled || clampedIdx === 0),
+                new ButtonBuilder()
+                    .setCustomId('fathers_next')
+                    .setLabel('Next')
+                    .setEmoji({ name: '▶️' })
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(disabled || clampedIdx === pages.length - 1),
+            ));
+        }
+
+        // Switch-Father select: only when there's more than one Father.
+        if (cappedNames.length > 1) {
+            const select = new StringSelectMenuBuilder()
+                .setCustomId('fathers_select')
+                .setPlaceholder('Switch Father')
+                .setDisabled(disabled)
+                .addOptions(cappedNames.map(name => {
+                    const count = byName.get(name).length;
+                    return {
+                        label: name.slice(0, 100),
+                        value: name.slice(0, 100),
+                        description: count > 1 ? `${count} entries on this verse` : undefined,
+                        default: name === selectedName,
+                    };
+                }));
+            components.push(new ActionRowBuilder().addComponents(select));
+        }
+
+        return components;
+    };
+
+    await interaction.reply({
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+        components: renderView(),
+    });
+
+    // Only attach a collector if there's actually something to switch between
+    // (multiple Fathers OR a Father with multiple pages).
+    const leadPages = pagesFor(selectedName).length;
+    if (cappedNames.length <= 1 && leadPages <= 1) return;
+
+    const reply = await interaction.fetchReply();
+    const filter = i => i.user.id === interaction.user.id
+        && (i.customId === 'fathers_select' || i.customId === 'fathers_prev' || i.customId === 'fathers_next');
+    const collector = reply.createMessageComponentCollector({ filter, time: FATHERS_COLLECTOR_TIMEOUT_MS });
+
+    collector.on('collect', async i => {
+        try {
+            await i.deferUpdate();
+            if (i.customId === 'fathers_select') {
+                const picked = i.values[0];
+                if (byName.has(picked)) {
+                    selectedName = picked;
+                    pageIdx = 0;
+                }
+            } else if (i.customId === 'fathers_prev') {
+                pageIdx = Math.max(0, pageIdx - 1);
+            } else if (i.customId === 'fathers_next') {
+                const max = pagesFor(selectedName).length - 1;
+                pageIdx = Math.min(max, pageIdx + 1);
+            }
+            await i.editReply({
+                flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                components: renderView(),
+            });
+        } catch (err) {
+            logger.error(`[OpenVerse Fathers] Collector error: ${err.message}`);
+        }
+    });
+
+    collector.on('end', async () => {
+        try {
+            // Re-render with all interactive components disabled so stale
+            // controls don't look clickable after the 30-min window.
+            await interaction.editReply({
+                flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                components: renderView({ disabled: true }),
+            });
+        } catch (err) {
+            if (!isExpiredInteractionError(err)) {
+                logger.error(`[OpenVerse Fathers] End error: ${err.message}`);
+            }
+        }
+    });
+}
+
 // --- Dispatcher -----------------------------------------------------------
 
 export default {
@@ -526,6 +738,8 @@ export default {
                     return await handleCrossref({ interaction, bookId, chapter, verse: startVerse, bookName, translation });
                 case 'parallel':
                     return await handleParallel({ interaction, bookId, chapter, verse: startVerse, translation });
+                case 'fathers':
+                    return await handleFathers({ interaction, bookId, chapter, verse: startVerse, bookName });
                 default:
                     return interaction.reply({ content: `Unknown action: ${action}`, flags: MessageFlags.Ephemeral });
             }

@@ -4,8 +4,24 @@
 const DEFAULT_ACCENT = 0x083459;
 const DEFAULT_FOOTER = 'Biblicana';
 
+// Canonical external URLs for the BlueBerean site and legal pages. Exported
+// so every surface that needs them (welcome card, /support, /config ai, /help)
+// reads from one source of truth. Intentionally NOT used in message footers —
+// Discord's hyperlink styling clashes with the bot's accent color, so legal
+// links live only in the dedicated panels above.
+export const PRIVACY_URL = 'https://blueberean.com/privacy';
+export const TERMS_URL = 'https://blueberean.com/terms';
+export const SUPPORT_INVITE = 'https://discord.gg/uwFz5vQE';
+
 export function accentColor() {
-    return process.env.EMBEDCOLOR ? parseInt(process.env.EMBEDCOLOR, 16) : DEFAULT_ACCENT;
+    if (!process.env.EMBEDCOLOR) return DEFAULT_ACCENT;
+    // Tolerate common env-var variants: "#0090FF", "0x0090FF", "0090FF".
+    // parseInt("#0090FF", 16) returns NaN silently — strip the prefix
+    // first, then fall back to the default if the remaining chars aren't
+    // valid hex. Prevents the "I set the color but it's still teal" trap.
+    const raw = process.env.EMBEDCOLOR.trim().replace(/^#|^0x/i, '');
+    const parsed = parseInt(raw, 16);
+    return Number.isFinite(parsed) ? parsed : DEFAULT_ACCENT;
 }
 
 // Build a small-text footer line. `suffix` is shown after a separator when

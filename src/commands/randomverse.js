@@ -5,7 +5,8 @@ import {
     InteractionContextType,
     TextDisplayBuilder
 } from 'discord.js';
-import { getBookId, coerceTranslation } from '../utils/bibleHelper.js';
+import { coerceTranslation } from '../utils/bibleHelper.js';
+import { getBookId } from '../utils/bookNames.js';
 import { fetchRandomVerseData, buildRandomVerseComponents } from '../utils/randomVerseRenderer.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';

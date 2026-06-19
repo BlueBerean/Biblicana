@@ -5,7 +5,8 @@ import {
     InteractionContextType,
     TextDisplayBuilder
 } from 'discord.js';
-import { getBookId, numbersToBook, coerceTranslation } from '../utils/bibleHelper.js';
+import { coerceTranslation } from '../utils/bibleHelper.js';
+import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import {
     fetchParallelData,
     packParallelPages,

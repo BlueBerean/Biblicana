@@ -10,7 +10,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import axios from 'axios';
-import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
+import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';

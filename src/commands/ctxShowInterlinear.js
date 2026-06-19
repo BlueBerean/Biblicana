@@ -1,0 +1,61 @@
+import {
+    ContextMenuCommandBuilder,
+    ApplicationCommandType,
+    ApplicationIntegrationType,
+    InteractionContextType,
+    MessageFlags,
+} from 'discord.js';
+import { parseScriptureRefs } from '../utils/scriptureRefs.js';
+import { renderInterlinearEphemeral } from '../utils/interlinearRenderer.js';
+import logger from '../utils/logger.js';
+
+// Message context-menu: right-click any message → Apps → "Show interlinear".
+// Pulls the first verse-level scripture reference from the message and opens
+// the interlinear (Hebrew/Greek + Strongs) view for that verse.
+export default {
+    data: new ContextMenuCommandBuilder()
+        .setName('Show interlinear')
+        .setType(ApplicationCommandType.Message)
+        .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+        .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
+
+    async execute(interaction, database) {
+        const target = interaction.targetMessage;
+        const searchText = [
+            target.content || '',
+            ...(target.embeds || []).flatMap(e => [e.title, e.description, ...(e.fields || []).flatMap(f => [f.name, f.value])].filter(Boolean)),
+        ].join(' ');
+
+        const refs = parseScriptureRefs(searchText);
+        const verseRef = refs.find(r => r.startVerse != null);
+        if (!verseRef) {
+            return interaction.reply({
+                content: '🔍 Need a verse-level reference (like "John 3:16") for an interlinear view. That message has none I could parse.',
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
+        let translation = 'BSB';
+        try {
+            const pref = await database.getUserValue(interaction.user.id);
+            if (pref?.translation) translation = pref.translation;
+        } catch { /* noop */ }
+
+        try {
+            await renderInterlinearEphemeral({
+                interaction,
+                bookId: verseRef.bookId,
+                chapter: verseRef.chapter,
+                verse: verseRef.startVerse,
+                translation,
+            });
+        } catch (err) {
+            logger.error(`[CtxInterlinear] Render failed: ${err.message}`);
+            if (!interaction.replied) {
+                try {
+                    await interaction.reply({ content: '⚠️ Could not load the interlinear view.', flags: MessageFlags.Ephemeral });
+                } catch { /* expired */ }
+            }
+        }
+    },
+};

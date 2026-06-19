@@ -3,6 +3,20 @@ import logger from './logger.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 
+// Discord API error codes meaning "the thing we're editing is already gone":
+//   10008 — Unknown Message (the message was deleted)
+//   10062 — Unknown interaction
+//   50027 — Invalid Webhook Token (the interaction webhook token expired; fires
+//           when a collector outlives the 15-min interaction-token window, e.g.
+//           the 30-min /commentary and /fathers collectors hitting their end
+//           handler well after the token died)
+// All three are expected at end-of-life — disabling buttons on a dead token is
+// a no-op we don't need, so they must never be logged as errors.
+const EXPIRED_INTERACTION_CODES = new Set([10008, 10062, 50027]);
+export function isExpiredInteractionError(err) {
+    return EXPIRED_INTERACTION_CODES.has(err?.code);
+}
+
 export function buildPageNavRow({ pageIdx, totalPages, disabled = false }) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -60,7 +74,7 @@ export function attachPageCollector({
                 components: render(pageIdx, { disableNav: true })
             });
         } catch (err) {
-            if (err.code !== 10008 && err.code !== 10062) {
+            if (!isExpiredInteractionError(err)) {
                 logger.error(`${logLabel} End error: ${err.message}`);
             }
         }

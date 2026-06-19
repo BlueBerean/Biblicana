@@ -1,4 +1,4 @@
-import { Events, EmbedBuilder, MessageFlags } from 'discord.js';
+import { Events, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 
 const MAX_OPT_VALUE_LEN = 60;
@@ -28,28 +28,6 @@ export default {
     name: Events.InteractionCreate,
     async execute(interaction, database) {
         if (interaction.isCommand()) {
-            const cooldown = await interaction.client.cooldowns.get(interaction.user.id);
-
-            if (cooldown) {
-                const remaining = (cooldown - Date.now()) / 1000;
-                if (remaining > 0) {
-                    if (interaction.replied) return;
-
-                    const embed = new EmbedBuilder()
-                        .setTitle('Slow down! ⏰')
-                        .setDescription(`You have to wait ${remaining.toFixed(1)} more seconds before using this command again.`)
-                        .setColor(0xff0000)
-                        .setFooter({
-                            text: process.env.EMBEDFOOTERTEXT,
-                            iconURL: process.env.EMBEDICONURL
-                        });
-
-                    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-                }
-            }
-
-            interaction.client.cooldowns.set(interaction.user.id, Date.now() + 3500);
-
             const command = interaction.client.commands.get(interaction.commandName);
 
             if (!command) {
@@ -103,11 +81,15 @@ export default {
             }
 
             if (!button) {
-                if (interaction.replied) return;
-
-                if (interaction.customId == "page_next" || interaction.customId == "page_back") return;
-
-                return interaction.reply(`No button matching ${interaction.customId} was found.`);
+                // No registered handler. Most unknown customIds are managed
+                // by inline collectors (e.g., /commentary's cmtr_select,
+                // /fathers' fathers_next, pagination's page_next). Replying
+                // "no button found" here races the collector's deferUpdate
+                // and throws 40060 "already acknowledged." Silent return is
+                // correct — the collector handles the event if it's theirs;
+                // genuinely orphaned customIds would only come from a
+                // developer typo, which shows up in dev testing anyway.
+                return;
             }
 
             // Button usage log. Chain interactions ([Open] → /bible, [Commentary],
@@ -121,6 +103,30 @@ export default {
                 await button.execute(interaction, database);
             } catch (error) {
                 logger.error(`[Error] Error executing ${interaction.customId}`);
+                logger.error(error);
+            }
+        } else if (interaction.isAnySelectMenu()) {
+            // Covers StringSelect, ChannelSelect, UserSelect, RoleSelect, and
+            // MentionableSelect — all dispatch through the same `selects`
+            // registry. Mirror the button dispatch: exact match first, then
+            // colon-prefix lookup so parametric custom IDs like "welcome:passive"
+            // or "config:daily:channel" work. Inline-collector-based select
+            // menus (e.g., commentary.js) don't register here — they handle
+            // their own events within the command.
+            let select = interaction.client.selects.get(interaction.customId);
+            if (!select && interaction.customId.includes(':')) {
+                select = interaction.client.selects.get(interaction.customId.split(':')[0]);
+            }
+            if (!select) return;  // Likely an inline-handled collector; ignore.
+
+            logger.info(
+                `[Usage] sel=${interaction.customId} user=${interaction.user.id} guild=${interaction.guildId ?? 'DM'}`
+            );
+
+            try {
+                await select.execute(interaction, database);
+            } catch (error) {
+                logger.error(`[Error] Error executing select ${interaction.customId}`);
                 logger.error(error);
             }
         }

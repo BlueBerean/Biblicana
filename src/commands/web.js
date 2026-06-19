@@ -15,6 +15,7 @@ import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
+import { checkAckStatus, buildAckDisclosureV2 } from '../utils/aiAck.js';
 import 'dotenv/config';
 
 const INTENT_MODEL = 'gpt-4o-mini';
@@ -104,6 +105,22 @@ export default {
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 
         try {
+            // First-use Terms acknowledgment gate. Sits above rate-limit,
+            // OpenAI intent check, and Tavily search — unacked users don't
+            // burn quota or hit external APIs until they've clicked through.
+            const ack = await checkAckStatus(database, interaction.user.id);
+            if (!ack.valid) {
+                const kind = ack.reason === 'stale' ? 'updated' : 'first_time';
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2,
+                    components: buildAckDisclosureV2(interaction.user.id, {
+                        kind,
+                        lastAckedAt: ack.ackedAt ?? null,
+                    })
+                });
+                return;
+            }
+
             const rl = await database.checkRateLimit('web', interaction.user.id, RATE_LIMIT);
             if (!rl.allowed) {
                 const mins = Math.ceil(rl.retryAfterSeconds / 60);

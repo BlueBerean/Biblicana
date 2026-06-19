@@ -5,7 +5,8 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { getBookId, coerceTranslation } from '../utils/bibleHelper.js';
+import { coerceTranslation } from '../utils/bibleHelper.js';
+import { getBookId } from '../utils/bookNames.js';
 import { fetchBibleVerseData, buildBibleComponents } from '../utils/bibleRenderer.js';
 import logger from '../utils/logger.js';
 

@@ -5,7 +5,8 @@ import {
     ButtonBuilder,
     ButtonStyle
 } from 'discord.js';
-import { bibleWrapper, numbersToBook } from './bibleHelper.js';
+import { bibleWrapper } from './bibleHelper.js';
+import { numbersToBook } from './bookNames.js';
 import { accentColor, footerLine } from './theme.js';
 
 /**

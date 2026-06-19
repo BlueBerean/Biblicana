@@ -9,34 +9,47 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { accentColor, footerLine } from '../utils/theme.js';
+import { accentColor, footerLine, PRIVACY_URL, TERMS_URL } from '../utils/theme.js';
 import 'dotenv/config';
 
 const COLLECTOR_TIMEOUT_MS = 600_000;
 
 // Category definitions — label shows in the dropdown, body is the detail view.
-// Overview is the default landing page.
-const CATEGORIES = [
+// Overview is the default landing page. Exported so non-command surfaces
+// (e.g., the welcome card's Help button) can render the same panel.
+export const CATEGORIES = [
     {
         id: 'overview',
         emoji: '📋',
         label: 'Overview',
         body: [
-            '**Biblicana at a glance** — 26 slash commands across 13 categories. Pick a category below to see its commands in detail.',
+            '**Biblicana** — a deep Bible study companion with classic commentary, Church Fathers, AI chat, and more. Pick a category below for details.',
             '',
-            '• **📖 Bible Verse Access** — read verses, random verse, book intros',
-            '• **🔍 Find Scripture** — AI-suggested verses by topic',
-            '• **📚 Commentary** — 6 classical commentators + Church Fathers',
-            '• **🔤 Language Study** — Hebrew/Greek interlinear + lexicon',
-            '• **📑 Cross References & Parallel** — TSK + 16 translations',
-            '• **🎯 Topical Study** — topical index, word relations, dictionaries, prophecy',
-            '• **👤 People & Places** — biblical figures, locations, profiles',
-            '• **🔊 Audio Features** — chapter narrations',
-            '• **🌐 Web Search** — AI-powered answers with sources',
-            '• **⚙️ Settings** — translation preferences',
-            '• **📅 Daily Features** — today\'s passage',
-            '• **🛠️ Utilities** — ping, stats, help',
-            '• **💡 Tips** — usage pointers'
+            '**📖 Study & Reference**',
+            '• Bible Verse Access — read verses, random verse, book intros',
+            '• Find Scripture — AI-suggested verses by topic',
+            '• Commentary — 6 classical commentators + Church Fathers',
+            '• Language Study — Hebrew/Greek interlinear + lexicon',
+            '• Cross References & Parallel — TSK + 16 translations',
+            '• Topical Study — topical index, word relations, dictionaries, prophecy',
+            '• People & Places — biblical figures, locations, profiles',
+            '• Audio Features — chapter narrations',
+            '• Web Search — AI-powered answers with sources',
+            '',
+            '**💬 Conversation**',
+            '• AI Chat — @mention, reply, or DM for grounded theological answers',
+            '• Right-click Menu — look up scripture straight from any message',
+            '',
+            '**⚙️ Your Experience**',
+            '• Your Preferences — translation default',
+            '• Daily Features — today\'s passage + auto-post',
+            '',
+            '**🛠️ Admin**',
+            '• Server Config — passive detection, AI chat, daily verse (admins only)',
+            '',
+            '**🆘 Help**',
+            '• Utilities & Support — ping, stats, help, support server',
+            '• Tips — usage pointers',
         ].join('\n')
     },
     {
@@ -60,7 +73,7 @@ const CATEGORIES = [
         emoji: '📚',
         label: 'Commentary',
         body: [
-            '• `/commentary` — 6 classic commentators (JFB default, or Gill / Matthew Henry / Clarke / Keil & Delitzsch / Tyndale). Verse-level and chapter-level.',
+            '• `/commentary` — 6 classic commentators (Adam Clarke default, or Gill / Matthew Henry / JFB / Keil & Delitzsch / Tyndale). Verse-level and chapter-level.',
             '• `/fathers` — Early Church Fathers commentary on a passage (334 writers incl. Augustine, Chrysostom, Jerome).',
             '• `/topic` — Search 25,000+ topical commentaries.'
         ].join('\n')
@@ -118,25 +131,85 @@ const CATEGORIES = [
         body: '• `/web` — AI-powered Christian apologetics search with cited sources.'
     },
     {
-        id: 'settings',
+        id: 'ai_chat',
+        emoji: '🤖',
+        label: 'AI Chat',
+        body: [
+            'Biblicana can chat conversationally, grounded in its own commentary database (Church Fathers + classical commentators).',
+            '',
+            '**How to trigger it:**',
+            '• **@mention** Biblicana in a server channel',
+            '• **Reply** to any of Biblicana\'s AI chat messages (no mention needed)',
+            '• **DM** Biblicana directly',
+            '',
+            '**Commands:**',
+            '• `/forget` — Erase the AI conversation history for your current scope (this channel in shared mode, or your own thread in private mode, or your DMs).',
+            '',
+            '**How it works:**',
+            'When you reference a specific verse, Biblicana pulls the actual commentary (Adam Clarke, Augustine, etc.) into context before answering. Responses are grounded in real sources, not just generic AI knowledge.',
+            '',
+            '*AI chat must be enabled by a server admin via `/config ai`. Disabled by default for new servers. DMs always work regardless of server settings.*',
+        ].join('\n')
+    },
+    {
+        id: 'context_menu',
+        emoji: '📌',
+        label: 'Right-click Menu',
+        body: [
+            'Right-click any message → **Apps** → pick a Biblicana action:',
+            '',
+            '• **Look up scripture** — extracts scripture references from that message and shows the passage with action buttons.',
+            '• **Show commentary** — pulls classical commentary (Adam Clarke default) for the first verse reference found.',
+            '• **Show interlinear** — shows Hebrew/Greek interlinear view with Strong\'s numbers.',
+            '',
+            'Works on messages from anyone — including BibleBot posts, your own messages, or someone else\'s quote. A quick way to study a reference without typing slash commands.',
+        ].join('\n')
+    },
+    {
+        id: 'preferences',
         emoji: '⚙️',
-        label: 'Settings',
-        body: '• `/setversion` — Choose your preferred translation from 16 options. Other commands use it as default.'
+        label: 'Your Preferences',
+        body: [
+            '• `/setversion` — Choose your preferred translation from 16 options (BSB, NASB, KJV, NKJV, ASV, and more). Other commands honor this automatically.',
+            '',
+            '*User-scoped — affects only you, syncs across servers.*',
+        ].join('\n')
+    },
+    {
+        id: 'server_config',
+        emoji: '🛠️',
+        label: 'Server Config',
+        body: [
+            '**Admin-only** (requires Manage Server permission).',
+            '',
+            '• `/config passive` — Choose how Biblicana reacts when users type scripture references in chat. Modes: `react to BibleBot` (default, coexistence), `react to user messages`, `auto-post verses`, or `silent`.',
+            '• `/config ai` — Enable or disable AI chat for this server. Toggle shared-per-channel vs. private-per-user memory scope. Full explanation of how it works inside the panel.',
+            '• `/config daily` — Enable the Verse of the Day auto-post. Pick a channel and an hour (UTC).',
+            '',
+            '*Per-server settings persist across bot restarts. New servers see a welcome card on install with quick toggles for each.*',
+        ].join('\n')
     },
     {
         id: 'daily',
         emoji: '📅',
         label: 'Daily Features',
-        body: '• `/passageoftheday` — Receive today\'s featured Bible passage with chain buttons for commentary, cross-refs, and parallels.'
+        body: [
+            '• `/passageoftheday` — Today\'s featured Bible passage with chain buttons for commentary, cross-refs, and parallels.',
+            '',
+            '**Auto-post (admin-enabled):** Server admins can set Biblicana to post the Verse of the Day automatically each day at a configured time via `/config daily`.',
+        ].join('\n')
     },
     {
         id: 'utilities',
-        emoji: '🛠️',
-        label: 'Utilities',
+        emoji: '🆘',
+        label: 'Utilities & Support',
         body: [
             '• `/ping` — Check bot response time.',
             '• `/stats` — View bot operating statistics.',
-            '• `/help` — Show this command guide.'
+            '• `/help` — Show this command guide.',
+            '• `/support` — Join the Biblicana support server for bug reports, questions, and suggestions.',
+            '',
+            `**Legal**: [Privacy Policy](${PRIVACY_URL}) · [Terms of Service](${TERMS_URL})`,
         ].join('\n')
     },
     {
@@ -144,20 +217,33 @@ const CATEGORIES = [
         emoji: '💡',
         label: 'Tips',
         body: [
-            '• Book abbreviations work: `gen`, `jn`, `1co`, `rev`, etc.',
+            '• Book abbreviations work: `gen`, `jn`, `1co`, `rev`, etc. Numbered books accept Arabic or Roman (`1 John`, `I John`).',
             '• Most commands honor your `/setversion` preference.',
-            '• `[📖 Open]` buttons throughout the bot chain into `/bible` with 4 action buttons ([Interlinear] [Commentary] [Cross-refs] [Parallel]).',
-            '• Long passages paginate automatically. All pagination buttons time out after 10 minutes.'
+            '• `[Open]` buttons throughout chain into `/bible` with 4 action buttons (Interlinear / Commentary / Cross-refs / Parallel).',
+            '• **Click the book-icon reaction** Biblicana adds to a scripture-bearing message — it opens a study menu with verse text, commentator count, Church Fathers count, and action buttons.',
+            '• **Right-click any message** → Apps → Biblicana: fastest way to look up a verse someone else posted.',
+            '• **@mention Biblicana** in chat (if the admin enabled AI) for a conversational answer, grounded in actual commentary.',
+            '• Long passages and Fathers commentaries paginate automatically. Pagination times out after 10–30 minutes depending on the command.',
+            '• Bug reports and suggestions welcome — `/support` gets you to the server where we talk about improvements.',
         ].join('\n')
     }
 ];
 
-function buildHelpPage(currentId) {
+export function buildHelpPage(currentId) {
     const category = CATEGORIES.find(c => c.id === currentId) || CATEGORIES[0];
+
+    // Only the overview carries an emoji in its title — that's the "default
+    // view" where the one-emoji-per-header convention lives (each category
+    // bullet in the overview body also has its own single emoji). Detail
+    // pages keep their titles clean; the emoji still shows up on the
+    // category's dropdown option, which is the functional navigation marker.
+    const titleLine = category.id === 'overview'
+        ? `## ${category.emoji} ${category.label}`
+        : `## ${category.label}`;
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${category.emoji} ${category.label}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(titleLine))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(category.body))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             footerLine('Pick any category below to navigate.')

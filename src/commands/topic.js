@@ -13,7 +13,7 @@ import {
 import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import logger from '../utils/logger.js';
-import { getBookId } from '../utils/bibleHelper.js';
+import { getBookId } from '../utils/bookNames.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector } from '../utils/paginationHelper.js';
 import 'dotenv/config';

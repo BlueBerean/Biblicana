@@ -12,8 +12,8 @@ import {
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
-import { numbersToBook } from '../utils/bibleHelper.js';
-import { commentaryWrapper, fromCommentaryBookCode } from '../utils/studyHelper.js';
+import { numbersToBook, fromOSIS3Code } from '../utils/bookNames.js';
+import { commentaryWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import 'dotenv/config';
@@ -24,7 +24,7 @@ const MAX_CHARS_PER_CHUNK = 3500;
 // isMultiChapter flags spans like Gen 11:26 – 25:11 that can't be cleanly opened
 // via /bible (single-chapter only). Caller disables the Open button for those.
 function resolveScriptureRef(p) {
-    const bookId = fromCommentaryBookCode(p.referenceBook);
+    const bookId = fromOSIS3Code(p.referenceBook);
     const bookName = bookId ? numbersToBook.get(bookId) : p.referenceBook;
     if (!bookName) return null;
 

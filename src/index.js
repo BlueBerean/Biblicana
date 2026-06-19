@@ -2,11 +2,12 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Client, Collection, GatewayIntentBits, Partials } from 'discord.js';
+import { Client, Collection, Events, GatewayIntentBits, Partials } from 'discord.js';
 import { postgresConfig } from './config.js';
 import DatabaseHandler from './database/redisPGHandler.js';
 import logger from './utils/logger.js';
 import setupAxiosInterceptors from './utils/axiosInterceptors.js';
+import { startDailyVerseScheduler } from './utils/dailyVerseScheduler.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,13 +58,31 @@ async function startBot() {
     }
 
     const client = new Client({
-        intents: [GatewayIntentBits.Guilds],
-        partials: [Partials.Channel],
+        intents: [
+            GatewayIntentBits.Guilds,
+            // MessageContent is privileged; enabled for passive scripture
+            // detection in messageCreate. Already approved for this app on
+            // both dev and prod (post-verification). Do not enable
+            // GuildMembers or GuildPresences unless a concrete feature needs
+            // them — they get higher scrutiny from Discord.
+            GatewayIntentBits.GuildMessages,
+            GatewayIntentBits.MessageContent,
+            GatewayIntentBits.GuildMessageReactions,
+        ],
+        partials: [
+            Partials.Channel,
+            // Without Partials.Message and Partials.Reaction, reactionAdd
+            // silently doesn't fire for messages the bot didn't see posted
+            // (e.g., bot restart + someone reacts to an older message).
+            // One of the most common "reactions don't work sometimes" bugs.
+            Partials.Message,
+            Partials.Reaction,
+        ],
     });
 
     client.commands = new Collection();
     client.buttons = new Collection();
-    client.cooldowns = new Collection();
+    client.selects = new Collection();
 
     // Load Events
     await loadModules(
@@ -107,7 +126,66 @@ async function startBot() {
         }
     );
 
+    // Load Select Menus. Persistent select-menu handlers live here (as opposed
+    // to ephemeral inline collectors used inside single-command flows like
+    // /commentary's commentator-switcher). Needed for any UI that outlives the
+    // command invocation — notably the passive-mode selector in the guildCreate
+    // welcome card, which must still work after the bot restarts.
+    await loadModules(
+        client,
+        path.join('components', 'selects'),
+        ['id', 'execute'],
+        (client, select) => {
+            client.selects.set(select.id, select);
+            logger.debug(`[Select] Loaded ${select.id}`);
+        }
+    );
+
     setupAxiosInterceptors();
+
+    // PM2 sends SIGINT on `pm2 restart` and SIGTERM on `pm2 stop`. Close the
+    // Discord gateway and drain the Postgres pool / Redis connection before
+    // exiting so restarts don't leak sessions or half-written Redis state.
+    let shuttingDown = false;
+    const shutdown = async (signal) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        logger.info(`[Bot] ${signal} received — shutting down gracefully.`);
+        if (dailyVerseHandle) {
+            try { clearInterval(dailyVerseHandle); } catch { /* noop */ }
+        }
+        try {
+            client.destroy();
+        } catch (err) {
+            logger.error(`[Bot] Error during client.destroy(): ${err.message}`);
+        }
+        try {
+            await database.close();
+        } catch (err) {
+            logger.error(`[Bot] Error during database.close(): ${err.message}`);
+        }
+        process.exit(0);
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    // Loud startup warnings for dev bypass flags. These should never be set
+    // in production; if they are, flooding the logs makes that obvious.
+    if (process.env.DISABLE_RATE_LIMITS) {
+        logger.warn('[Bot] ⚠️  DISABLE_RATE_LIMITS=1 — ALL rate limits BYPASSED (aichat, find, web). Dev only, DO NOT ship to prod.');
+    }
+    if (process.env.DEBUG_AICHAT_RAG) {
+        logger.warn('[Bot] ⚠️  DEBUG_AICHAT_RAG=1 — Full RAG prompt bodies are logged on every AI chat. Dev only.');
+    }
+
+    // Start the daily verse scheduler only after the bot's guild cache is
+    // populated — otherwise the first tick would iterate an empty cache
+    // and miss posts due right at startup. Events.ClientReady fires once
+    // after Discord sends the READY packet with the guild list.
+    let dailyVerseHandle = null;
+    client.once(Events.ClientReady, () => {
+        dailyVerseHandle = startDailyVerseScheduler(client, database);
+    });
 
     try {
         await client.login(process.env.DISCORDTOKEN);

@@ -12,9 +12,10 @@ import {
 } from 'discord.js';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
-import { getBookId, numbersToBook } from '../utils/bibleHelper.js';
-import { commentaryWrapper, toCommentaryBookCodes, COMMENTATORS } from '../utils/studyHelper.js';
+import { getBookId, numbersToBook, toOSIS3Codes } from '../utils/bookNames.js';
+import { commentaryWrapper, COMMENTATORS } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
+import { isExpiredInteractionError } from '../utils/paginationHelper.js';
 import 'dotenv/config';
 
 const MAX_CHARS_PER_PAGE = 3800;
@@ -186,7 +187,7 @@ export default {
             });
         }
 
-        const bookCodes = toCommentaryBookCodes(bookId);
+        const bookCodes = toOSIS3Codes(bookId);
         if (bookCodes.length === 0) {
             return interaction.reply({
                 content: `Book "${bookName}" isn't supported by the commentary database.`,
@@ -308,7 +309,7 @@ export default {
                         })
                     });
                 } catch (err) {
-                    if (err.code !== 10008 && err.code !== 10062) {
+                    if (!isExpiredInteractionError(err)) {
                         logger.error(`[Commentary Command] End error: ${err.message}`);
                     }
                 }

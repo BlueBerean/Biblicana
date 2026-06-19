@@ -1,0 +1,59 @@
+import { PermissionFlagsBits, MessageFlags } from 'discord.js';
+import { PASSIVE_MODES } from '../../database/schemas/guild.js';
+import { PASSIVE_MODE_OPTIONS } from '../../utils/welcomeCard.js';
+import { savePassiveMode, buildConfigView } from '../../utils/passiveConfig.js';
+import logger from '../../utils/logger.js';
+
+// Select-menu handler for the compact /config passive panel. customId:
+// "config:passive". Same save path as the welcome card, different render
+// target — updates the ephemeral /config message rather than the public
+// welcome card.
+export default {
+    id: 'config:passive',
+    async execute(interaction, database) {
+        if (interaction.customId !== 'config:passive') return;
+
+        const picked = interaction.values?.[0];
+        if (!PASSIVE_MODES.includes(picked)) {
+            return interaction.reply({ content: 'Unknown mode.', flags: MessageFlags.Ephemeral });
+        }
+
+        const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+        if (!isAdmin) {
+            return interaction.reply({
+                content: '❌ Only server admins (with Manage Server permission) can change passive detection mode.',
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
+        if (!interaction.guildId) {
+            return interaction.reply({
+                content: 'Passive detection is a per-server setting — this has no effect in DMs.',
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
+        const saved = await savePassiveMode(database, interaction.guildId, picked);
+        if (!saved) {
+            return interaction.reply({
+                content: '⚠️ Could not save that setting right now. Try again in a moment.',
+                flags: MessageFlags.Ephemeral,
+            });
+        }
+
+        const pickedLabel = PASSIVE_MODE_OPTIONS.find(o => o.value === picked)?.label ?? picked;
+
+        try {
+            await interaction.update({
+                flags: MessageFlags.IsComponentsV2,
+                components: buildConfigView({ currentPassiveMode: picked }),
+            });
+            await interaction.followUp({
+                content: `✅ Passive detection set to **${pickedLabel}**.`,
+                flags: MessageFlags.Ephemeral,
+            });
+        } catch (err) {
+            logger.error(`[Config Select] Update failed for guild ${interaction.guildId}: ${err.message}`);
+        }
+    },
+};

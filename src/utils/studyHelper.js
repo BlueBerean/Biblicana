@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import path, { dirname } from 'node:path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import { toTSKSource } from './bookNames.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -35,79 +36,6 @@ const commentaryPromise = (async () => {
     return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
 })();
 
-// TSK cross_references.source_book uses Roman numerals ("I Samuel", "II Kings")
-// and "Revelation of John" instead of the Arabic numerals numbersToBook provides.
-// Target column uses Arabic, so only source-side lookups need conversion.
-const TSK_SOURCE_BOOK_OVERRIDES = {
-    '1 Samuel': 'I Samuel',
-    '2 Samuel': 'II Samuel',
-    '1 Kings': 'I Kings',
-    '2 Kings': 'II Kings',
-    '1 Chronicles': 'I Chronicles',
-    '2 Chronicles': 'II Chronicles',
-    '1 Corinthians': 'I Corinthians',
-    '2 Corinthians': 'II Corinthians',
-    '1 Thessalonians': 'I Thessalonians',
-    '2 Thessalonians': 'II Thessalonians',
-    '1 Timothy': 'I Timothy',
-    '2 Timothy': 'II Timothy',
-    '1 Peter': 'I Peter',
-    '2 Peter': 'II Peter',
-    '1 John': 'I John',
-    '2 John': 'II John',
-    '3 John': 'III John',
-    'Revelation': 'Revelation of John',
-};
-
-export function toTSKSourceBook(canonicalName) {
-    return TSK_SOURCE_BOOK_OVERRIDES[canonicalName] || canonicalName;
-}
-
-// Map numbersToBook id -> 3-letter uppercase bookId used by clean_commentary.db.
-// (OSIS-like convention.)
-const BOOKID_TO_OSIS3 = {
-    1: 'GEN', 2: 'EXO', 3: 'LEV', 4: 'NUM', 5: 'DEU',
-    6: 'JOS', 7: 'JDG', 8: 'RUT', 9: '1SA', 10: '2SA',
-    11: '1KI', 12: '2KI', 13: '1CH', 14: '2CH', 15: 'EZR',
-    16: 'NEH', 17: 'EST', 18: 'JOB', 19: 'PSA', 20: 'PRO',
-    21: 'ECC', 22: 'SNG', 23: 'ISA', 24: 'JER', 25: 'LAM',
-    26: 'EZK', 27: 'DAN', 28: 'HOS', 29: 'JOL', 30: 'AMO',
-    31: 'OBA', 32: 'JON', 33: 'MIC', 34: 'NAM', 35: 'HAB',
-    36: 'ZEP', 37: 'HAG', 38: 'ZEC', 39: 'MAL', 40: 'MAT',
-    41: 'MRK', 42: 'LUK', 43: 'JHN', 44: 'ACT', 45: 'ROM',
-    46: '1CO', 47: '2CO', 48: 'GAL', 49: 'EPH', 50: 'PHP',
-    51: 'COL', 52: '1TH', 53: '2TH', 54: '1TI', 55: '2TI',
-    56: 'TIT', 57: 'PHM', 58: 'HEB', 59: 'JAS', 60: '1PE',
-    61: '2PE', 62: '1JN', 63: '2JN', 64: '3JN', 65: 'JUD',
-    66: 'REV',
-};
-
-// Four books also have mixed-case codes used by one commentator
-// (same book, different code — query both to match either)
-const BOOKID_ALT_CODES = {
-    26: 'Ezek',
-    34: 'Nah',
-    50: 'Phil',
-    57: 'Phlm',
-};
-
-export function toCommentaryBookCodes(bookId) {
-    const primary = BOOKID_TO_OSIS3[bookId];
-    if (!primary) return [];
-    const alt = BOOKID_ALT_CODES[bookId];
-    return alt ? [primary, alt] : [primary];
-}
-
-// Reverse map: commentary book code (primary OSIS3 uppercase or mixed-case alt) -> bookId
-const OSIS3_TO_BOOKID = Object.fromEntries([
-    ...Object.entries(BOOKID_TO_OSIS3).map(([id, code]) => [code, parseInt(id)]),
-    ...Object.entries(BOOKID_ALT_CODES).map(([id, code]) => [code, parseInt(id)]),
-]);
-
-export function fromCommentaryBookCode(code) {
-    return OSIS3_TO_BOOKID[code] ?? null;
-}
-
 export const COMMENTATORS = [
     { id: 'john-gill',              label: "John Gill" },
     { id: 'matthew-henry',          label: "Matthew Henry" },
@@ -116,6 +44,48 @@ export const COMMENTATORS = [
     { id: 'keil-delitzsch',         label: "Keil & Delitzsch (OT only)" },
     { id: 'tyndale',                label: "Tyndale Open Study Notes" },
 ];
+
+// Preferred order for "lead Father name" in stat lines (e.g., the reaction-
+// expansion reply's "📜 {name} + N other Fathers"). Matched case-insensitively
+// as a substring against `father_name`, so "Augustine" picks up "Augustine of
+// Hippo". First marquee entry with a hit wins; fall through to alphabetical.
+// Curated for name recognition, not theological hierarchy — the goal is users
+// see a name that signals depth, not a canonical ordering of importance.
+const MARQUEE_FATHERS = [
+    'Augustine',
+    'John Chrysostom', 'Chrysostom',
+    'Thomas Aquinas', 'Aquinas',
+    'Jerome',
+    'Athanasius',
+    'Ambrose',
+    'Origen',
+    'Irenaeus',
+    'Gregory the Great',
+    'Tertullian',
+    'Basil',
+    'Cyprian',
+    'Clement of Alexandria',
+    'Justin Martyr',
+    'Polycarp',
+    'Ignatius',
+];
+
+/**
+ * Pick the most recognizable Father name out of a result set. Used for the
+ * stat-line lead; doesn't affect which rows are returned or ordered to users
+ * in the /fathers command.
+ *
+ * Returns the picked father_name string, or null if rows is empty.
+ */
+export function pickMarqueeFather(fathersRows) {
+    if (!fathersRows || fathersRows.length === 0) return null;
+    for (const marquee of MARQUEE_FATHERS) {
+        const needle = marquee.toLowerCase();
+        const match = fathersRows.find(f => f.father_name?.toLowerCase().includes(needle));
+        if (match) return match.father_name;
+    }
+    return fathersRows[0].father_name ?? null;
+}
 
 class FathersWrapper {
     constructor() { this.db = fathersPromise; }
@@ -263,7 +233,7 @@ class CrossRefWrapper {
 
     async getForVerse(canonicalBookName, chapter, verse) {
         const db = await this.db;
-        const sourceBook = toTSKSourceBook(canonicalBookName);
+        const sourceBook = toTSKSource(canonicalBookName);
         return db.all(
             `SELECT target_book, target_chapter, target_verse_start, target_verse_end
              FROM cross_references
@@ -361,13 +331,23 @@ class CommentaryWrapper {
             [commentaryId, ...codes, chapter]
         );
     }
-}
 
-export function toCommentaryBookVariants(canonicalName) {
-    if (!canonicalName) return [];
-    const compact = canonicalName.toLowerCase().replace(/\s+/g, '');
-    if (compact === 'psalms') return ['psalms', 'psalm'];
-    return [compact];
+    // How many of the six commentators have content for a given verse?
+    // Powers the reaction-expansion stat line without doing one query per
+    // commentator — a single COUNT(DISTINCT commentaryId) is ~O(ms) against
+    // the indexed bookId/chapterNumber/number columns.
+    async countCommentatorsForVerse(bookCodes, chapter, verse) {
+        const db = await this.db;
+        const codes = Array.isArray(bookCodes) ? bookCodes : [bookCodes];
+        if (codes.length === 0) return 0;
+        const placeholders = codes.map(() => '?').join(',');
+        const row = await db.get(
+            `SELECT COUNT(DISTINCT commentaryId) AS cnt FROM CommentaryChapterVerse
+             WHERE bookId IN (${placeholders}) AND chapterNumber = ? AND number = ?`,
+            [...codes, chapter, verse]
+        );
+        return row?.cnt ?? 0;
+    }
 }
 
 export const fathersWrapper = new FathersWrapper();

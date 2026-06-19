@@ -4,7 +4,8 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { numbersToBook, getBookId, coerceTranslation } from '../utils/bibleHelper.js';
+import { coerceTranslation } from '../utils/bibleHelper.js';
+import { numbersToBook, getBookId } from '../utils/bookNames.js';
 import {
     fetchInterlinearData,
     computeInterlinearPagination,

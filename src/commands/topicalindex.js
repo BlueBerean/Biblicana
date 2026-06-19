@@ -10,7 +10,8 @@ import {
     InteractionContextType
 } from 'discord.js';
 import logger from '../utils/logger.js';
-import { bibleWrapper, getBookId, numbersToBook, coerceTranslation } from '../utils/bibleHelper.js';
+import { bibleWrapper, coerceTranslation } from '../utils/bibleHelper.js';
+import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import { categoriesWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';

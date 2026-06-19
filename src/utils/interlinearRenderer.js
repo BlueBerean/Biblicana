@@ -7,7 +7,9 @@ import {
     ButtonStyle,
     MessageFlags
 } from 'discord.js';
-import { bibleWrapper, strongsWrapper, numbersToBook } from './bibleHelper.js';
+import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
+import { numbersToBook } from './bookNames.js';
+import { isExpiredInteractionError } from './paginationHelper.js';
 import logger from './logger.js';
 
 const VERSE_FETCH_TIMEOUT_MS = 6000;
@@ -290,7 +292,7 @@ export async function setupInterlinearPagination({
                     components: buildInterlinearPage({ data, pageIdx: currentPage, wordsPerPage, totalPages, disableNav: true })
                 });
             } catch (err) {
-                if (err.code !== 10008 && err.code !== 10062) {
+                if (!isExpiredInteractionError(err)) {
                     logger.error(`[Interlinear Pagination] End error: ${err.message}`);
                 }
             }

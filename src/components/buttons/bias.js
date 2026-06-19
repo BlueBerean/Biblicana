@@ -9,7 +9,18 @@ export default {
 
             const embed = new EmbedBuilder()
                 .setTitle('⚠️ AI Response Disclaimer')
-                .setDescription('AI suggestions (like those in /find or /web) are based on patterns and may not always perfectly capture theological nuances or full context. Always refer back to Scripture as the primary source.')
+                .setDescription(
+                    [
+                        "Biblicana's AI features — **chat** (via @mentions, replies, or DMs), **/find**, and **/web** — are powered by language models.",
+                        '',
+                        'Responses are **grounded in Biblicana\'s own commentary database** (Church Fathers and classical commentators) when you reference a specific verse, giving them more weight than a generic chatbot\'s answer. Even so, the model may occasionally:',
+                        '• Miss theological nuance',
+                        '• Paraphrase loosely rather than quote precisely',
+                        '• Touch on secondary matters where sincere believers disagree',
+                        '',
+                        '**Always verify** important claims against Scripture itself and trusted teachers. Biblicana is a study companion — not a final theological authority.',
+                    ].join('\n')
+                )
                 .setColor(embedColor)
                 .setFooter({
                     text: process.env.EMBEDFOOTERTEXT,

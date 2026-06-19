@@ -6,7 +6,8 @@ import {
     ButtonStyle,
     MessageFlags
 } from 'discord.js';
-import { bibleWrapper, numbersToBook } from './bibleHelper.js';
+import { bibleWrapper } from './bibleHelper.js';
+import { numbersToBook } from './bookNames.js';
 import { accentColor, footerLine } from './theme.js';
 
 const MAX_BODY_CHARS = 3800;

@@ -6,8 +6,10 @@ import {
     ButtonStyle,
     MessageFlags
 } from 'discord.js';
-import { bibleWrapper, numbersToBook } from './bibleHelper.js';
+import { bibleWrapper } from './bibleHelper.js';
+import { numbersToBook } from './bookNames.js';
 import { accentColor, footerLine } from './theme.js';
+import { isExpiredInteractionError } from './paginationHelper.js';
 import logger from './logger.js';
 
 const MAX_CHARS_PER_PAGE = 3800;
@@ -153,7 +155,7 @@ export async function setupParallelPagination({ interaction, data, pages, flags,
                     components: buildParallelPage({ data, pages, pageIdx: currentPageIdx, disableNav: true })
                 });
             } catch (err) {
-                if (err.code !== 10008 && err.code !== 10062) {
+                if (!isExpiredInteractionError(err)) {
                     logger.error(`[Parallel Pagination] End error: ${err.message}`);
                 }
             }
