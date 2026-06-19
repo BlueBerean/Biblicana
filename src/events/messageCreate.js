@@ -68,7 +68,11 @@ export default {
             // feature that can't fire there. So in a guild, only consult
             // shouldAiFire once the cached per-guild AI flag says AI is on (and
             // only when the message could even be AI: a mention or a reply).
-            // DMs are always eligible (no admin opt-in relevant).
+            //
+            // NOTE: the isDM branch is currently DEAD — the DirectMessages intent
+            // is commented out in index.js because Discord won't deliver DMs to
+            // the bot (see FOLLOWUPS.md "DM AI chat"). Kept so re-enabling is just
+            // uncommenting the intent. With the intent off, isDM is never true.
             let aiEligible = isDM;
             if (!isDM && botId) {
                 const couldBeAi = isMention || Boolean(message.reference?.messageId);

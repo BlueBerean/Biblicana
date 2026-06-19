@@ -68,12 +68,15 @@ async function startBot() {
             GatewayIntentBits.GuildMessages,
             GatewayIntentBits.MessageContent,
             GatewayIntentBits.GuildMessageReactions,
-            // DirectMessages: the AI-chat path treats a DM to the bot as a
-            // first-class trigger (see shouldAiFire / handleAiChat). Without
-            // this intent MessageCreate never fires for DMs, so the advertised
-            // "DM Biblicana directly" flow is silently dead. Pairs with
-            // Partials.Channel below (DM channels arrive uncached).
-            GatewayIntentBits.DirectMessages,
+            // DM AI chat is DISABLED. Even with this intent active + the app
+            // user-installed + a shared guild, Discord does not deliver DM
+            // MESSAGE_CREATE to the bot (proven with a barebones client — it
+            // receives guild messages but never the DM). Until that Discord-side
+            // delivery is resolved, requesting DirectMessages just claims a dead
+            // capability, so it's commented out. The DM branch in messageCreate /
+            // aiChat is left intact so re-enabling is: uncomment this line +
+            // resolve DM delivery. See FOLLOWUPS.md "DM AI chat".
+            // GatewayIntentBits.DirectMessages,
         ],
         partials: [
             Partials.Channel,
