@@ -5,9 +5,9 @@ import {
     ButtonStyle,
 } from 'discord.js';
 import { parseScriptureRefs } from './scriptureRefs.js';
-import { bibleWrapper } from './bibleHelper.js';
+import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
 import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
-import { commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, COMMENTATORS } from './studyHelper.js';
+import { commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS } from './studyHelper.js';
 import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
 import swearWordFilter from './filter.js';
@@ -409,6 +409,49 @@ const AI_TOOLS = [
             },
         },
     },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_original',
+            description: 'Get the original-language (Greek/Hebrew) words of a verse from the interlinear, each with its Strong\'s number. Use for word studies — "what\'s the Greek word for X", "break down the original of John 1:1". Pass a `word` (an English gloss like "love") to get that one word\'s lemma, transliteration, and full lexicon definition.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    reference: { type: 'string', description: 'A specific verse, e.g. "John 1:1".' },
+                    word: { type: 'string', description: 'Optional English gloss to focus on (e.g. "love", "Word"). Omit for the whole-verse word list.' },
+                },
+                required: ['reference'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_strongs',
+            description: 'Look up a Strong\'s lexicon entry directly by number — the lemma, transliteration, definition, and derivation. Use when the user gives a Strong\'s number ("what does G26 mean") or after lookup_original surfaces one worth defining.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    strongs: { type: 'string', description: 'A Strong\'s number: G#### for Greek, H#### for Hebrew (e.g. "G26", "H7965").' },
+                },
+                required: ['strongs'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_crossrefs',
+            description: 'Get cross-referenced verses for a passage from the Treasury of Scripture Knowledge. Use for "what verses relate/connect to this", "where else does Scripture say this". Returns a list of references.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    reference: { type: 'string', description: 'A specific verse, e.g. "John 3:16".' },
+                },
+                required: ['reference'],
+            },
+        },
+    },
 ];
 
 // Injected as a system message so the model knows the tools exist and the
@@ -418,6 +461,9 @@ const TOOLS_GUIDANCE = `You can look things up before answering:
 - lookup_topic(topic): verses indexed under a theme. Use for topic/theme questions with no explicit verse.
 - lookup_commentary(reference, commentator?): classic commentary on a verse. Use when asked for a commentary or interpretation.
 - lookup_father(reference, father?): what the early Church Fathers said about a verse (e.g. Augustine, Chrysostom). Use for "what did the early church / the fathers / a specific Father say about X".
+- lookup_original(reference, word?): the Greek/Hebrew of a verse with Strong's numbers. Use for word studies ("what's the Greek for love in 1 John 4:8", "break down John 1:1"). Always ground original-language claims here — never guess a lemma or Strong's number.
+- lookup_strongs(strongs): a Strong's lexicon entry by number (e.g. G26). Use when given a Strong's number, or to define one surfaced by lookup_original.
+- lookup_crossrefs(reference): related verses (Treasury of Scripture Knowledge). Use for "what connects to / relates to this verse".
 - lookup_scripture(reference): exact BSB wording. Use sparingly.
 
 Match your tool use to what the user actually asked for:
@@ -428,11 +474,17 @@ Match your tool use to what the user actually asked for:
 
 - They named a SPECIFIC verse ("commentary on John 3:16", "what does Clarke say about Romans 8:28", "what did Augustine say about John 3:16"): skip lookup_topic and go straight to lookup_commentary or lookup_father (or lookup_scripture if they only want the wording).
 
+- They want a WORD STUDY / the original language ("what's the Greek/Hebrew for X", "break down the original of Y", "what does G#### mean"): call lookup_original (and lookup_strongs to define a word by its number) and NOTHING else — a word-study request does not need commentary or cross-references.
+
+- They want RELATED verses ("what connects to / relates to X", "cross-references for X"): call lookup_crossrefs only. Don't fetch cross-references for requests that didn't ask about relatedness.
+
 Whichever path, prefer what the tools return over your own training.
 
 Attribution is sacred here — never present one commentator's or Church Father's words as another's. If the user asked for a specific commentator or Father (e.g. "what does Matthew Henry say…", "what did Augustine say…") and the tool result is marked SUBSTITUTION, you MUST say so plainly before giving the alternative — e.g. "I couldn't find Matthew Henry on Philippians 4:6, but Adam Clarke notes…". If no one has the verse, say that honestly ("I couldn't find anything on this verse from Augustine") and do not fabricate one or pass off your own knowledge as theirs. When a result is a "passage note covering verse N", frame it as the commentator's note on the surrounding passage, not on that single verse.
 
 The Church Fathers collection actually spans the patristic era through modern times, so every lookup_father result is tagged with the author's era in [brackets]. ONLY call pre-AD-800 authors "the early church" or "a Church Father". If a result is tagged medieval or modern (e.g. Aquinas, C.S. Lewis, Tolkien), cite them by their own era and never imply they are a Father — for a plain "what did the early church say" the tool already returns only genuine Fathers.
+
+Original-language honesty: when you state what a Greek or Hebrew word MEANS, use the lexicon definition the tools return. If you have a Strong's number but not its definition, call lookup_strongs to get it — do not supply the meaning from memory. Do NOT layer on popular glosses the data doesn't support: e.g. ἀγάπη (agápē) is "affection or benevolence" per the lexicon, NOT "unconditional, selfless love" — that's a well-known over-reading (the NT even uses the word for misplaced love, 2 Tim 4:10). Any interpretive nuance you add must be labelled as interpretation, not presented as the word's lexical meaning.
 
 Name the commentator when you cite them ("Clarke notes…"). If a tool returns an error or suggestions, adjust and retry. Never invent commentary text or source titles. Keep the final answer in your normal tight, warm voice and reference verses inline rather than quoting them in full.`;
 
@@ -609,6 +661,97 @@ async function toolLookupScripture({ reference }) {
     return `${label} (BSB): ${text.slice(0, TOOL_SCRIPTURE_CHARS)}`;
 }
 
+// Interlinear word breakdown + Strong's. Reuses interlinearRenderer's parse:
+// row.data is a JSON array of {text (English gloss), word (Greek/Hebrew), number
+// (Strong's like "g3056")}. Grounds word studies in real data — the answer type
+// generic LLMs hallucinate most (wrong lemmas / Strong's numbers).
+async function toolLookupOriginal({ reference, word }) {
+    const r = parseSingleVerseRef(reference);
+    if (typeof r === 'string') return r;
+    const ref = `${r.bookName} ${r.chapter}:${r.startVerse}`;
+    const row = await bibleWrapper.getInterlinearVerse(r.bookId, r.chapter, r.startVerse).catch(() => null);
+    if (!row?.data) return `No interlinear (original-language) data found for ${ref}.`;
+    let items;
+    try { items = JSON.parse(row.data); } catch { return `Interlinear data for ${ref} could not be parsed.`; }
+    items = (Array.isArray(items) ? items : []).filter(it => it && typeof it.number === 'string' && it.number);
+    if (items.length === 0) return `No original-language words found for ${ref}.`;
+
+    const firstM = items[0].number.match(/([HG])\d+/i);
+    const lexicon = firstM && firstM[1].toUpperCase() === 'H' ? 'Hebrew' : 'Greek';
+
+    if (word && typeof word === 'string') {
+        const w = word.toLowerCase().trim();
+        // Return ALL distinct words whose gloss matches, each with its grounded
+        // lexicon definition. A gloss like "love" maps to both the verb (ἀγαπῶν,
+        // G25) and the noun (ἀγάπη, G26) in 1 John 4:8 — returning only the first
+        // left the model to fill the other's meaning from training (and over-read
+        // ἀγάπη as "unconditional, selfless love"). With every match's definition
+        // present, the grounded meaning is always in front of it.
+        const seen = new Set();
+        const hits = items.filter(it =>
+            (it.text || '').toLowerCase().includes(w) && !seen.has(it.number) && seen.add(it.number));
+        if (hits.length === 0) {
+            const glosses = [...new Set(items.map(it => it.text).filter(Boolean))].join(', ');
+            return `No word glossed "${word}" in ${ref}. Available: ${glosses}. Call again with one of these.`;
+        }
+        const parts = [];
+        for (const hit of hits) {
+            const code = hit.number.toUpperCase();
+            const entry = await strongsWrapper.getStrongsId(lexicon, hit.number).catch(() => null);
+            if (!entry) {
+                parts.push(`"${hit.text}" = ${hit.word} (${code}) — no lexicon entry on file`);
+                continue;
+            }
+            const translit = lexicon === 'Greek' ? (entry.translit || entry.xlit) : (entry.xlit || entry.translit);
+            parts.push(`"${hit.text}" = ${hit.word} (${code}, ${translit || '—'}) — ${(entry.strong_def || entry.kjvdef || 'no definition').trim()}`);
+        }
+        return `${ref} (${lexicon}), word(s) matching "${word}": ${parts.join(' | ')}. State the meaning from these lexicon definitions only — do not embellish.`;
+    }
+
+    // Whole-verse list, deduped by Strong's number to avoid alignment repeats.
+    const seen = new Set();
+    const uniq = items.filter(it => (seen.has(it.number) ? false : seen.add(it.number)));
+    const MAX_WORDS = 25;
+    const parts = uniq.slice(0, MAX_WORDS).map(it => `${it.word}${it.text ? ` "${it.text}"` : ''} (${it.number.toUpperCase()})`);
+    const more = uniq.length > MAX_WORDS ? ` …(+${uniq.length - MAX_WORDS} more)` : '';
+    return `${ref} (${lexicon}), word by word: ${parts.join('; ')}${more}. Call lookup_strongs on any number for its definition, or lookup_original with word="<gloss>" for one word's full lexicon entry.`;
+}
+
+async function toolLookupStrongs({ strongs }) {
+    if (!strongs || typeof strongs !== 'string') return 'Error: provide a Strong\'s number like "G26" or "H7965".';
+    const m = strongs.trim().match(/^([HG])\s*0*(\d+)$/i);
+    if (!m) return `Error: "${strongs}" is not a Strong's number. Use G#### (Greek) or H#### (Hebrew), e.g. "G26".`;
+    const lexicon = m[1].toUpperCase() === 'G' ? 'Greek' : 'Hebrew';
+    const code = `${m[1].toUpperCase()}${m[2]}`;
+    const entry = await strongsWrapper.getStrongsId(lexicon, `${m[1].toLowerCase()}${m[2]}`).catch(() => null);
+    if (!entry) return `No ${lexicon} Strong's entry found for ${code}.`;
+    const translit = lexicon === 'Greek' ? (entry.translit || entry.xlit) : (entry.xlit || entry.translit);
+    const deriv = entry.derivation ? ` Derivation: ${entry.derivation.trim()}` : '';
+    // unicode holds the original-script word reliably; lemma sometimes carries the
+    // gloss instead, so prefer unicode for the headline.
+    const headword = entry.unicode || entry.lemma || '—';
+    return `${code} (${lexicon}) — ${headword}${translit ? ` (${translit})` : ''}: ${(entry.strong_def || entry.kjvdef || 'no definition').trim()}.${deriv}`;
+}
+
+async function toolLookupCrossrefs({ reference }) {
+    const r = parseSingleVerseRef(reference);
+    if (typeof r === 'string') return r;
+    const ref = `${r.bookName} ${r.chapter}:${r.startVerse}`;
+    const rows = await crossRefWrapper.getForVerse(r.bookName, r.chapter, r.startVerse).catch(() => []);
+    if (!rows || rows.length === 0) return `No cross-references found for ${ref}.`;
+    const cites = [];
+    for (const x of rows) {
+        const bid = getBookId(x.target_book, { silent: true });
+        if (!bid) continue;
+        const bn = numbersToBook.get(bid);
+        const end = (x.target_verse_end && x.target_verse_end !== x.target_verse_start) ? `-${x.target_verse_end}` : '';
+        cites.push(`${bn} ${x.target_chapter}:${x.target_verse_start}${end}`);
+        if (cites.length >= 15) break;
+    }
+    if (cites.length === 0) return `Cross-references for ${ref} could not be resolved.`;
+    return `${ref} cross-references (Treasury of Scripture Knowledge), ${rows.length} total: ${cites.join('; ')}. Reference these inline so Biblicana expands them; call lookup_commentary or lookup_father on any for depth.`;
+}
+
 async function executeTool(name, argsJson) {
     let args;
     try {
@@ -622,6 +765,9 @@ async function executeTool(name, argsJson) {
             case 'lookup_commentary': return await toolLookupCommentary(args);
             case 'lookup_father': return await toolLookupFather(args);
             case 'lookup_scripture': return await toolLookupScripture(args);
+            case 'lookup_original': return await toolLookupOriginal(args);
+            case 'lookup_strongs': return await toolLookupStrongs(args);
+            case 'lookup_crossrefs': return await toolLookupCrossrefs(args);
             default: return `Error: unknown tool "${name}".`;
         }
     } catch (err) {
