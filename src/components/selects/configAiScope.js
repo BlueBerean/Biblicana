@@ -32,7 +32,7 @@ export default {
 
         if (!interaction.guildId) {
             return interaction.reply({
-                content: 'AI memory scope is a per-server setting. In DMs, memory is always per-user.',
+                content: 'AI memory scope is a per-server setting — change it from within a server.',
                 flags: MessageFlags.Ephemeral,
             });
         }

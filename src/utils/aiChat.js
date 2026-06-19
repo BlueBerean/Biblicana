@@ -839,8 +839,9 @@ async function callOpenAI(messages) {
 // ── Public entry ──────────────────────────────────────────────────────────
 
 /**
- * Primary handler invoked from messageCreate when the bot was mentioned,
- * replied to, or DM'd. Caller is responsible for having verified the
+ * Primary handler invoked from messageCreate when the bot was mentioned or
+ * replied to (DM dispatch is currently disabled — see FOLLOWUPS.md). Caller
+ * is responsible for having verified the
  * dispatch condition; this function handles everything past that point —
  * gating, filtering, RAG, memory, OpenAI, reply, and disclaimer.
  *

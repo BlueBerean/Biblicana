@@ -109,10 +109,9 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             [
                 '### How it works',
-                'When enabled, Biblicana responds in three ways:',
+                'When enabled, Biblicana responds in two ways:',
                 '• You **@mention** Biblicana in a server channel',
                 '• You **reply** to any of Biblicana\'s AI chat messages (no mention needed)',
-                '• You **DM** Biblicana directly',
                 '',
                 'Every response is grounded in Biblicana\'s own commentary database — **334 Early Church Fathers** and **six classical commentators** (Gill, Henry, Clarke, Jamieson-Fausset-Brown, Keil & Delitzsch, Tyndale). Reference a specific verse like `John 3:16` and the response will synthesize what Augustine, Adam Clarke, and others actually wrote — not GPT-4o-mini\'s generic training data.',
                 '',
@@ -130,8 +129,6 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
                 '',
                 '**🔒 Private per-user**',
                 'Each user has their own **isolated thread**. Alice and Bob can\'t see each other\'s chat history with the bot. Better for sensitive questions or intimate servers.',
-                '',
-                '*DMs are always per-user regardless of this setting.*',
             ].join('\n')
         ))
         // Your data, your control.

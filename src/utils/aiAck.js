@@ -14,7 +14,7 @@ import logger from './logger.js';
 // assent, not just admin install-time assent. An admin toggling AI chat on for
 // a server doesn't legally commit every user in that server to sending message
 // text to OpenAI. This gate fills the gap: first time a given user triggers
-// AI chat (anywhere: guild channel, DM, any scope), they see a one-time
+// AI chat (any guild channel / scope), they see a one-time
 // disclosure with an Acknowledge button. Clicking sets a timestamp on the
 // user record; they never see it again — unless TERMS_MIN_ACK_DATE is bumped.
 
@@ -120,7 +120,7 @@ const MECHANICS_BULLETS_AICHAT = [
 const MECHANICS_BULLETS_SLASH = [
     '• Your query is sent to OpenAI to generate a response (for `/web`, also to Tavily for web search).',
     '• No conversation memory is kept — each `/find` or `/web` invocation is one-shot.',
-    '• This acknowledgment also covers AI chat (mention, reply, or DM).',
+    '• This acknowledgment also covers AI chat (mention or reply).',
     `• Details: [Privacy Policy](${PRIVACY_URL}) · [Terms of Service](${TERMS_URL})`,
 ];
 

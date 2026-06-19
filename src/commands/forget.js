@@ -21,7 +21,7 @@ import logger from '../utils/logger.js';
 export default {
     data: new SlashCommandBuilder()
         .setName('forget')
-        .setDescription('Erase the AI conversation history for this channel (or your DM).')
+        .setDescription('Erase the AI conversation history for this channel.')
         .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
         .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
 

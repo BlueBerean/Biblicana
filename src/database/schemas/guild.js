@@ -28,7 +28,7 @@ const guildModel = joi.object({
     passiveMode: joi.string().valid(...PASSIVE_MODES).default('react_biblebot'),
     // AI chat: admin opt-in per guild. Visible @mention responses are a
     // significant behavior change, so default is OFF — admins must enable.
-    // DMs bypass this entirely (users DMing the bot always get AI).
+    // (DM AI chat is currently disabled — see FOLLOWUPS.md "DM AI chat".)
     aiEnabled: joi.boolean().default(false),
     aiMemoryScope: joi.string().valid(...AI_MEMORY_SCOPES).default('channel'),
     dailyVerse: dailyVerseSchema,

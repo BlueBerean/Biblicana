@@ -11,7 +11,7 @@ export default {
                 .setTitle('⚠️ AI Response Disclaimer')
                 .setDescription(
                     [
-                        "Biblicana's AI features — **chat** (via @mentions, replies, or DMs), **/find**, and **/web** — are powered by language models.",
+                        "Biblicana's AI features — **chat** (via @mentions or replies), **/find**, and **/web** — are powered by language models.",
                         '',
                         'Responses are **grounded in Biblicana\'s own commentary database** (Church Fathers and classical commentators) when you reference a specific verse, giving them more weight than a generic chatbot\'s answer. Even so, the model may occasionally:',
                         '• Miss theological nuance',

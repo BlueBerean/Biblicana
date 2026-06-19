@@ -26,7 +26,7 @@ export default {
 
         if (!interaction.guildId) {
             return interaction.reply({
-                content: 'AI chat is a per-server setting. In DMs, AI is always on.',
+                content: 'AI chat is a per-server setting — change it from within a server.',
                 flags: MessageFlags.Ephemeral,
             });
         }
