@@ -1,6 +1,6 @@
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
+import { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
-import { accentColor } from '../utils/theme.js';
+import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
 export default {
@@ -52,17 +52,21 @@ export default {
                 throw new Error('Database operation returned unsuccessful status.');
             }
 
-            let embed = new EmbedBuilder()
-                .setTitle('✅ Default Translation Set')
-                .setDescription(`Your default Bible translation has been set to **${translation}**. Commands like \`/find\` will now use this by default.`)
-                .setColor(accentColor())
-                .setURL(process.env.WEBSITE)
-                .setFooter({
-                    text: process.env.EMBEDFOOTERTEXT,
-                    iconURL: process.env.EMBEDICONURL
-                });
+            // V2 component (matches the rest of the bot's surfaces). The footer
+            // is text-only via footerLine() — V2 TextDisplay has no icon field,
+            // so no EMBEDICONURL here, unlike the old classic embed.
+            const container = new ContainerBuilder()
+                .setAccentColor(accentColor())
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent('## ✅ Default Translation Set'))
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+                    `Your default Bible translation has been set to **${translation}**. Commands like \`/find\` will now use this by default.`
+                ))
+                .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerLine()));
 
-            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+            await interaction.reply({
+                flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                components: [container],
+            });
             logger.info(`[SetVersion Command] Successfully set default translation for ${userName} (${userId}) to ${translation}`);
         } catch (error) {
             logger.error(`[SetVersion Command] Error setting translation for ${userName} (${userId}) to ${translation}: ${error.message}`, error.stack);

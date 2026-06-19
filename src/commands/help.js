@@ -170,7 +170,7 @@ export const CATEGORIES = [
         emoji: '⚙️',
         label: 'Your Preferences',
         body: [
-            '• `/setversion` — Choose your preferred translation from 16 options (BSB, NASB, KJV, NKJV, ASV, and more). Other commands honor this automatically.',
+            '• `/setversion` — Choose your preferred translation from 14 options (BSB, KJV, ASV, WEB, YLT, and more). Other commands honor this automatically.',
             '',
             '*User-scoped — affects only you, syncs across servers.*',
         ].join('\n')
