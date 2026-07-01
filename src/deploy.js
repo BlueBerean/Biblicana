@@ -37,6 +37,13 @@ for (const file of commandFiles) {
         const moduleExports = await import(pathToFileURL(filePath).href);
         const command = moduleExports.default;
         if (command?.data?.toJSON) {
+            // Dev-only commands (e.g. /testwelcome) must never enter the GLOBAL
+            // (production) registry — they'd surface in the picker across all
+            // 512 servers. They may still register to the dev guild for testing.
+            if (command.devOnly && argv.global) {
+                logger.info(`[Deploy] Skipping dev-only command '${file}' in global scope.`);
+                continue;
+            }
             commands.push(command.data.toJSON());
         } else {
             logger.warn(`[WARNING] Command at ${file} is missing 'data' or 'data.toJSON' method.`);

@@ -13,6 +13,9 @@ import logger from '../utils/logger.js';
 // registry. For a proper ship-gate, remove this file or guard the execute with
 // a NODE_ENV check before deploying globally.
 export default {
+    // Dev-only: excluded from the GLOBAL (prod) command registry by deploy.js.
+    // Also guarded at runtime by a NODE_ENV==='production' early-return in execute.
+    devOnly: true,
     data: new SlashCommandBuilder()
         .setName('testwelcome')
         .setDescription('[Dev] Re-render the welcome card in this channel.')
