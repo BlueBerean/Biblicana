@@ -1,6 +1,6 @@
 {
   "name": "biblicana",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Discord bot for scripture lookups, commentary, cross-references, prophecies, and more.",
   "main": "src/index.js",
   "type": "module",
