@@ -51,7 +51,7 @@ export function buildWelcomeCard({ currentPassiveMode = 'react_biblebot', curren
         ))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             [
-                'Thanks for adding me! I\'m a Bible study bot built around a **commentary moat** —',
+                'Thanks for adding me! I\'m a Bible study bot built on a **deep library of classic commentary** —',
                 '**334 Early Church Fathers**, **six classic commentators** (Gill, Henry, Clarke, JFB, Keil, Tyndale),',
                 '**340k cross-references**, interlinear Hebrew/Greek, and more.',
                 '',
