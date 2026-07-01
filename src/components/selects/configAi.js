@@ -1,5 +1,5 @@
 import { PermissionFlagsBits, MessageFlags } from 'discord.js';
-import { saveAiEnabled, readAiMemoryScope, buildAiConfigView, AI_OPTIONS } from '../../utils/aiConfig.js';
+import { saveAiEnabled, readAiMemoryScope, readAiChannels, buildAiConfigView, AI_OPTIONS } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
 
 // Select-menu handler for the compact /config ai panel. customId:
@@ -43,10 +43,13 @@ export default {
         const pickedLabel = AI_OPTIONS.find(o => o.value === picked)?.label ?? picked;
 
         try {
-            const currentMemoryScope = await readAiMemoryScope(database, interaction.guildId);
+            const [currentMemoryScope, currentChannels] = await Promise.all([
+                readAiMemoryScope(database, interaction.guildId),
+                readAiChannels(database, interaction.guildId),
+            ]);
             await interaction.update({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildAiConfigView({ currentEnabled: enabled, currentMemoryScope }),
+                components: buildAiConfigView({ currentEnabled: enabled, currentMemoryScope, currentChannels }),
             });
             await interaction.followUp({
                 content: enabled

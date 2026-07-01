@@ -31,6 +31,12 @@ const guildModel = joi.object({
     // (DM AI chat is currently disabled — see FOLLOWUPS.md "DM AI chat".)
     aiEnabled: joi.boolean().default(false),
     aiMemoryScope: joi.string().valid(...AI_MEMORY_SCOPES).default('channel'),
+    // AI chat channel allowlist. EMPTY = allowed in ALL channels (the default,
+    // and backward-compatible with guilds configured before this existed). When
+    // NON-EMPTY, the @mention/reply AI conversation only fires in these channel
+    // IDs (threads inherit their parent). Slash commands (/find, /web, etc.) are
+    // NOT affected — they work everywhere regardless of this list.
+    aiChannels: joi.array().items(joi.string()).default([]),
     dailyVerse: dailyVerseSchema,
 });
 

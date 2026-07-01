@@ -4,6 +4,8 @@ import {
     ActionRowBuilder,
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder,
+    ChannelSelectMenuBuilder,
+    ChannelType,
 } from 'discord.js';
 import { AI_MEMORY_SCOPES } from '../database/schemas/guild.js';
 import { accentColor, footerLine, SUPPORT_INVITE, PRIVACY_URL, TERMS_URL } from './theme.js';
@@ -84,15 +86,62 @@ export async function readAiMemoryScope(database, guildId) {
     return 'channel';  // default: multiplayer
 }
 
+// Discord's ChannelSelectMenu caps at 25 selections. Also the practical ceiling
+// for an allowlist — beyond that, "AI everywhere except a few" is the better UX
+// (not built yet; see FOLLOWUPS if that becomes a real ask).
+export const AI_CHANNELS_MAX = 25;
+
+export async function saveAiChannels(database, guildId, channelIds) {
+    try {
+        // De-dupe + coerce to strings; cap at the Discord select ceiling.
+        const clean = [...new Set((channelIds ?? []).map(String))].slice(0, AI_CHANNELS_MAX);
+        const existing = await database.getGuildValue(guildId) ?? {};
+        const merged = { ...existing, id: guildId, aiChannels: clean };
+        await database.setGuildValue(guildId, merged);
+        return true;
+    } catch (err) {
+        logger.error(`[AiConfig] Channels save failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+export async function readAiChannels(database, guildId) {
+    try {
+        const g = await database.getGuildValue(guildId);
+        if (Array.isArray(g?.aiChannels)) return g.aiChannels.map(String);
+    } catch (err) {
+        logger.debug(`[AiConfig] Channels read failed for guild=${guildId}: ${err.message}`);
+    }
+    return [];  // default: no restriction (all channels)
+}
+
+/**
+ * Is AI chat allowed to fire in this channel, given the guild's allowlist?
+ * EMPTY allowlist → allowed everywhere (the default). Otherwise the channel's
+ * own id must be listed, OR its parent's (so threads inherit the parent
+ * channel's allowance without the admin having to list every thread).
+ * Only gates the @mention/reply conversation — never slash commands.
+ */
+export function isAiChannelAllowed(allowedChannelIds, channel) {
+    if (!allowedChannelIds || allowedChannelIds.length === 0) return true;
+    if (!channel) return false;
+    if (allowedChannelIds.includes(channel.id)) return true;
+    if (channel.parentId && allowedChannelIds.includes(channel.parentId)) return true;
+    return false;
+}
+
 /**
  * Build the /config ai panel — the canonical place admins learn what AI
  * chat does, how memory works, and where to get support. Shows current
  * enabled state + memory scope with a select menu for each.
  */
-export function buildAiConfigView({ currentEnabled = false, currentMemoryScope = 'channel' }) {
+export function buildAiConfigView({ currentEnabled = false, currentMemoryScope = 'channel', currentChannels = [] }) {
     const currentToggleValue = currentEnabled ? 'on' : 'off';
     const currentToggleLabel = AI_OPTIONS.find(o => o.value === currentToggleValue).label;
     const currentScopeLabel = AI_MEMORY_SCOPE_OPTIONS.find(o => o.value === currentMemoryScope)?.label ?? currentMemoryScope;
+    const channelsSummary = currentChannels.length === 0
+        ? 'All channels'
+        : currentChannels.map(id => `<#${id}>`).join(' ');
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
@@ -103,6 +152,7 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
                 '',
                 `**State:** ${currentToggleLabel}`,
                 `**Memory:** ${currentScopeLabel}`,
+                `**Channels:** ${channelsSummary}`,
             ].join('\n')
         ))
         // How it works — what triggers a response + what grounds it.
@@ -116,6 +166,15 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
                 'Every response is grounded in Biblicana\'s own commentary database — **334 Early Church Fathers** and **six classical commentators** (Gill, Henry, Clarke, Jamieson-Fausset-Brown, Keil & Delitzsch, Tyndale). Reference a specific verse like `John 3:16` and the response will synthesize what Augustine, Adam Clarke, and others actually wrote — not GPT-4o-mini\'s generic training data.',
                 '',
                 '*Replies to Biblicana\'s structured outputs (welcome card, verse cards, commentary panels, etc.) are ignored — AI chat only engages on replies to its own conversational messages.*',
+            ].join('\n')
+        ))
+        // Channel restriction — where the AI conversation is allowed.
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            [
+                '### Where it responds',
+                'By default the AI conversation works in **every channel**. Use the channel picker below to **restrict it to specific channels** — pick the channels where the AI is *allowed* to chat, and it will stay silent everywhere else. Clear the selection to allow it everywhere again.',
+                '',
+                '*This only affects the **@mention / reply** conversation. `/find`, `/web`, and every other slash command keep working in all channels regardless. Threads inherit their parent channel.*',
             ].join('\n')
         ))
         // Memory scope — the meaningful choice.
@@ -179,5 +238,22 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
             ))
     );
 
-    return [container, toggleRow, scopeRow];
+    // Channel allowlist picker. minValues 0 so the admin can clear it back to
+    // "all channels". Pre-selects the current allowlist; deleted channels in
+    // default_values are ignored by Discord. Only GuildText/Announcement — threads
+    // inherit their parent via isAiChannelAllowed, so no need to list them here.
+    const channelSelect = new ChannelSelectMenuBuilder()
+        .setCustomId('config:ai:channels')
+        .setPlaceholder(currentChannels.length
+            ? `AI limited to ${currentChannels.length} channel${currentChannels.length === 1 ? '' : 's'} — edit or clear`
+            : 'AI allowed everywhere — pick channels to restrict')
+        .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setMinValues(0)
+        .setMaxValues(AI_CHANNELS_MAX);
+    if (currentChannels.length > 0) {
+        channelSelect.setDefaultChannels(...currentChannels);
+    }
+    const channelsRow = new ActionRowBuilder().addComponents(channelSelect);
+
+    return [container, toggleRow, scopeRow, channelsRow];
 }

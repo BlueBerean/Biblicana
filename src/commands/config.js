@@ -4,7 +4,7 @@ import {
     PermissionFlagsBits,
 } from 'discord.js';
 import { buildConfigView, readPassiveMode } from '../utils/passiveConfig.js';
-import { buildAiConfigView, readAiEnabled, readAiMemoryScope } from '../utils/aiConfig.js';
+import { buildAiConfigView, readAiEnabled, readAiMemoryScope, readAiChannels } from '../utils/aiConfig.js';
 import { buildDailyVerseConfigView, readDailyVerseConfig } from '../utils/dailyVerseConfig.js';
 import logger from '../utils/logger.js';
 
@@ -49,13 +49,14 @@ export default {
                 });
             }
             if (sub === 'ai') {
-                const [currentEnabled, currentMemoryScope] = await Promise.all([
+                const [currentEnabled, currentMemoryScope, currentChannels] = await Promise.all([
                     readAiEnabled(database, interaction.guildId),
                     readAiMemoryScope(database, interaction.guildId),
+                    readAiChannels(database, interaction.guildId),
                 ]);
                 return interaction.reply({
                     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-                    components: buildAiConfigView({ currentEnabled, currentMemoryScope }),
+                    components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels }),
                 });
             }
             if (sub === 'daily') {

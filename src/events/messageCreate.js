@@ -2,7 +2,7 @@ import { Events, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 import { handleMessageForPassiveDetection } from '../utils/passiveDetection.js';
 import { handleAiChat } from '../utils/aiChat.js';
-import { readAiEnabled } from '../utils/aiConfig.js';
+import { readAiEnabled, readAiChannels, isAiChannelAllowed } from '../utils/aiConfig.js';
 
 // Decide whether this message should trigger AI chat, weighing reply-context
 // and @mention signals correctly.
@@ -76,8 +76,13 @@ export default {
             let aiEligible = isDM;
             if (!isDM && botId) {
                 const couldBeAi = isMention || Boolean(message.reference?.messageId);
-                if (couldBeAi) {
-                    aiEligible = await readAiEnabled(database, message.guild.id);
+                if (couldBeAi && await readAiEnabled(database, message.guild.id)) {
+                    // AI is on for the guild. Honor the per-channel allowlist:
+                    // empty list = all channels; otherwise this channel (or its
+                    // thread parent) must be listed. Only gates the conversation —
+                    // slash commands are unaffected.
+                    const allowedChannels = await readAiChannels(database, message.guild.id);
+                    aiEligible = isAiChannelAllowed(allowedChannels, message.channel);
                 }
             }
 
