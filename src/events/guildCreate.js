@@ -33,14 +33,22 @@ async function biblebotPresent(guild) {
 // system channel; falls back to the first text/announcement channel the bot
 // can send in. Returns null if no suitable channel exists (happens in locked-
 // down servers where the inviter didn't grant Send Messages anywhere).
-function findWelcomeChannel(guild) {
+export function findWelcomeChannel(guild) {
     const me = guild.members.me;
     if (!me) return null;
 
+    // A channel is usable only if the bot can BOTH view and send in it.
+    // ViewChannel is load-bearing: a channel that grants SendMessages via an
+    // overwrite while denying ViewChannel still passes has(SendMessages), yet
+    // the API rejects the post with "Missing Access" (50001 — distinct from
+    // "Missing Permissions" 50013). Requiring ViewChannel too keeps us from
+    // picking a channel we can't actually post to. The gateway hands bots every
+    // channel in GUILD_CREATE regardless of view permission, so such unusable
+    // channels are present in the cache and must be filtered here.
     const canSend = (channel) =>
         channel
         && (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)
-        && channel.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages);
+        && channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]);
 
     if (canSend(guild.systemChannel)) return guild.systemChannel;
 
@@ -53,6 +61,28 @@ function findWelcomeChannel(guild) {
         if (canSend(ch)) return ch;
     }
     return null;
+}
+
+// Last-resort outreach when no channel post is possible — a locked-down server
+// with no view+send channel, or a send that fails at the API despite passing
+// the pre-check. DMs the guild owner so the join isn't silent. This is OUTBOUND
+// DM: the bot can SEND DMs even though it can't RECEIVE them (only inbound DM
+// delivery is broken — see FOLLOWUPS.md "DM AI chat"), so this path works.
+// Best-effort — quietly no-ops if the owner has DMs closed (error 50007).
+export async function notifyOwnerFallback(guild, reason) {
+    try {
+        const owner = await guild.fetchOwner();
+        await owner.send(
+            `Thanks for adding **Biblicana** to **${guild.name}**! I couldn't find a channel I'm `
+            + `allowed to post in, so I wasn't able to drop my usual welcome card there.\n\n`
+            + `To get started: grant me **View Channel** and **Send Messages** in a channel, then run `
+            + `**/help** for the full command list — or **/config** to set up AI chat, a daily verse, `
+            + `and passive scripture detection.`
+        );
+        logger.info(`[GuildCreate] Welcome fallback DM sent to owner of ${guild.id} (${reason})`);
+    } catch (err) {
+        logger.warn(`[GuildCreate] Welcome fallback DM to owner of ${guild.id} failed (${reason}): ${err.message}`);
+    }
 }
 
 export default {
@@ -77,7 +107,8 @@ export default {
 
         const channel = findWelcomeChannel(guild);
         if (!channel) {
-            logger.warn(`[GuildCreate] No postable channel in guild ${guild.id} — welcome card skipped`);
+            logger.warn(`[GuildCreate] No postable channel in guild ${guild.id} — trying owner DM fallback`);
+            await notifyOwnerFallback(guild, 'no postable channel');
             return;
         }
 
@@ -92,7 +123,8 @@ export default {
             });
             logger.info(`[GuildCreate] Welcome card posted in #${channel.name} (${channel.id}) of ${guild.id}`);
         } catch (err) {
-            logger.error(`[GuildCreate] Failed to send welcome card in ${guild.id}: ${err.message}`);
+            logger.error(`[GuildCreate] Failed to send welcome card in ${guild.id}: ${err.message} — trying owner DM fallback`);
+            await notifyOwnerFallback(guild, `channel send failed: ${err.code ?? err.message}`);
         }
     },
 };
