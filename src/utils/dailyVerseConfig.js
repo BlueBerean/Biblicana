@@ -23,43 +23,62 @@ export const DAILY_ENABLED_OPTIONS = [
     },
 ];
 
-// Hour options 0..23 UTC. Discord's select-menu cap is 25, so 24 fits.
-// Labels include common timezone hints so admins don't have to compute UTC
-// conversions in their head for the typical cases.
-export const DAILY_HOUR_OPTIONS = (() => {
-    const tzHints = {
-        // UTC → human hint combining major Christian-population timezones
-        0:  'Midnight UTC · 7pm EST prev day',
-        1:  '1am UTC · 8pm EST prev day',
-        2:  '2am UTC · 9pm EST prev day',
-        3:  '3am UTC · 10pm EST prev day',
-        4:  '4am UTC · 11pm EST prev day',
-        5:  '5am UTC · midnight EST',
-        6:  '6am UTC · 1am EST',
-        7:  '7am UTC · 2am EST',
-        8:  '8am UTC · 3am EST',
-        9:  '9am UTC · 4am EST',
-        10: '10am UTC · 5am EST',
-        11: '11am UTC · 6am EST',
-        12: 'Noon UTC · 7am EST · 4am PST',
-        13: '1pm UTC · 8am EST · 5am PST',
-        14: '2pm UTC · 9am EST · 6am PST',
-        15: '3pm UTC · 10am EST · 7am PST',
-        16: '4pm UTC · 11am EST · 8am PST',
-        17: '5pm UTC · noon EST · 9am PST',
-        18: '6pm UTC · 1pm EST · 10am PST',
-        19: '7pm UTC · 2pm EST · 11am PST',
-        20: '8pm UTC · 3pm EST · noon PST',
-        21: '9pm UTC · 4pm EST · 1pm PST',
-        22: '10pm UTC · 5pm EST · 2pm PST',
-        23: '11pm UTC · 6pm EST · 3pm PST',
-    };
+// Is US Eastern on daylight time at this instant?
+//
+// Derived from the IANA tz database via Intl rather than hardcoding the
+// second-Sunday-of-March rule, so the labels track any future rule change
+// (permanent DST is a live legislative proposal) through a tzdata update
+// instead of an edit here.
+function usIsOnDaylightTime(at) {
+    const zoneName = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        timeZoneName: 'short',
+    }).formatToParts(at).find(part => part.type === 'timeZoneName')?.value;
+    return zoneName === 'EDT';
+}
+
+function hour12(h) {
+    if (h === 0) return 'midnight';
+    if (h === 12) return 'noon';
+    return h < 12 ? `${h}am` : `${h - 12}pm`;
+}
+
+// "<local hour> <ZONE>", with a day-shift suffix when that UTC hour falls on a
+// different calendar day locally.
+function localHint(utcHour, offset, zone) {
+    const raw = utcHour + offset;
+    const local = ((raw % 24) + 24) % 24;
+    const dayShift = raw < 0 ? ' prev day' : raw >= 24 ? ' next day' : '';
+    return `${hour12(local)} ${zone}${dayShift}`;
+}
+
+/**
+ * Hour options 0..23 UTC with timezone hints. Discord's select-menu cap is 25,
+ * so 24 fits.
+ *
+ * MUST be called per render. The previous version was an IIFE evaluated once at
+ * module load with standard-time hints hardcoded, which was wrong twice over:
+ * every label was an hour off for the ~8 months a year the US is on daylight
+ * time, and the array froze at process start, so a bot that booted in January
+ * kept serving winter labels until it restarted. This process routinely has
+ * uptime measured in weeks, so that was not theoretical — Kenneth picked
+ * 15:00 UTC expecting 10am and got 11am EDT.
+ *
+ * `at` is injectable so the DST behaviour is testable without clock mocking.
+ */
+export function buildDailyHourOptions(at = new Date()) {
+    const dst = usIsOnDaylightTime(at);
+    const eastZone = dst ? 'EDT' : 'EST';
+    const westZone = dst ? 'PDT' : 'PST';
+    const eastOffset = dst ? -4 : -5;
+    const westOffset = dst ? -7 : -8;
+
     return Array.from({ length: 24 }, (_, h) => ({
         value: String(h),
         label: `${String(h).padStart(2, '0')}:00 UTC`,
-        description: tzHints[h],
+        description: `${hour12(h)} UTC · ${localHint(h, eastOffset, eastZone)} · ${localHint(h, westOffset, westZone)}`,
     }));
-})();
+}
 
 export async function saveDailyVerseConfig(database, guildId, patch) {
     try {
@@ -152,7 +171,9 @@ export function buildDailyVerseConfigView({ current = {} } = {}) {
         new StringSelectMenuBuilder()
             .setCustomId('config:daily:hour')
             .setPlaceholder('Pick an hour (UTC)')
-            .addOptions(DAILY_HOUR_OPTIONS.map(opt =>
+            // Built per render, not read from a module-load constant — see
+            // buildDailyHourOptions for why that distinction is load-bearing.
+            .addOptions(buildDailyHourOptions().map(opt =>
                 new StringSelectMenuOptionBuilder()
                     .setValue(opt.value)
                     .setLabel(opt.label)

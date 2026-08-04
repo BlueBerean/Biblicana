@@ -225,6 +225,25 @@ const FUZZY_TYPOS = {
     'phillipans': 50,
     'philipians': 50,
     'philippans': 50,
+    // Second wave, from prod `[Book Lookup] No match found` lines. Same safety
+    // property as the entries above: none are English words, so they stay
+    // always-on (including the silent passive path) without risking false
+    // positives on ordinary chat.
+    'galations': 48,
+    'pslams': 19,
+    'pslam': 19,
+    'gensis': 1,
+    'genises': 1,
+    'ecclesiates': 21,
+    'dueteronomy': 5,
+    'lukas': 42,
+    // Zechariah attracts three distinct misspellings; "zachariah" is also a
+    // legitimate alternate transliteration rather than strictly a typo.
+    'zacariah': 38,
+    'zachariah': 38,
+    'zecheriah': 38,
+    // Matches "book of isiah" via the whitespace-stripped lookup.
+    'bookofisiah': 23,
 };
 
 // Non-English book names observed in prod logs. Safe on every path — none are
@@ -251,6 +270,11 @@ const LENIENT_ALIASES = {
     'thes': 52, 'thess': 52,                    // ambiguous → 1 Thessalonians
     'peter': 60,                                // ambiguous → 1 Peter
     'timothy': 54,                              // ambiguous → 1 Timothy
+    // Same ambiguity class and same documented intent as the rows above, just
+    // missing until now: getBookId('samuel') resolved while getBookId('kings')
+    // returned null.
+    'kings': 11,                                // ambiguous → 1 Kings
+    'chronicles': 13,                           // ambiguous → 1 Chronicles
 };
 
 // Resolve a user-provided book name/abbreviation to a bookId (1–66).

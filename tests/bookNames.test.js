@@ -276,3 +276,59 @@ test('genuinely-unsupported inputs still return null (no false default)', () => 
     assert.equal(getBookId('sirach'), null);       // apocrypha, not in 66-book canon
     assert.equal(getBookId('wisdom'), null);       // apocrypha
 });
+
+// --- Second wave of prod misspellings (FUZZY_TYPOS) ------------------------
+// Always-on, including the silent passive path: none of these are English
+// words, so they cannot produce false positives on ordinary chat.
+
+test('second-wave typos resolve on the slash path', () => {
+    assert.equal(getBookId('galations'), 48);
+    assert.equal(getBookId('pslams'), 19);
+    assert.equal(getBookId('pslam'), 19);
+    assert.equal(getBookId('gensis'), 1);
+    assert.equal(getBookId('genises'), 1);
+    assert.equal(getBookId('ecclesiates'), 21);
+    assert.equal(getBookId('dueteronomy'), 5);
+    assert.equal(getBookId('lukas'), 42);
+    assert.equal(getBookId('bookofisiah'), 23);
+});
+
+test('all three Zechariah misspellings collapse to one book', () => {
+    assert.equal(getBookId('zacariah'), 38);
+    assert.equal(getBookId('zachariah'), 38);
+    assert.equal(getBookId('zecheriah'), 38);
+});
+
+test('second-wave typos also resolve on the SILENT path', () => {
+    // Deliberate: these are not English words, so passive detection can safely
+    // pick them up out of chat messages.
+    assert.equal(getBookId('galations', { silent: true }), 48);
+    assert.equal(getBookId('pslams', { silent: true }), 19);
+    assert.equal(getBookId('dueteronomy', { silent: true }), 5);
+});
+
+// --- Ambiguous bare names (LENIENT_ALIASES) -------------------------------
+
+test('kings and chronicles default to the first book, matching samuel', () => {
+    assert.equal(getBookId('kings'), 11);         // 1 Kings
+    assert.equal(getBookId('chronicles'), 13);    // 1 Chronicles
+    assert.equal(getBookId('samuel'), 9);         // pre-existing, same class
+});
+
+test('ambiguous bare names stay REJECTED on the silent path', () => {
+    // This is the safety property that keeps passive detection from turning
+    // "the kings of Israel" in chat into a 1 Kings lookup. If this ever starts
+    // returning a bookId, the passive scanner will begin false-positiving on
+    // ordinary English.
+    assert.equal(getBookId('kings', { silent: true }), null);
+    assert.equal(getBookId('chronicles', { silent: true }), null);
+    assert.equal(getBookId('samuel', { silent: true }), null);
+});
+
+test('john was already resolvable and is NOT treated as ambiguous', () => {
+    // Listed in FOLLOWUPS alongside kings/chronicles, but unlike those it
+    // already resolved via the main book table on BOTH paths — the Gospel is
+    // the unmarked reading of a bare "John". No lenient entry was added.
+    assert.equal(getBookId('john'), 43);
+    assert.equal(getBookId('john', { silent: true }), 43);
+});
