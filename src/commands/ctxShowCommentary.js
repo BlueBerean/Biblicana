@@ -50,7 +50,7 @@ export default {
 
         try {
             const bookCodes = toOSIS3Codes(verseRef.bookId);
-            const row = await commentaryWrapper.getVerseCommentary(
+            const row = await commentaryWrapper.getCommentaryForVerse(
                 DEFAULT_COMMENTATOR, bookCodes, verseRef.chapter, verseRef.startVerse
             );
 

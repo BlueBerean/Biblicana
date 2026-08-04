@@ -48,9 +48,23 @@ async function fetchForCommentator({ commentatorId, bookCodes, chapter, verse, i
         const row = await commentaryWrapper.getChapterCommentary(commentatorId, bookCodes, chapter);
         return row?.introduction || null;
     }
-    const row = await commentaryWrapper.getVerseCommentary(commentatorId, bookCodes, chapter, verse);
+    const row = await commentaryWrapper.getCommentaryForVerse(commentatorId, bookCodes, chapter, verse);
     if (!row?.text) return null;
-    return stripTyndaleReferencePrefix(row.text, commentatorId);
+    const text = stripTyndaleReferencePrefix(row.text, commentatorId);
+
+    // Passage-grouped commentators (Henry, Keil) key an entire block at its
+    // first verse, so the text just fetched may open several verses before the
+    // one requested — Henry's note on Philippians 4:1-9 is a single entry keyed
+    // at verse 1. Without this line the header reads ":6" above a note that
+    // visibly starts at verse 1, which looks like the wrong result rather than
+    // the way the commentator wrote.
+    //
+    // Returned inline rather than threaded through render state: the caller
+    // splits this string into pages, so a prefix needs no plumbing.
+    if (row.coveredFrom && row.coveredFrom !== verse) {
+        return `-# 📖 Passage note: this commentator writes on whole passages, so the text below begins at verse ${row.coveredFrom} and covers verse ${verse}.\n\n${text}`;
+    }
+    return text;
 }
 
 // Try preferred commentator first, then fall through the rest in order.

@@ -10,6 +10,7 @@ import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './
 import {
     commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
     personsWrapper, placesWrapper, dictionaryWrapper, displayName, classifyFather,
+    extractVerseSlice,
 } from './studyHelper.js';
 import { searchAllowedWeb, buildWebSourceMap } from './webSearch.js';
 import { readAiMemoryScope } from './aiConfig.js';
@@ -469,7 +470,9 @@ const COMMENTARY_FALLBACK = [
 // it" (covering lookup). The verse-by-verse commentators stay exact-only: a
 // missing verse there is a genuine gap, and returning an adjacent verse's note
 // would misattribute it.
-const PASSAGE_GROUPED_COMMENTATORS = new Set(['matthew-henry', 'keil-delitzsch']);
+// PASSAGE_GROUPED_COMMENTATORS moved to studyHelper.js — commentaryWrapper
+// .getCommentaryForVerse now picks covering-vs-exact itself, so /commentary and
+// the openverse button get the same behaviour instead of exact-only lookups.
 
 const AI_TOOLS = [
     {
@@ -767,26 +770,27 @@ async function toolLookupCommentary({ reference, commentator }) {
         : COMMENTARY_FALLBACK;
     for (const id of order) {
         if (id === 'keil-delitzsch' && isNT) continue;
-        // Passage-grouped commentators (Henry, Keil) key a whole block at its
-        // first verse, so an exact-verse query misses — use the covering block.
-        // Verse-by-verse commentators stay exact-only (a miss is a real gap).
-        const row = PASSAGE_GROUPED_COMMENTATORS.has(id)
-            ? await commentaryWrapper.getVerseCommentaryCovering(id, codes, r.chapter, r.startVerse).catch(() => null)
-            : await commentaryWrapper.getVerseCommentary(id, codes, r.chapter, r.startVerse).catch(() => null);
+        // getCommentaryForVerse picks covering-vs-exact per commentator.
+        const row = await commentaryWrapper.getCommentaryForVerse(id, codes, r.chapter, r.startVerse).catch(() => null);
         if (row?.text) {
             const label = COMMENTATORS.find(c => c.id === id)?.label ?? id;
+            // Anchor the slice to the requested verse before truncating. A
+            // passage block runs to ~12,000 characters, so taking the first 900
+            // of a block keyed at verse 1 answers a question about verse 6 with
+            // material about verse 1 — confidently, and about the wrong verse.
+            const slice = extractVerseSlice(row.text, r.chapter, r.startVerse, TOOL_COMMENTARY_CHARS);
             // If we matched a passage block rather than the exact verse (covering
             // lookups return coveredFrom; exact lookups don't), tell the model so
             // it phrases it as a passage note, not a verse-specific one.
             const onRef = (row.coveredFrom && row.coveredFrom !== r.startVerse)
-                ? `${r.bookName} ${r.chapter} (passage note covering verse ${r.startVerse})`
+                ? `${r.bookName} ${r.chapter} (passage note${slice.fromVerse ? `, quoted from the part on verse ${slice.fromVerse}` : ` covering verse ${r.startVerse}`})`
                 : `${r.bookName} ${r.chapter}:${r.startVerse}`;
             // Loud substitution signal: the user asked for a specific commentator
             // who had nothing here, so the model MUST tell them and name both.
             const substitution = (requested && id !== requested)
                 ? `SUBSTITUTION — ${requestedLabel} has no commentary on ${r.bookName} ${r.chapter}:${r.startVerse}. You MUST tell the user you couldn't find ${requestedLabel} for this verse, then offer ${label} instead. Do not present ${label}'s words as ${requestedLabel}'s. `
                 : '';
-            return `${substitution}${label} on ${onRef}: "${row.text.slice(0, TOOL_COMMENTARY_CHARS)}"`;
+            return `${substitution}${label} on ${onRef}: "${slice.text}"`;
         }
     }
     const who = requestedLabel ? `${requestedLabel}, or any of the other commentators,` : 'any commentator';

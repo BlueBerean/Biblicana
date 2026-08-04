@@ -17,7 +17,9 @@ import log from 'loglevel';
 
 log.setLevel('error');
 
-import { classifyFather, fatherEraBadge, normalizeFatherName } from '../src/utils/studyHelper.js';
+import {
+    classifyFather, fatherEraBadge, normalizeFatherName, extractVerseSlice,
+} from '../src/utils/studyHelper.js';
 
 // --- normalizeFatherName ---------------------------------------------------
 // The DB stores "CS Lewis" with no periods, so a correctly-typed "C.S. Lewis"
@@ -92,6 +94,87 @@ test('later writers get a short, non-scolding badge', () => {
     assert.equal(fatherEraBadge('1637'), 'Reformation era · c. 1637');
     assert.equal(fatherEraBadge('1963'), 'Modern · c. 1963');
     assert.doesNotMatch(fatherEraBadge('1963'), /NOT/);
+});
+
+// --- extractVerseSlice -----------------------------------------------------
+// Passage-grouped commentators key a whole block at its first verse. Matthew
+// Henry on Philippians 4:1-9 is ONE 11,968-character entry, and the verse-6
+// discussion begins at character 7,687 — so taking the first 900 characters
+// answered a question about verse 6 with material about verse 1, confidently
+// and about the wrong verse. Synthetic text here so the tests don't need the DB.
+
+// Filler is space-separated. Padding a marker directly against filler would
+// produce "xxxPhi 4:1", and \b needs a word boundary before the book token —
+// real commentary always has whitespace there (verified against the actual
+// Henry block, which yields 10 markers), so gluing them would test a shape the
+// data never takes.
+const filler = ch => ` ${ch.repeat(300)} `;
+const BLOCK = [
+    `Intro material before any marker.${filler('x')}`,
+    `Phi 4:1. First verse discussion.${filler('a')}`,
+    `Phi 4:4. Fourth verse discussion.${filler('b')}`,
+    `Phi 4:6. Be careful for nothing.${filler('c')}`,
+    `Phi 4:9. Ninth verse discussion.${filler('d')}`,
+].join('');
+
+test('text within budget is returned untouched', () => {
+    const result = extractVerseSlice('a short note', 4, 6, 900);
+    assert.equal(result.text, 'a short note');
+    assert.equal(result.fromVerse, null);
+});
+
+test('anchors to the requested verse rather than the start of the block', () => {
+    const result = extractVerseSlice(BLOCK, 4, 6, 900);
+    assert.equal(result.fromVerse, 6);
+    assert.match(result.text, /^Phi 4:6/);
+    assert.match(result.text, /Be careful for nothing/);
+    // The regression this exists to prevent: the old code returned this.
+    assert.doesNotMatch(result.text, /Intro material/);
+});
+
+test('stops before the next verse so the slice stays on topic', () => {
+    const result = extractVerseSlice(BLOCK, 4, 6, 900);
+    assert.doesNotMatch(result.text, /Phi 4:9/);
+});
+
+test('falls back to the nearest preceding verse when the exact one is absent', () => {
+    // Verse 7 has no marker; verse 6's discussion is the one most likely to
+    // still cover it.
+    const result = extractVerseSlice(BLOCK, 4, 7, 900);
+    assert.equal(result.fromVerse, 6);
+    assert.match(result.text, /^Phi 4:6/);
+});
+
+test('a verse before every marker falls back to plain truncation', () => {
+    const noEarlyMarker = extractVerseSlice(BLOCK, 4, 1, 900);
+    assert.equal(noEarlyMarker.fromVerse, 1);
+    assert.match(noEarlyMarker.text, /^Phi 4:1/);
+});
+
+test('unmarked text degrades to truncation rather than returning nothing', () => {
+    const result = extractVerseSlice('y'.repeat(3000), 4, 6, 120);
+    assert.equal(result.fromVerse, null);
+    assert.equal(result.text.length, 120);
+});
+
+test('never exceeds the caller\'s character budget', () => {
+    for (const verse of [1, 4, 6, 9]) {
+        assert.ok(extractVerseSlice(BLOCK, 4, verse, 200).text.length <= 200);
+    }
+});
+
+test('markers from other chapters cannot hijack the anchor', () => {
+    // A cross-reference like "Psa 37:4" inside a Philippians 4 block must not
+    // be mistaken for this chapter's verse 4 — Henry's real text is full of
+    // exactly these citations.
+    const withCrossRef = [
+        `Phi 4:1. Opening discussion.${filler('a')}`,
+        `See also Psa 37:4 and Rom 6:6 for comparison.${filler('b')}`,
+        `Phi 4:6. The verse we actually want.${filler('c')}`,
+    ].join('');
+    const result = extractVerseSlice(withCrossRef, 4, 6, 400);
+    assert.equal(result.fromVerse, 6);
+    assert.match(result.text, /The verse we actually want/);
 });
 
 test('badge and classification never disagree', () => {

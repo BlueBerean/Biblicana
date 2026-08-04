@@ -240,6 +240,63 @@ export function fatherEraBadge(yearRaw) {
     return `Modern · c. ${y}`;
 }
 
+// Commentators who key an entire passage note at its FIRST verse rather than
+// writing verse by verse. An exact-verse lookup misses everything else in the
+// block, so these need the covering lookup.
+export const PASSAGE_GROUPED_COMMENTATORS = new Set(['matthew-henry', 'keil-delitzsch']);
+
+/**
+ * Slice a passage-grouped commentary block down to the part about a verse.
+ *
+ * Passage blocks are long — Matthew Henry on Philippians 4:1-9 is a single
+ * 11,968-character entry — and callers cap what they forward at around 900
+ * characters. Taking the FIRST 900 characters of a block keyed at verse 1
+ * answers a question about verse 6 with material about verse 1: measured on
+ * that exact block, the verse-6 discussion begins at character 7,687, so the
+ * relevant text was never in the slice at all. The answer looked sourced and
+ * confident, and was about the wrong verse.
+ *
+ * These blocks mark their internal structure with inline references
+ * ("Phi 4:6"), so anchor to the target verse's marker and stop at the next
+ * verse's, keeping the slice on topic.
+ *
+ * @returns {{text: string, fromVerse: ?number}} fromVerse is the verse the
+ *   slice was anchored to (null when no marker was usable and the text was
+ *   simply truncated), so callers can say which verse they actually quoted.
+ */
+export function extractVerseSlice(text, chapter, verse, maxChars = 900) {
+    const source = String(text ?? '');
+    if (source.length <= maxChars) return { text: source, fromVerse: null };
+
+    // A short book token followed by this chapter's number, e.g. "Phi 4:6",
+    // "1 Sa 4:6", "Gen. 4:6". Pinned to THIS chapter so a cross-reference to
+    // another chapter cannot hijack the anchor.
+    const markerPattern = new RegExp(`\\b(?:[1-3]\\s?)?[A-Z][A-Za-z]{1,5}\\.?\\s+${chapter}:(\\d+)`, 'g');
+    const marks = [];
+    let match;
+    while ((match = markerPattern.exec(source)) !== null) {
+        marks.push({ verse: parseInt(match[1], 10), at: match.index });
+    }
+    if (marks.length === 0) return { text: source.slice(0, maxChars), fromVerse: null };
+
+    // Prefer an exact marker for the target verse; otherwise fall back to the
+    // nearest preceding one, whose discussion most likely still covers it.
+    let anchor = marks.find(mark => mark.verse === verse) ?? null;
+    if (!anchor) {
+        for (const mark of marks) {
+            if (mark.verse < verse && (!anchor || mark.verse > anchor.verse)) anchor = mark;
+        }
+    }
+    if (!anchor) return { text: source.slice(0, maxChars), fromVerse: null };
+
+    // Stop at the next LATER verse so the slice doesn't run into the following
+    // verse's discussion, but never exceed the caller's budget.
+    const next = marks.find(mark => mark.at > anchor.at && mark.verse > anchor.verse);
+    const end = Math.min(next ? next.at : source.length, anchor.at + maxChars);
+
+    return { text: source.slice(anchor.at, end).trim(), fromVerse: anchor.verse };
+}
+
 class PersonsWrapper {
     constructor() { this.db = personPlacesPromise; }
 
@@ -463,6 +520,23 @@ class CommentaryWrapper {
         );
         if (!row?.text) return null;
         return { text: row.text, coveredFrom: row.number };
+    }
+
+    /**
+     * The right lookup for a commentator, chosen automatically.
+     *
+     * Passage-grouped commentators get the covering block; verse-by-verse ones
+     * stay exact, where a miss is a genuine gap rather than a keying artefact.
+     *
+     * Exists because that choice used to live in aiChat.js, so /commentary, the
+     * openverse button and the context menu all issued exact-only lookups and
+     * silently found nothing for Henry or Keil on any verse that wasn't the
+     * first of its block — which is most verses.
+     */
+    async getCommentaryForVerse(commentaryId, bookCodes, chapter, verse) {
+        return PASSAGE_GROUPED_COMMENTATORS.has(commentaryId)
+            ? this.getVerseCommentaryCovering(commentaryId, bookCodes, chapter, verse)
+            : this.getVerseCommentary(commentaryId, bookCodes, chapter, verse);
     }
 
     async getChapterCommentary(commentaryId, bookCodes, chapter) {

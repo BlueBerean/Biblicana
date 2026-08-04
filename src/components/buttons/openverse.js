@@ -216,7 +216,7 @@ async function fetchCommentaryWithFallback({ bookId, chapter, verse, preferredId
 
     for (const id of order) {
         if (id === 'keil-delitzsch' && isNT) continue;
-        const row = await commentaryWrapper.getVerseCommentary(id, bookCodes, chapter, verse);
+        const row = await commentaryWrapper.getCommentaryForVerse(id, bookCodes, chapter, verse);
         if (row?.text) return { commentatorId: id, text: row.text };
     }
     return null;
@@ -333,7 +333,7 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
                     const picked = COMMENTATORS.find(c => c.id === pickedId);
                     if (!picked) return;
 
-                    const row = await commentaryWrapper.getVerseCommentary(pickedId, bookCodes, chapter, verse);
+                    const row = await commentaryWrapper.getCommentaryForVerse(pickedId, bookCodes, chapter, verse);
                     if (!row?.text) {
                         const noDataEmbed = new EmbedBuilder()
                             .setColor(baseEmbedColor())
