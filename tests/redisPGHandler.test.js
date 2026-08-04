@@ -112,7 +112,13 @@ test('the tombstone TTL is much shorter than the real-record TTL', async () => {
         `tombstone TTL (${ttl}s) must be positive and well below the record TTL (${h.handler.expiry}s)`);
 });
 
-test('setValue overwrites the tombstone — no stale null after a write', async () => {
+// NOTE: test NAMES must stay ASCII. Node 18.13 (prod's version) has a TAP lexer
+// that fails on a non-ASCII character in a test description — "Unexpected
+// character: — at line 1, column 0" — and takes the whole FILE down with it,
+// reporting 0 passed. Node 18.20 (local dev) parses it fine, so this only
+// surfaces on the droplet. Em-dashes are fine everywhere else, including inside
+// assertion messages and comments.
+test('setValue overwrites the tombstone: no stale null after a write', async () => {
     const h = makeHandler({ initialRows: [] });
 
     // Guild has no row yet; this caches the absence.
