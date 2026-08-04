@@ -105,11 +105,20 @@ class FathersWrapper {
                    LEFT JOIN father_meta m ON m.name = c.father_name COLLATE NOCASE
                    WHERE c.book IN (${placeholders}) AND c.location_start <= ? AND c.location_end >= ?`;
         if (fatherFilter) {
-            // Escape LIKE wildcards so a user filter of '%' or '_' doesn't bypass
-            // the filter by matching everything. Pair with ESCAPE '\\'.
-            const escaped = fatherFilter.replace(/[\\%_]/g, ch => `\\${ch}`);
-            sql += ` AND c.father_name LIKE ? ESCAPE '\\'`;
-            params.push(`%${escaped}%`);
+            // Punctuation-insensitive match. The DB stores names without
+            // periods ("CS Lewis"), so a bare LIKE '%C.S. Lewis%' matched
+            // nothing — the user typed the name correctly and got no results.
+            //
+            // Normalising BOTH sides fixes the class rather than one author:
+            // "C.S. Lewis", "CS Lewis" and "c s lewis" all collapse to
+            // "cslewis". The nested replace() forces a scan, but the row set is
+            // already bounded by book and location, so it stays cheap.
+            //
+            // Wildcards are still escaped so a filter of '%' or '_' cannot
+            // bypass the filter by matching everything.
+            const normalized = normalizeFatherName(fatherFilter).replace(/[\\%_]/g, ch => `\\${ch}`);
+            sql += ` AND REPLACE(REPLACE(REPLACE(REPLACE(LOWER(c.father_name), '.', ''), ' ', ''), '-', ''), '''', '') LIKE ? ESCAPE '\\'`;
+            params.push(`%${normalized}%`);
         }
         sql += ` ORDER BY c.father_name LIMIT 50`;
         return db.all(sql, params);
@@ -176,6 +185,59 @@ export function displayName(uniqueName) {
     }
 
     return { name, firstRef: ref.replace(/\./g, ' '), structured };
+}
+
+/**
+ * Collapse a Father's name to a punctuation-free, lowercase key.
+ *
+ * Must stay in sync with the SQL expression in getByPassage — both sides of the
+ * comparison have to be normalised identically or the match silently fails.
+ */
+export function normalizeFatherName(name) {
+    return String(name ?? '').toLowerCase().replace(/[.\s'-]/g, '');
+}
+
+/**
+ * Classify a "Church Father" by year.
+ *
+ * The extrabiblical_data collection is really 2,000 years of Christian
+ * commentary under a patristic label: 275 patristic, 36 medieval (Aquinas,
+ * Bernard), 13 modern (C.S. Lewis, Tolkien, and at least one living author).
+ * Presenting any of the latter as "the early church" would be a factual error,
+ * so every surface that shows these rows needs the same classification.
+ *
+ * Lives here rather than in aiChat.js because /fathers needs it too — it was
+ * previously a private function declaration inside the AI tools section, which
+ * is why the slash command shipped without the filter the AI path had.
+ *
+ * default_year is stored as TEXT, so it needs parseInt. 9999 marks
+ * pseudonymous/undated works, which are patristic-adjacent. The patristic era
+ * closes ~AD 800 (John of Damascus).
+ */
+export function classifyFather(yearRaw) {
+    const y = parseInt(yearRaw, 10);
+    if (!Number.isFinite(y) || y === 9999) return { patristic: true, era: 'early Church Father, date uncertain' };
+    if (y <= 800) return { patristic: true, era: `early Church Father, c. AD ${y}` };
+    if (y <= 1499) return { patristic: false, era: `medieval writer (c. ${y}) — NOT a Church Father` };
+    if (y <= 1700) return { patristic: false, era: `Reformation-era writer (c. ${y}) — NOT a Church Father` };
+    return { patristic: false, era: `modern author (c. ${y}) — NOT a Church Father` };
+}
+
+/**
+ * Short, user-facing era label for the /fathers command.
+ *
+ * classifyFather's `era` strings are written to instruct a MODEL (they shout
+ * "NOT a Church Father"), which reads as scolding in a UI. This returns
+ * something suitable for a human: null when the author is genuinely patristic,
+ * a compact tag otherwise.
+ */
+export function fatherEraBadge(yearRaw) {
+    const y = parseInt(yearRaw, 10);
+    if (!Number.isFinite(y) || y === 9999) return null;
+    if (y <= 800) return null;
+    if (y <= 1499) return `Medieval · c. ${y}`;
+    if (y <= 1700) return `Reformation era · c. ${y}`;
+    return `Modern · c. ${y}`;
 }
 
 class PersonsWrapper {

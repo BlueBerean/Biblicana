@@ -9,7 +9,7 @@ import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
 import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
 import {
     commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
-    personsWrapper, placesWrapper, dictionaryWrapper, displayName,
+    personsWrapper, placesWrapper, dictionaryWrapper, displayName, classifyFather,
 } from './studyHelper.js';
 import { searchAllowedWeb, buildWebSourceMap } from './webSearch.js';
 import { readAiMemoryScope } from './aiConfig.js';
@@ -360,8 +360,8 @@ async function buildRagContext(userMessage) {
         // Only genuine patristic-era authors qualify as the lead "Father" in
         // RAG. The collection includes medieval/modern writers (Aquinas, C.S.
         // Lewis, even a living author) that must never be injected as "the early
-        // church" — same filter the lookup_father tool uses. classifyFather is a
-        // hoisted function declaration in the tools section below.
+        // church" — same filter the lookup_father tool uses. classifyFather is
+        // imported from studyHelper.js and shared with the /fathers command.
         const patristicFathers = fathers.filter(row => classifyFather(row.default_year).patristic);
         const leadName = pickMarqueeFather(patristicFathers);
         const leadRow = leadName ? patristicFathers.find(r => r.father_name === leadName) : null;
@@ -793,20 +793,9 @@ async function toolLookupCommentary({ reference, commentator }) {
     return `No commentary found for ${r.bookName} ${r.chapter}:${r.startVerse} from ${who}. Tell the user honestly that you couldn't find a commentary on this verse${requestedLabel ? ` from ${requestedLabel}` : ''} — do not invent one or attribute training-data content to a commentator.`;
 }
 
-// The "fathers" collection (extrabiblical_data) is actually 2,000 years of
-// Christian commentary mislabeled as Fathers — 275 patristic, 36 medieval
-// (Aquinas, Bernard…), 13 modern (C.S. Lewis, Tolkien, even a living author).
-// Classify by default_year (stored as TEXT — parseInt it) so the model never
-// presents a modern as "the early church". 9999 = pseudonymous/undated, which
-// is patristic-adjacent. The patristic era closes ~AD 800 (John of Damascus).
-function classifyFather(yearRaw) {
-    const y = parseInt(yearRaw, 10);
-    if (!Number.isFinite(y) || y === 9999) return { patristic: true, era: 'early Church Father, date uncertain' };
-    if (y <= 800) return { patristic: true, era: `early Church Father, c. AD ${y}` };
-    if (y <= 1499) return { patristic: false, era: `medieval writer (c. ${y}) — NOT a Church Father` };
-    if (y <= 1700) return { patristic: false, era: `Reformation-era writer (c. ${y}) — NOT a Church Father` };
-    return { patristic: false, era: `modern author (c. ${y}) — NOT a Church Father` };
-}
+// classifyFather now lives in studyHelper.js — /fathers needs the same
+// classification, and keeping it private here is exactly why the slash command
+// shipped without the era filter the AI path already had.
 
 function formatFatherResult(row, ref, prefix = '') {
     const { era, patristic } = classifyFather(row.default_year);

@@ -10,7 +10,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { fathersWrapper, pickMarqueeFather } from '../utils/studyHelper.js';
+import { fathersWrapper, pickMarqueeFather, fatherEraBadge } from '../utils/studyHelper.js';
 import { getBookId, numbersToBook, toCommentaryVariants } from '../utils/bookNames.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow, isExpiredInteractionError } from '../utils/paginationHelper.js';
@@ -244,7 +244,18 @@ export default {
                 if (entryCount > 1) suffix += ` · entry ${current.entryIdx + 1}/${entryCount}`;
                 if (current.pagesInEntry > 1) suffix += ` · page ${current.pageInEntryIdx + 1}/${current.pagesInEntry}`;
 
-                const yearLine = entry.default_year ? `*c. ${entry.default_year}*\n` : '';
+                // The collection is 2,000 years of commentary under a patristic
+                // label — 36 medieval writers and 13 moderns (C.S. Lewis,
+                // Tolkien) sit alongside 275 genuine Fathers. The AI path has
+                // filtered these by era for a while; this command did not, so a
+                // 1963 author appeared under a "📜 …" header inside a command
+                // literally called /fathers, with only a bare year to hint
+                // otherwise. Label it plainly instead of hiding the entry —
+                // Lewis on James is worth reading, just not as a Church Father.
+                const eraBadge = fatherEraBadge(entry.default_year);
+                const yearLine = eraBadge
+                    ? `-# ⚠️ ${eraBadge} — a later Christian writer, not an early Church Father.\n\n`
+                    : (entry.default_year ? `*c. ${entry.default_year}*\n` : '');
                 const truncNote = truncatedFathers
                     ? `\n-# Showing top ${FATHERS_DROPDOWN_CAP} of ${orderedNames.length} Fathers. Refine with \`father:<name>\`.`
                     : '';
