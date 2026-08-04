@@ -8,6 +8,26 @@ import guildModel from './schemas/guild.js';
 // injection via crafted keys and silent typos that would hit a nonexistent table.
 const ALLOWED_TABLE_PREFIXES = new Set(['user', 'guild']);
 
+// Negative-cache sentinel. getValue used to cache only HITS, so every key with
+// no Postgres row was a guaranteed cache miss forever: the bot is in 527 guilds
+// but `guilddata` holds ~26 rows, so ~501 guilds hit Postgres on every single
+// read. Redis bore this out — 3,133,480 misses against 82,366 hits (a 2.6% hit
+// rate) with evicted_keys: 0, meaning nothing was evicting the cache, it simply
+// was never populated for those keys.
+//
+// The sentinel is deliberately NOT valid JSON. It is checked before JSON.parse,
+// but if that check were ever bypassed the parse would throw and the existing
+// corrupt-cache handler would fall through to Postgres — so the worst failure
+// mode is a redundant query, never a wrong answer.
+const MISS_SENTINEL = '__MISS__';
+
+// Short TTL, unlike the 6h used for real records. A tombstone is an assertion
+// about absence, and absence is the thing most likely to change out from under
+// us (a guild configuring something for the first time). Writes through
+// setValue overwrite the same key, so the normal path clears it immediately —
+// this TTL only bounds staleness for rows created OUTSIDE setValue.
+const MISS_TTL_SECONDS = 600;
+
 function tableForKey(key) {
     const prefix = String(key).split(':')[0];
     if (!ALLOWED_TABLE_PREFIXES.has(prefix)) {
@@ -28,6 +48,12 @@ class DatabaseHandler {
         this.redis = new Redis(redisConfig);
         this.expiry = redisExpiry;
         this.poolMonitor = null;
+
+        // Cache-effectiveness counters, reported by startPoolMonitor. Held
+        // in-process rather than in Redis so reading them costs nothing, and
+        // reset each reporting window so the numbers describe recent behaviour
+        // rather than lifetime totals.
+        this.cacheStats = { hits: 0, misses: 0, negHits: 0 };
 
         // REQUIRED, not optional telemetry. `pg.Pool` emits 'error' when an
         // IDLE client dies out-of-band — Neon reaping an idle connection, a TLS
@@ -88,6 +114,17 @@ class DatabaseHandler {
             const { totalCount, idleCount, waitingCount } = this.pg;
             if (waitingCount > 0) {
                 logger.warn(`[Database Pool] Saturated — waiting=${waitingCount} total=${totalCount} idle=${idleCount}`);
+            }
+
+            // Cache effectiveness. `negHit` counts reads served entirely from
+            // the negative cache — before tombstones existed every one of those
+            // was a Postgres round trip, and they were the bulk of the traffic.
+            const { hits, misses, negHits } = this.cacheStats;
+            const total = hits + misses + negHits;
+            if (total > 0) {
+                const rate = (((hits + negHits) / total) * 100).toFixed(1);
+                logger.debug(`[Database Cache] hit=${hits} negHit=${negHits} miss=${misses} rate=${rate}% window=${intervalMs / 1000}s`);
+                this.cacheStats = { hits: 0, misses: 0, negHits: 0 };
             }
         }, intervalMs);
         // Don't hold the event loop open on shutdown.
@@ -240,16 +277,29 @@ class DatabaseHandler {
 
     async getValue(key) {
         const cachedValue = await this.redis.get(key);
+
+        // Negative cache hit: we have already asked Postgres for this key and
+        // it had no row. Checked BEFORE the JSON.parse below, since the
+        // sentinel is intentionally not valid JSON.
+        if (cachedValue === MISS_SENTINEL) {
+            this.cacheStats.negHits++;
+            return null;
+        }
+
         if (cachedValue) {
             // A corrupt cache entry (partial write, manual redis-cli set, version
             // skew) must not throw into every getGuildValue/getUserValue caller —
             // treat a parse failure as a cache miss and fall through to Postgres.
             try {
-                return JSON.parse(cachedValue);
+                const parsed = JSON.parse(cachedValue);
+                this.cacheStats.hits++;
+                return parsed;
             } catch (err) {
                 logger.warn(`[Database] Corrupt cache for ${key}; falling through to Postgres: ${err.message}`);
             }
         }
+
+        this.cacheStats.misses++;
 
         const table = tableForKey(key);
         const { rows } = await this.pg.query(
@@ -261,6 +311,18 @@ class DatabaseHandler {
             const value = rows[0].data;
             await this.setValueRedis(key, value);
             return value;
+        }
+
+        // Cache the ABSENCE too. Without this, a key with no row re-queries
+        // Postgres on every read forever. Stored at the same key as a real
+        // value would be, so setValue's write naturally overwrites it — no
+        // separate invalidation path to keep in sync.
+        try {
+            await this.redis.set(key, MISS_SENTINEL, 'EX', MISS_TTL_SECONDS);
+        } catch (err) {
+            // A failed tombstone write is a performance regression, not a
+            // correctness problem — the caller still gets the right answer.
+            logger.warn(`[Database] Could not cache miss for ${key}: ${err.message}`);
         }
 
         return null;
