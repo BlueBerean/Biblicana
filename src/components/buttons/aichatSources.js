@@ -72,7 +72,12 @@ function buildSourceLines(payload) {
         .filter(tool => tool.name !== 'search_web')
         .map(tool => {
             const label = TOOL_LABELS[tool.name] ?? tool.name.replace(/^lookup_/, '').replace(/_/g, ' ');
-            return `${label}: ${tool.subject}`;
+            // The qualifier is the attribution — naming the commentator or
+            // Father matters more than naming the verse, since the verse is
+            // already obvious from the question.
+            return tool.qualifier
+                ? `${label}: ${tool.qualifier} — ${tool.subject}`
+                : `${label}: ${tool.subject}`;
         });
 
     // Markdown links rather than bare URLs: the panel should read as citations,

@@ -289,10 +289,15 @@ function buildSourcePayload({ rag = [], tools = [], web = [] }) {
     for (const call of tools) {
         const subject = toolSubject(call.args);
         if (!subject) continue;
-        const key = `${call.name}|${String(subject).toLowerCase()}`;
+        // Several tools take a second argument that IS the attribution —
+        // which commentator, which Father, which word. Dropping it produced
+        // panel lines like "Commentary: Philippians 4:6", which names the verse
+        // but not who wrote the commentary the answer actually leaned on.
+        const qualifier = call.args?.commentator || call.args?.father || call.args?.word || null;
+        const key = `${call.name}|${String(subject).toLowerCase()}|${String(qualifier ?? '').toLowerCase()}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        cleanTools.push({ name: call.name, subject: String(subject) });
+        cleanTools.push({ name: call.name, subject: String(subject), qualifier: qualifier ? String(qualifier) : null });
     }
 
     // Dedupe web sources by host too — several citations commonly land on the
@@ -384,6 +389,25 @@ async function buildRagContext(userMessage) {
         }
     }
     if (lines.length === 1) return { context: null, sources: [], detail: [] };
+
+    // FOLLOWUPS #23 (RAG/tool redundancy) is deliberately NOT fixed here, and
+    // this comment exists so it isn't attempted again the same way.
+    //
+    // A line was added telling the model it already had the material above and
+    // to skip re-fetching "those same combinations". It was scoped to
+    // combinations precisely so a request for a DIFFERENT commentator would
+    // still fetch. The model read it as "don't look up this verse" and, asked
+    // "what does Matthew Henry say about Philippians 4:6", replied that it
+    // didn't have Henry's note and offered to go find it — declining the exact
+    // lookup the user had asked for, while Clarke sat in context.
+    //
+    // The trade is bad in both directions: the redundancy costs a few hundred
+    // tokens on verses that were going to be answered anyway, while the cure
+    // caused the bot to refuse a direct request. If this is ever worth doing,
+    // do it DETERMINISTICALLY — have lookup_commentary detect that the
+    // requested commentator+reference is already in context and return a short
+    // "already provided above" — rather than asking the model to reason about
+    // what it must not do.
     return { context: lines.join('\n'), sources, detail };
 }
 
