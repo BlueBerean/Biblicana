@@ -31,32 +31,79 @@ export default {
             });
         }
 
-        // ACK FIRST — see configDailyEnabled.js for the full rationale. Every
-        // check above is synchronous; the save + read below are Neon round-trips
-        // that can outlast Discord's 3-second acknowledgement window.
-        await interaction.deferUpdate();
+        // Ack-budget instrumentation. Kept (at debug) because "This interaction
+        // failed" on this panel is a recurring, intermittent report going back
+        // to the 2026-07-19 Neon outage, and the two possible causes are
+        // indistinguishable from the user's side:
+        //
+        //   age    = budget already gone before our code ran, from Discord's own
+        //            snowflake timestamp. Large here means the interaction was
+        //            delivered late — deferring earlier cannot help.
+        //   defer  = the ack round-trip itself.
+        //   save/read/edit/follow = each subsequent DB or API call.
+        //
+        // Healthy baseline measured locally: ackBy ~120-165ms against 3000ms.
+        // If a future report shows NO line at all, Discord never delivered the
+        // interaction and the bot is not involved.
+        const t = { age: Date.now() - interaction.createdTimestamp };
+        const mark = (k, from) => { t[k] = Date.now() - from; };
 
-        const saved = await saveDailyVerseConfig(database, interaction.guildId, { hour });
-        if (!saved) {
-            // Already acknowledged, so this must be a followUp, not a reply.
-            return interaction.followUp({
-                content: '⚠️ Could not save. Try again in a moment.',
-                flags: MessageFlags.Ephemeral,
-            });
-        }
-
+        let step = 'deferUpdate';
         try {
+            let m = Date.now();
+            await interaction.deferUpdate();
+            mark('defer', m);
+
+            step = 'save';
+            m = Date.now();
+            const saved = await saveDailyVerseConfig(database, interaction.guildId, { hour });
+            mark('save', m);
+
+            if (!saved) {
+                logger.warn(`[ConfigDaily Hour] save returned false — age=${t.age}ms defer=${t.defer}ms save=${t.save}ms`);
+                // Already acknowledged, so this must be a followUp, not a reply.
+                return interaction.followUp({
+                    content: '⚠️ Could not save. Try again in a moment.',
+                    flags: MessageFlags.Ephemeral,
+                });
+            }
+
+            step = 'read';
+            m = Date.now();
             const current = await readDailyVerseConfig(database, interaction.guildId);
+            mark('read', m);
+
+            step = 'editReply';
+            m = Date.now();
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
                 components: buildDailyVerseConfigView({ current }),
             });
+            mark('edit', m);
+
+            step = 'followUp';
+            m = Date.now();
             await interaction.followUp({
                 content: `✅ Post time set to **${String(hour).padStart(2, '0')}:00 UTC**. Next post at that hour tomorrow (or today if the hour hasn't passed yet).`,
                 flags: MessageFlags.Ephemeral,
             });
+            mark('follow', m);
+
+            logger.debug(
+                `[ConfigDaily Hour] TIMING age=${t.age}ms defer=${t.defer}ms save=${t.save}ms `
+                + `read=${t.read}ms edit=${t.edit}ms follow=${t.follow}ms `
+                + `ackBy=${t.age + t.defer}ms (budget 3000ms)`
+            );
         } catch (err) {
-            logger.error(`[ConfigDaily Hour] Update failed for ${interaction.guildId}: ${err.message}`);
+            // Logs the FAILING STEP and the error code, which the previous
+            // catch discarded — a bare message hid whether this was 10062
+            // (too slow), 40060 (double ack), or a payload rejection.
+            logger.error(
+                `[ConfigDaily Hour] FAILED at step=${step} code=${err?.code ?? 'none'} status=${err?.status ?? 'none'} `
+                + `msg=${err.message} | age=${t.age}ms defer=${t.defer ?? '-'}ms save=${t.save ?? '-'}ms `
+                + `read=${t.read ?? '-'}ms edit=${t.edit ?? '-'}ms`
+            );
+            if (err?.rawError) logger.error(`[ConfigDaily Hour] rawError: ${JSON.stringify(err.rawError)}`);
         }
     },
 };
