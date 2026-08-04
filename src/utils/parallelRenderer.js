@@ -8,6 +8,7 @@ import {
 } from 'discord.js';
 import { bibleWrapper } from './bibleHelper.js';
 import { numbersToBook } from './bookNames.js';
+import { respondToInteraction } from './paginationHelper.js';
 import { accentColor, footerLine } from './theme.js';
 import { isExpiredInteractionError } from './paginationHelper.js';
 import logger from './logger.js';
@@ -171,9 +172,12 @@ export async function setupParallelPagination({ interaction, data, pages, flags,
 export async function renderParallelEphemeral({ interaction, bookId, chapter, verse, primaryTranslation = null }) {
     const data = await fetchParallelData({ bookId, chapter, verse, primaryTranslation });
     if (!data || data.lines.length === 0) {
-        await interaction.reply({
-            content: `No translations found for this verse.`,
-            flags: MessageFlags.Ephemeral
+        // V2 components rather than `content`, so this path works identically
+        // whether or not the caller deferred with IsComponentsV2 — the two
+        // response shapes are mutually exclusive once a defer locks one in.
+        await respondToInteraction(interaction, {
+            flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+            components: [new TextDisplayBuilder().setContent('No translations found for this verse.')],
         });
         return;
     }
@@ -181,7 +185,8 @@ export async function renderParallelEphemeral({ interaction, bookId, chapter, ve
     const pages = packParallelPages(data.lines);
     const flags = MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral;
 
-    await interaction.reply({
+    // respondToInteraction, not reply() — see interlinearRenderer for rationale.
+    await respondToInteraction(interaction, {
         flags,
         components: buildParallelPage({ data, pages, pageIdx: 0 })
     });

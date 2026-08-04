@@ -27,19 +27,71 @@ class DatabaseHandler {
         this.pg = new pg.Pool(postgresConfig);
         this.redis = new Redis(redisConfig);
         this.expiry = redisExpiry;
+        this.poolMonitor = null;
+
+        // REQUIRED, not optional telemetry. `pg.Pool` emits 'error' when an
+        // IDLE client dies out-of-band — Neon reaping an idle connection, a TLS
+        // reset, `Connection terminated unexpectedly`. Node treats an 'error'
+        // event with no listener as an uncaught exception and KILLS the
+        // process. This listener is what stops an ordinary Neon idle-reap from
+        // restarting the bot.
+        this.pg.on('error', (err) => {
+            logger.error(`[Database Pool] Idle client error: ${err.message} (code=${err.code ?? 'none'})`);
+        });
 
         this.redis.on('connect', () => {
             logger.debug('[Database] Connected to Redis');
         });
+        this.redis.on('error', (err) => {
+            logger.error(`[Database] Redis error: ${err.message}`);
+        });
     }
 
-    async initialize() {
+    async initialize({ retries = 3, backoffMs = 2000 } = {}) {
         logger.debug('[Database] Initializing Database Handler...');
-        await this.createTables();
-        // Probe that the pool can actually execute queries — createTables can
-        // succeed against a cached schema while the session is unusable.
-        await this.pg.query('SELECT 1');
-        logger.info('[Database] Database Handler Initialized.');
+
+        // Retry with backoff: a Neon endpoint in autosuspend can take longer to
+        // wake than `connectionTimeoutMillis` allows, and a bot that boots while
+        // the DB is cold would otherwise come up permanently DB-less until the
+        // next restart. Transient wake failures are expected; only give up after
+        // several attempts.
+        let delay = backoffMs;
+        for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+                await this.createTables();
+                // Probe that the pool can actually execute queries — createTables can
+                // succeed against a cached schema while the session is unusable.
+                await this.pg.query('SELECT 1');
+                logger.info(`[Database] Database Handler Initialized${attempt > 1 ? ` (attempt ${attempt}/${retries})` : ''}.`);
+                this.startPoolMonitor();
+                return;
+            } catch (err) {
+                if (attempt === retries) {
+                    logger.error(`[Database] Init failed after ${retries} attempts: ${err.message}`);
+                    throw err;
+                }
+                logger.warn(`[Database] Init attempt ${attempt}/${retries} failed: ${err.message} — retrying in ${delay}ms`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2;
+            }
+        }
+    }
+
+    // Periodic pool-saturation telemetry. Deliberately silent when healthy: it
+    // logs only when callers are actually QUEUED waiting for a connection, which
+    // is the leading indicator of the exhaustion the pool timeouts exist to
+    // bound. `waiting > 0` sustained across ticks means the pool is the
+    // bottleneck, not the database.
+    startPoolMonitor(intervalMs = 60000) {
+        if (this.poolMonitor) return;
+        this.poolMonitor = setInterval(() => {
+            const { totalCount, idleCount, waitingCount } = this.pg;
+            if (waitingCount > 0) {
+                logger.warn(`[Database Pool] Saturated — waiting=${waitingCount} total=${totalCount} idle=${idleCount}`);
+            }
+        }, intervalMs);
+        // Don't hold the event loop open on shutdown.
+        this.poolMonitor.unref?.();
     }
 
     async createTables() {
@@ -89,6 +141,35 @@ class DatabaseHandler {
 
     async deleteGuildValue(id) {
         return this.deleteValue(`guild:${id}`);
+    }
+
+    // Single-query lookup of every guild with daily verse enabled.
+    //
+    // Replaces the scheduler's previous pattern of iterating
+    // `client.guilds.cache` (527 guilds) and calling getGuildValue on each one
+    // every 5 minutes: ~144,000 queries/day to find ~14 guilds, and the single
+    // largest consumer of the Neon compute quota during the 2026-07-19 outage
+    // (`[DailyVerse]` was 153,555 of 171,238 quota errors).
+    //
+    // Deliberately bypasses Redis. This is a whole-table predicate, not a key
+    // lookup, so there is no single cache key that could represent it — and
+    // caching it would be actively wrong, since a guild toggling daily verse
+    // off must take effect on the next tick. Per-guild writes still go through
+    // the normal cached path via saveDailyVerseConfig.
+    async getDailyVerseGuilds() {
+        const { rows } = await this.pg.query(
+            `SELECT id, data FROM guilddata WHERE data->'dailyVerse'->>'enabled' = 'true'`
+        );
+
+        logger.debug(`[Database] getDailyVerseGuilds — ${rows.length} enabled guild(s) in one query`);
+
+        // The `id` column holds the namespaced key (`guild:<snowflake>`) because
+        // that is what setValue writes. Strip the prefix so callers get raw
+        // guild IDs they can hand straight to `client.guilds.cache.get()`.
+        return rows.map(row => ({
+            guildId: String(row.id).replace(/^guild:/, ''),
+            dailyVerse: row.data?.dailyVerse ?? null,
+        }));
     }
 
     // Fixed-window rate limit on a (scope, userId) pair. Returns
@@ -296,6 +377,10 @@ class DatabaseHandler {
     }
 
     async close() {
+        if (this.poolMonitor) {
+            clearInterval(this.poolMonitor);
+            this.poolMonitor = null;
+        }
         await this.redis.quit();
         await this.pg.end();
         logger.info('[Database] Disconnected from Redis and Postgres');

@@ -17,6 +17,28 @@ export function isExpiredInteractionError(err) {
     return EXPIRED_INTERACTION_CODES.has(err?.code);
 }
 
+/**
+ * Send an interaction response whether or not the caller already deferred.
+ *
+ * Renderers are shared between handlers that defer first (so the ack beats
+ * Discord's 3-second window) and older call sites that reply directly.
+ * Hard-coding `interaction.reply()` inside a renderer is what made the slow
+ * handlers unfixable: the RENDERER owned the ack, so no caller could ack
+ * earlier without causing 40060 "already acknowledged". This inverts that —
+ * the caller owns the ack, the renderer just supplies content.
+ *
+ * IMPORTANT: the response SHAPE is locked at defer time and the shapes are
+ * mutually exclusive. A caller that defers with IsComponentsV2 must receive
+ * `components` here, never `content`, and ephemerality cannot be changed after
+ * the fact — defer with the same flags the renderer will ultimately use.
+ */
+export async function respondToInteraction(interaction, payload) {
+    if (interaction.deferred || interaction.replied) {
+        return interaction.editReply(payload);
+    }
+    return interaction.reply(payload);
+}
+
 export function buildPageNavRow({ pageIdx, totalPages, disabled = false }) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()

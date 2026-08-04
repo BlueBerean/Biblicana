@@ -2,6 +2,7 @@ import {
     SlashCommandBuilder,
     MessageFlags,
     PermissionFlagsBits,
+    TextDisplayBuilder,
 } from 'discord.js';
 import { buildConfigView, readPassiveMode } from '../utils/passiveConfig.js';
 import { buildAiConfigView, readAiEnabled, readAiMemoryScope, readAiChannels } from '../utils/aiConfig.js';
@@ -40,10 +41,17 @@ export default {
         }
 
         const sub = interaction.options.getSubcommand();
+
+        // ACK FIRST. Every branch below reads guild config from Neon before it
+        // can render anything, so there is no fast path — on a cold endpoint
+        // this is exactly the shape that produced "This interaction failed"
+        // during the 2026-07-19 outage.
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+
         try {
             if (sub === 'passive') {
                 const currentPassiveMode = await readPassiveMode(database, interaction.guildId);
-                return interaction.reply({
+                return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
                     components: buildConfigView({ currentPassiveMode }),
                 });
@@ -54,28 +62,29 @@ export default {
                     readAiMemoryScope(database, interaction.guildId),
                     readAiChannels(database, interaction.guildId),
                 ]);
-                return interaction.reply({
+                return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
                     components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels }),
                 });
             }
             if (sub === 'daily') {
                 const current = await readDailyVerseConfig(database, interaction.guildId);
-                return interaction.reply({
+                return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
                     components: buildDailyVerseConfigView({ current }),
                 });
             }
-            return interaction.reply({
-                content: `Unknown subcommand: ${sub}`,
-                flags: MessageFlags.Ephemeral,
+            // V2 components, not `content` — the defer above locked the shape.
+            return interaction.editReply({
+                flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                components: [new TextDisplayBuilder().setContent(`Unknown subcommand: ${sub}`)],
             });
         } catch (err) {
             logger.error(`[Config Command] Failed to render ${sub} panel: ${err.message}`);
             try {
-                await interaction.reply({
-                    content: '⚠️ Could not load configuration right now.',
-                    flags: MessageFlags.Ephemeral,
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                    components: [new TextDisplayBuilder().setContent('⚠️ Could not load configuration right now.')],
                 });
             } catch { /* expired */ }
         }

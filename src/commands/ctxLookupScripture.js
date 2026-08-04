@@ -4,9 +4,11 @@ import {
     ApplicationIntegrationType,
     InteractionContextType,
     MessageFlags,
+    TextDisplayBuilder,
 } from 'discord.js';
 import { parseScriptureRefs } from '../utils/scriptureRefs.js';
 import { renderBibleEphemeral } from '../utils/bibleRenderer.js';
+import { respondToInteraction } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 
 // Message context-menu: right-click any message → Apps → "Look up scripture".
@@ -37,6 +39,13 @@ export default {
             });
         }
 
+        // ACK FIRST. Everything above is synchronous (string assembly + regex
+        // parse), so this is the last point before I/O — a user preference read
+        // followed by a verse fetch. Deferred flags must match what
+        // renderBibleEphemeral ultimately sends, since the response shape is
+        // locked here and V2/content are mutually exclusive.
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+
         // Pick the first ref with a concrete verse; fall back to the first ref
         // at all (chapter-only). renderBibleEphemeral handles both.
         const ref = refs.find(r => r.startVerse != null) ?? refs[0];
@@ -66,11 +75,16 @@ export default {
             }
         } catch (err) {
             logger.error(`[CtxLookup] Render failed: ${err.message}`);
-            if (!interaction.replied) {
-                try {
-                    await interaction.reply({ content: '⚠️ Could not load that reference.', flags: MessageFlags.Ephemeral });
-                } catch { /* expired */ }
-            }
+            // The old `!interaction.replied` guard is wrong now that we defer:
+            // after deferReply, `replied` is false but `deferred` is true, so a
+            // bare reply() here would throw 40060 "already acknowledged".
+            // respondToInteraction picks reply vs editReply correctly.
+            try {
+                await respondToInteraction(interaction, {
+                    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                    components: [new TextDisplayBuilder().setContent('⚠️ Could not load that reference.')],
+                });
+            } catch { /* expired */ }
         }
     },
 };

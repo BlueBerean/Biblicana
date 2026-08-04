@@ -31,9 +31,18 @@ export default {
             });
         }
 
+        // ACK FIRST. Everything above is synchronous — option parsing and
+        // permission bits already resolved on the interaction — so this is the
+        // last point before I/O. The save + read below are two Neon round-trips;
+        // on a cold endpoint they exceed the 3-second window and the user sees
+        // "This interaction failed". Reproduced live during the 2026-07-19 Neon
+        // outage, where the retry succeeded once both layers were warm.
+        await interaction.deferUpdate();
+
         const saved = await saveDailyVerseConfig(database, interaction.guildId, { enabled: picked === 'on' });
         if (!saved) {
-            return interaction.reply({
+            // Already acknowledged, so this must be a followUp, not a reply.
+            return interaction.followUp({
                 content: '⚠️ Could not save. Try again in a moment.',
                 flags: MessageFlags.Ephemeral,
             });
@@ -43,7 +52,7 @@ export default {
 
         try {
             const current = await readDailyVerseConfig(database, interaction.guildId);
-            await interaction.update({
+            await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
                 components: buildDailyVerseConfigView({ current }),
             });

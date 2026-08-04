@@ -87,18 +87,45 @@ export async function runDailyVerseTick(client, database) {
 
         let candidates = 0;
         let posted = 0;
+        let orphaned = 0;
 
-        for (const guild of client.guilds.cache.values()) {
+        // ONE query for every guild with daily verse enabled, rather than one
+        // query per guild in the client cache. The old shape issued ~527
+        // queries every 5 minutes (~144,000/day) to find ~14 guilds, and was
+        // the largest single consumer of the Neon compute quota.
+        //
+        // A failure here aborts the whole tick rather than degrading to a
+        // partial run: without the enabled list there is nothing to iterate,
+        // and silently posting to zero guilds would look identical to "no
+        // guilds are due right now."
+        let enabledGuilds;
+        try {
+            enabledGuilds = await database.getDailyVerseGuilds();
+        } catch (err) {
+            logger.error(`[DailyVerse] Could not load enabled guilds; skipping tick: ${err.message}`);
+            return;
+        }
+
+        for (const { guildId, dailyVerse: dv } of enabledGuilds) {
             try {
-                const g = await database.getGuildValue(guild.id);
-                const dv = g?.dailyVerse;
-                if (!dv?.enabled) continue;
+                if (!dv) continue;
                 if (!dv.channelId || typeof dv.hour !== 'number') continue;
                 if (dv.hour !== currentHourUTC) continue;
                 if (dv.lastPostedDate === today) continue;
 
-                const memoKey = `${guild.id}:${today}`;
+                const memoKey = `${guildId}:${today}`;
                 if (postedThisProcess.has(memoKey)) continue;   // posted this process; durable write may have failed
+
+                // A guilddata row outlives the bot's membership — a server that
+                // removed the bot keeps its row until pruned. Previously this
+                // case was impossible (we iterated the live cache); now the DB
+                // is the source of truth, so orphaned rows must be skipped
+                // explicitly rather than throwing on a missing guild.
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) {
+                    orphaned++;
+                    continue;
+                }
 
                 candidates++;
                 const success = await postDailyVerseToGuild(guild, dv, database);
@@ -106,19 +133,31 @@ export async function runDailyVerseTick(client, database) {
                     // Mark in-memory FIRST so a failed durable write can't cause a
                     // re-post on the next tick within this process lifetime.
                     postedThisProcess.add(memoKey);
-                    const persisted = await saveDailyVerseConfig(database, guild.id, { lastPostedDate: today });
+                    const persisted = await saveDailyVerseConfig(database, guildId, { lastPostedDate: today });
                     if (persisted === false) {
-                        logger.error(`[DailyVerse] Posted to ${guild.id} but FAILED to persist lastPostedDate — in-memory guard prevents re-post until restart.`);
+                        logger.error(`[DailyVerse] Posted to ${guildId} but FAILED to persist lastPostedDate — in-memory guard prevents re-post until restart.`);
                     }
                     posted++;
                 }
             } catch (err) {
-                logger.error(`[DailyVerse] Tick error for guild ${guild.id}: ${err.message}`);
+                logger.error(`[DailyVerse] Tick error for guild ${guildId}: ${err.message}`);
             }
         }
 
+        const elapsedMs = Date.now() - now.getTime();
+
+        if (orphaned > 0) {
+            logger.warn(`[DailyVerse] ${orphaned} enabled guild(s) have rows but the bot is no longer a member — candidates for pruning.`);
+        }
+
+        // Always emit a tick line at debug so the query-count reduction is
+        // verifiable in the logs; promote to info only when work happened, to
+        // keep the 288 ticks/day from flooding prod at info level.
+        const summary = `hour=${currentHourUTC}UTC enabled=${enabledGuilds.length} candidates=${candidates} posted=${posted} orphaned=${orphaned} elapsed=${elapsedMs}ms queries=1`;
         if (candidates > 0) {
-            logger.info(`[DailyVerse] Tick complete: hour=${currentHourUTC}UTC candidates=${candidates} posted=${posted}`);
+            logger.info(`[DailyVerse] Tick complete: ${summary}`);
+        } else {
+            logger.debug(`[DailyVerse] Tick complete: ${summary}`);
         }
     } finally {
         tickInFlight = false;

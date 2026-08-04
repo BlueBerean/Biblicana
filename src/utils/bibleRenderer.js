@@ -9,6 +9,7 @@ import {
 import { bibleWrapper } from './bibleHelper.js';
 import { numbersToBook } from './bookNames.js';
 import { accentColor, footerLine } from './theme.js';
+import { respondToInteraction } from './paginationHelper.js';
 
 const MAX_BODY_CHARS = 3800;
 
@@ -117,14 +118,19 @@ export function buildBibleComponents({ data, includeActionRow = true }) {
 export async function renderBibleEphemeral({ interaction, bookId, chapter, startVerse, endVerse = null, translation }) {
     const data = await fetchBibleVerseData({ bookId, chapter, startVerse, endVerse, translation });
     if (!data) {
-        await interaction.reply({
-            content: `Couldn't fetch this passage in ${translation.toUpperCase()}.`,
-            flags: MessageFlags.Ephemeral
+        // Rendered as a V2 TextDisplay rather than plain `content`: callers now
+        // defer with IsComponentsV2 before calling in, and the two response
+        // shapes are mutually exclusive once the defer has locked one in.
+        await respondToInteraction(interaction, {
+            flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+            components: [new TextDisplayBuilder().setContent(
+                `Couldn't fetch this passage in ${translation.toUpperCase()}.`
+            )],
         });
         return;
     }
 
-    await interaction.reply({
+    await respondToInteraction(interaction, {
         flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
         components: buildBibleComponents({ data, includeActionRow: true })
     });

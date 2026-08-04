@@ -8,6 +8,7 @@ import {
     MessageFlags
 } from 'discord.js';
 import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
+import { respondToInteraction } from './paginationHelper.js';
 import { numbersToBook } from './bookNames.js';
 import { isExpiredInteractionError } from './paginationHelper.js';
 import logger from './logger.js';
@@ -312,7 +313,10 @@ export async function renderInterlinearEphemeral({ interaction, bookId, chapter,
 
     const flags = MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral;
 
-    await interaction.reply({
+    // respondToInteraction, not reply(): callers that ack first (the context
+    // menu command) arrive here already deferred, and reply() would throw
+    // 40060. Callers that haven't deferred still get a plain reply.
+    await respondToInteraction(interaction, {
         flags,
         components: buildInterlinearPage({ data, pageIdx: 0, wordsPerPage, totalPages })
     });

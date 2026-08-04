@@ -51,6 +51,12 @@ export default {
             });
         }
 
+        // ACK FIRST — see configDailyEnabled.js for the full rationale. This
+        // handler acks EARLIER than its sibling selects because it READS before
+        // it decides what to save: everything from here down is either I/O or
+        // depends on the result of I/O, so there is no later safe point.
+        await interaction.deferUpdate();
+
         const current = await readDailyVerseConfig(database, interaction.guildId);
 
         let patch;
@@ -61,7 +67,8 @@ export default {
             const channelId = current.channelId || pickDefaultChannelId(interaction.guild);
             const hour = typeof current.hour === 'number' ? current.hour : DEFAULT_HOUR_UTC;
             if (!channelId) {
-                return interaction.reply({
+                // Already acknowledged above, so this must be a followUp.
+                return interaction.followUp({
                     content: '⚠️ No postable text channel found in this server. Grant me access to a channel, then try again.',
                     flags: MessageFlags.Ephemeral,
                 });
@@ -76,7 +83,8 @@ export default {
 
         const saved = await saveDailyVerseConfig(database, interaction.guildId, patch);
         if (!saved) {
-            return interaction.reply({
+            // Already acknowledged, so this must be a followUp, not a reply.
+            return interaction.followUp({
                 content: '⚠️ Could not save. Try again in a moment.',
                 flags: MessageFlags.Ephemeral,
             });
@@ -87,7 +95,7 @@ export default {
             // (including channelId / hour if they were just set).
             const existing = await database.getGuildValue(interaction.guildId) ?? {};
             const refreshedDaily = existing.dailyVerse ?? {};
-            await interaction.update({
+            await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
                 components: buildWelcomeCard({
                     currentPassiveMode: existing.passiveMode ?? 'react_biblebot',

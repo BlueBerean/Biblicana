@@ -103,9 +103,14 @@ export default {
         } catch (err) {
             logger.error(`[CtxCommentary] Failed: ${err.message}`);
             try {
+                // Must stay a V2 components edit. The reply was deferred with
+                // IsComponentsV2, and V2 vs `content` are mutually exclusive —
+                // the previous `content` version was silently rejected by
+                // Discord and swallowed by this catch, leaving the user staring
+                // at a "thinking..." spinner forever whenever this path ran.
                 await interaction.editReply({
-                    flags: MessageFlags.Ephemeral,
-                    content: '⚠️ Could not load commentary right now.',
+                    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                    components: [new TextDisplayBuilder().setContent('⚠️ Could not load commentary right now.')],
                 });
             } catch { /* expired */ }
         }

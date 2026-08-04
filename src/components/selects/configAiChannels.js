@@ -35,9 +35,15 @@ export default {
         // an empty array is valid and clears the restriction.
         const channelIds = interaction.values ?? [];
 
+        // ACK FIRST — see configDailyEnabled.js for the full rationale. Every
+        // check above is synchronous; the save + reads below are Neon
+        // round-trips that can outlast Discord's 3-second ack window.
+        await interaction.deferUpdate();
+
         const saved = await saveAiChannels(database, interaction.guildId, channelIds);
         if (!saved) {
-            return interaction.reply({
+            // Already acknowledged, so this must be a followUp, not a reply.
+            return interaction.followUp({
                 content: '⚠️ Could not save that right now. Try again in a moment.',
                 flags: MessageFlags.Ephemeral,
             });
@@ -48,7 +54,7 @@ export default {
                 readAiEnabled(database, interaction.guildId),
                 readAiMemoryScope(database, interaction.guildId),
             ]);
-            await interaction.update({
+            await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
                 components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels: channelIds }),
             });

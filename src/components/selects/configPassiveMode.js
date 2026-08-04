@@ -33,9 +33,15 @@ export default {
             });
         }
 
+        // ACK FIRST — see configDailyEnabled.js for the full rationale. Every
+        // check above is synchronous; savePassiveMode below is a Neon round-trip
+        // that can outlast Discord's 3-second acknowledgement window.
+        await interaction.deferUpdate();
+
         const saved = await savePassiveMode(database, interaction.guildId, picked);
         if (!saved) {
-            return interaction.reply({
+            // Already acknowledged, so this must be a followUp, not a reply.
+            return interaction.followUp({
                 content: '⚠️ Could not save that setting right now. Try again in a moment.',
                 flags: MessageFlags.Ephemeral,
             });
@@ -44,7 +50,7 @@ export default {
         const pickedLabel = PASSIVE_MODE_OPTIONS.find(o => o.value === picked)?.label ?? picked;
 
         try {
-            await interaction.update({
+            await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
                 components: buildConfigView({ currentPassiveMode: picked }),
             });

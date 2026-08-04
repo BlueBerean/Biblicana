@@ -26,6 +26,12 @@ export default {
         .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
 
     async execute(interaction, database) {
+        // ACK FIRST — readAiMemoryScope hits Neon and clearChatMemory hits
+        // Redis before we can say anything back, and a cold DB pushes that past
+        // Discord's 3-second window. No V2 flag here: this command replies with
+        // plain `content`, and the shape is locked at defer time.
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         let scopeKey;
         let scopeDescription;
         if (interaction.inGuild()) {
@@ -46,12 +52,12 @@ export default {
             const cleared = await database.clearChatMemory(scopeKey);
             if (cleared > 0) {
                 logger.info(`[Forget] Cleared chat memory scope=${scopeKey} by user=${interaction.user.id}`);
-                await interaction.reply({
+                await interaction.editReply({
                     content: `🗑️ Forgotten. ${scopeDescription.charAt(0).toUpperCase() + scopeDescription.slice(1)} has been erased.`,
                     flags: MessageFlags.Ephemeral,
                 });
             } else {
-                await interaction.reply({
+                await interaction.editReply({
                     content: `No conversation history to forget for ${scopeDescription}. We're starting fresh anyway.`,
                     flags: MessageFlags.Ephemeral,
                 });
@@ -59,7 +65,7 @@ export default {
         } catch (err) {
             logger.error(`[Forget] Failed for user=${interaction.user.id}: ${err.message}`);
             try {
-                await interaction.reply({
+                await interaction.editReply({
                     content: `⚠️ Couldn't clear memory right now. Try again in a moment.`,
                     flags: MessageFlags.Ephemeral,
                 });

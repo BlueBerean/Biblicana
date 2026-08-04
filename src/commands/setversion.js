@@ -35,6 +35,14 @@ export default {
         const userName = interaction.user.username;
 
         try {
+            // ACK FIRST, before any I/O. Two Neon round-trips follow
+            // (getUserValue, then update/set); on a cold endpoint those can
+            // exceed Discord's 3-second acknowledgement window, which is how
+            // this command became one of the top DiscordAPIError[10062] sources
+            // in the prod logs. Nothing below needs to run before the ack, so
+            // there is no reason for the ack to sit behind the database.
+            await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+
             logger.info(`[SetVersion Command] User ${userName} (${userId}) attempting to set default translation to ${translation}`);
 
             const userExists = await database.getUserValue(userId);
@@ -63,7 +71,7 @@ export default {
                 ))
                 .addTextDisplayComponents(new TextDisplayBuilder().setContent(footerLine()));
 
-            await interaction.reply({
+            await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
                 components: [container],
             });
@@ -71,9 +79,15 @@ export default {
         } catch (error) {
             logger.error(`[SetVersion Command] Error setting translation for ${userName} (${userId}) to ${translation}: ${error.message}`, error.stack);
             try {
-                await interaction.reply({
-                    content: '❌ Sorry, there was an error saving your preference. Please try again later.',
-                    flags: MessageFlags.Ephemeral
+                // The reply was deferred with IsComponentsV2, which locks the
+                // response shape to components — a `content` edit is rejected
+                // as mutually exclusive, so the error must render as a V2
+                // TextDisplay too.
+                await interaction.editReply({
+                    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                    components: [new TextDisplayBuilder().setContent(
+                        '❌ Sorry, there was an error saving your preference. Please try again later.'
+                    )],
                 });
             } catch (replyError) {
                 if (replyError.code !== 10062 && replyError.code !== 40060) {

@@ -4,9 +4,11 @@ import {
     ApplicationIntegrationType,
     InteractionContextType,
     MessageFlags,
+    TextDisplayBuilder,
 } from 'discord.js';
 import { parseScriptureRefs } from '../utils/scriptureRefs.js';
 import { renderInterlinearEphemeral } from '../utils/interlinearRenderer.js';
+import { respondToInteraction } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
 
 // Message context-menu: right-click any message → Apps → "Show interlinear".
@@ -35,6 +37,12 @@ export default {
             });
         }
 
+        // ACK FIRST. Everything above is synchronous (string assembly + regex
+        // parse); below is a preference read plus the interlinear fetch, which
+        // joins bible.db and strongs.db. Flags must match what
+        // renderInterlinearEphemeral sends, since the defer locks the shape.
+        await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+
         let translation = 'BSB';
         try {
             const pref = await database.getUserValue(interaction.user.id);
@@ -51,11 +59,15 @@ export default {
             });
         } catch (err) {
             logger.error(`[CtxInterlinear] Render failed: ${err.message}`);
-            if (!interaction.replied) {
-                try {
-                    await interaction.reply({ content: '⚠️ Could not load the interlinear view.', flags: MessageFlags.Ephemeral });
-                } catch { /* expired */ }
-            }
+            // The old `!interaction.replied` guard is wrong now that we defer:
+            // after deferReply, `replied` is false but `deferred` is true, so a
+            // bare reply() here would throw 40060 "already acknowledged".
+            try {
+                await respondToInteraction(interaction, {
+                    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+                    components: [new TextDisplayBuilder().setContent('⚠️ Could not load the interlinear view.')],
+                });
+            } catch { /* expired */ }
         }
     },
 };

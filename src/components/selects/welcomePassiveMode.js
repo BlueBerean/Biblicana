@@ -38,9 +38,15 @@ export default {
             });
         }
 
+        // ACK FIRST — see configDailyEnabled.js for the full rationale. Every
+        // check above is synchronous; the save + getGuildValue below are Neon
+        // round-trips that can outlast Discord's 3-second ack window.
+        await interaction.deferUpdate();
+
         const saved = await savePassiveMode(database, interaction.guildId, picked);
         if (!saved) {
-            return interaction.reply({
+            // Already acknowledged, so this must be a followUp, not a reply.
+            return interaction.followUp({
                 content: '⚠️ Could not save that setting right now. Try again in a moment.',
                 flags: MessageFlags.Ephemeral,
             });
@@ -53,7 +59,7 @@ export default {
             // Also read the current aiEnabled so the AI select doesn't reset
             // to its default when only the passive select was touched.
             const existing = await database.getGuildValue(interaction.guildId) ?? {};
-            await interaction.update({
+            await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
                 components: buildWelcomeCard({
                     currentPassiveMode: picked,
