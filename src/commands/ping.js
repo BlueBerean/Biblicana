@@ -10,7 +10,17 @@ export default {
         .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel),
     async execute(interaction) {
         try {
-            const sent = await interaction.reply({ content: 'Pinging...', fetchReply: true });
+            // withResponse replaces the deprecated `fetchReply: true` reply
+            // OPTION, which emitted a warning on every /ping. Note this is the
+            // option that was deprecated, not the standalone
+            // interaction.fetchReply() method used elsewhere in the codebase —
+            // that one is still current.
+            const response = await interaction.reply({ content: 'Pinging...', withResponse: true });
+
+            // Fall back rather than throw: this command exists to report
+            // latency, and the WebSocket ping below is still measurable even if
+            // the callback resource is missing.
+            const sent = response?.resource?.message ?? await interaction.fetchReply();
 
             const wsPing = interaction.client.ws.ping;
             const apiLatency = sent.createdTimestamp - interaction.createdTimestamp;
