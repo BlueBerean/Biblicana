@@ -160,6 +160,73 @@ test('a corrupt cache entry falls through to Postgres instead of throwing', asyn
     assert.equal(h.selectCount(), 1, 'corrupt cache must fall through, not throw');
 });
 
+// --- daily-verse guild list caching ----------------------------------------
+// Not a query-count optimisation: Neon bills for time the endpoint is AWAKE and
+// autosuspends after ~5 minutes idle. The scheduler ticks every 5 minutes, so
+// even one query per tick resets the idle timer forever — the endpoint ran
+// continuously from 2026-06-30 (when the scheduler shipped) to 2026-08-01 with
+// no suspend events, having previously suspended several times a day.
+
+test('the enabled-guild list is cached, so repeat ticks do not touch Postgres', async () => {
+    const h = makeHandler({ initialRows: [{ id: 'guild:111', data: { dailyVerse: { enabled: true, hour: 13 } } }] });
+
+    await h.handler.getDailyVerseGuilds();
+    assert.equal(h.selectCount(), 1);
+
+    // Five more ticks — the pattern that was keeping Neon awake.
+    for (let i = 0; i < 5; i++) await h.handler.getDailyVerseGuilds();
+
+    assert.equal(h.selectCount(), 1, 'subsequent ticks must be served from cache');
+});
+
+test('cached results are identical to the uncached ones', async () => {
+    const h = makeHandler({ initialRows: [{ id: 'guild:111', data: { dailyVerse: { enabled: true, hour: 13 } } }] });
+
+    const fresh = await h.handler.getDailyVerseGuilds();
+    const cached = await h.handler.getDailyVerseGuilds();
+
+    assert.deepEqual(cached, fresh);
+    assert.equal(cached[0].guildId, '111');
+});
+
+test('a daily-verse write invalidates the cache, so a toggle lands on the next tick', async () => {
+    const h = makeHandler({ initialRows: [{ id: 'guild:111', data: { dailyVerse: { enabled: true, hour: 13 } } }] });
+
+    await h.handler.getDailyVerseGuilds();
+    assert.equal(h.selectCount(), 1);
+
+    // A guild disables daily verse. saveDailyVerseConfig calls this after every
+    // write; without it the scheduler would keep posting to a guild that had
+    // turned the feature off, for up to the cache TTL.
+    await h.handler.invalidateDailyVerseGuilds();
+    h.setRows([]);
+
+    const after = await h.handler.getDailyVerseGuilds();
+    assert.equal(h.selectCount(), 2, 'invalidation must force a fresh read');
+    assert.deepEqual(after, [], 'the disabled guild must disappear immediately');
+});
+
+test('the cached list carries a short TTL as a backstop', async () => {
+    const h = makeHandler({ initialRows: [] });
+    await h.handler.getDailyVerseGuilds();
+
+    const write = h.sets.find(s => s.key.startsWith('dailyverse:'));
+    assert.ok(write, 'the guild list should be cached under a dailyverse: key');
+    const ttl = write.rest.at(-1);
+    assert.equal(typeof ttl, 'number');
+    assert.ok(ttl > 0, 'a TTL is required so a missed invalidation self-heals');
+});
+
+test('a Redis failure falls back to Postgres rather than dropping posts', async () => {
+    const h = makeHandler({ initialRows: [{ id: 'guild:111', data: { dailyVerse: { enabled: true, hour: 13 } } }] });
+    h.handler.redis.get = async () => { throw new Error('redis down'); };
+
+    const result = await h.handler.getDailyVerseGuilds();
+
+    assert.equal(result.length, 1, 'a Redis outage must not stop the daily verse');
+    assert.equal(h.selectCount(), 1);
+});
+
 test('getDailyVerseGuilds strips the guild: key prefix', async () => {
     const h = makeHandler({
         initialRows: [

@@ -28,6 +28,16 @@ const MISS_SENTINEL = '__MISS__';
 // this TTL only bounds staleness for rows created OUTSIDE setValue.
 const MISS_TTL_SECONDS = 600;
 
+// Cache key + TTL for the enabled-daily-verse guild list.
+//
+// The TTL is a backstop, not the primary mechanism — writes invalidate
+// explicitly. An hour is chosen so that in the absence of any config change the
+// scheduler touches Postgres ~24 times a day instead of 288, leaving gaps far
+// longer than Neon's ~5-minute autosuspend threshold so the endpoint can
+// actually scale to zero between refreshes.
+const DAILY_VERSE_CACHE_KEY = 'dailyverse:enabled';
+const DAILY_VERSE_CACHE_TTL = 3600;
+
 function tableForKey(key) {
     const prefix = String(key).split(':')[0];
     if (!ALLOWED_TABLE_PREFIXES.has(prefix)) {
@@ -180,33 +190,74 @@ class DatabaseHandler {
         return this.deleteValue(`guild:${id}`);
     }
 
-    // Single-query lookup of every guild with daily verse enabled.
+    // Every guild with daily verse enabled, Redis-cached.
     //
-    // Replaces the scheduler's previous pattern of iterating
+    // Replaces the scheduler's original pattern of iterating
     // `client.guilds.cache` (527 guilds) and calling getGuildValue on each one
-    // every 5 minutes: ~144,000 queries/day to find ~14 guilds, and the single
-    // largest consumer of the Neon compute quota during the 2026-07-19 outage
-    // (`[DailyVerse]` was 153,555 of 171,238 quota errors).
+    // every 5 minutes: ~174,000 queries/day to find ~14 guilds, and the single
+    // largest consumer of the Neon compute quota during the 2026-07-19 outage.
     //
-    // Deliberately bypasses Redis. This is a whole-table predicate, not a key
-    // lookup, so there is no single cache key that could represent it — and
-    // caching it would be actively wrong, since a guild toggling daily verse
-    // off must take effect on the next tick. Per-guild writes still go through
-    // the normal cached path via saveDailyVerseConfig.
+    // CACHING THIS IS ABOUT COMPUTE-TIME, NOT QUERY COUNT. Neon bills for time
+    // the endpoint is awake and autosuspends after ~5 minutes idle. The
+    // scheduler ticks every 5 minutes, so even reduced to ONE query per tick it
+    // resets the idle timer forever: the endpoint ran continuously from
+    // 2026-06-30 (when the scheduler shipped) to 2026-08-01, with no suspend
+    // events at all, where it had previously suspended several times a day.
+    // Cutting queries 99.8% would not have moved the bill by itself.
+    //
+    // An earlier revision of this comment argued caching would be "actively
+    // wrong" because a guild toggling daily verse off must take effect on the
+    // next tick. Invalidation solves that: every daily-verse write funnels
+    // through saveDailyVerseConfig, which calls invalidateDailyVerseGuilds, so
+    // a toggle is visible immediately rather than after the TTL.
     async getDailyVerseGuilds() {
+        try {
+            const cached = await this.redis.get(DAILY_VERSE_CACHE_KEY);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                logger.debug(`[Database] getDailyVerseGuilds — ${parsed.length} enabled guild(s) from cache (no Postgres)`);
+                return parsed;
+            }
+        } catch (err) {
+            // A cache miss is a performance question, not a correctness one.
+            logger.warn(`[Database] Daily-verse cache read failed; falling through to Postgres: ${err.message}`);
+        }
+
         const { rows } = await this.pg.query(
             `SELECT id, data FROM guilddata WHERE data->'dailyVerse'->>'enabled' = 'true'`
         );
 
-        logger.debug(`[Database] getDailyVerseGuilds — ${rows.length} enabled guild(s) in one query`);
-
         // The `id` column holds the namespaced key (`guild:<snowflake>`) because
         // that is what setValue writes. Strip the prefix so callers get raw
         // guild IDs they can hand straight to `client.guilds.cache.get()`.
-        return rows.map(row => ({
+        const result = rows.map(row => ({
             guildId: String(row.id).replace(/^guild:/, ''),
             dailyVerse: row.data?.dailyVerse ?? null,
         }));
+
+        logger.debug(`[Database] getDailyVerseGuilds — ${result.length} enabled guild(s) in one query (cache refreshed)`);
+
+        try {
+            await this.redis.set(DAILY_VERSE_CACHE_KEY, JSON.stringify(result), 'EX', DAILY_VERSE_CACHE_TTL);
+        } catch (err) {
+            logger.warn(`[Database] Daily-verse cache write failed: ${err.message}`);
+        }
+        return result;
+    }
+
+    // Called by saveDailyVerseConfig on every daily-verse write, so a guild
+    // enabling, disabling, or re-channelling its verse takes effect on the very
+    // next tick rather than waiting out the TTL. Also fires after each post
+    // (which persists lastPostedDate), which is what keeps the cached
+    // lastPostedDate from going stale and causing a re-post.
+    async invalidateDailyVerseGuilds() {
+        try {
+            await this.redis.del(DAILY_VERSE_CACHE_KEY);
+            return true;
+        } catch (err) {
+            logger.warn(`[Database] Daily-verse cache invalidation failed: ${err.message}`);
+            return false;
+        }
     }
 
     // Fixed-window rate limit on a (scope, userId) pair. Returns
@@ -370,7 +421,7 @@ class DatabaseHandler {
         // which wipes the ENTIRE Redis instance (every key from any co-tenant).
         // Uses SCAN (cursor-based, non-blocking) rather than KEYS. The bot's
         // keyspace: user:/guild: records, ratelimit: counters, aichat: memory.
-        const prefixes = ['user:', 'guild:', 'ratelimit:', 'aichat:'];
+        const prefixes = ['user:', 'guild:', 'ratelimit:', 'aichat:', 'dailyverse:'];
         let deleted = 0;
         try {
             for (const prefix of prefixes) {

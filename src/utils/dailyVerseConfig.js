@@ -86,6 +86,12 @@ export async function saveDailyVerseConfig(database, guildId, patch) {
         const mergedDv = { ...(existing.dailyVerse ?? {}), ...patch };
         const merged = { ...existing, id: guildId, dailyVerse: mergedDv };
         await database.setGuildValue(guildId, merged);
+        // The scheduler reads its enabled-guild list from a Redis cache so the
+        // 5-minute tick stops waking Neon. Every daily-verse change funnels
+        // through here, so invalidating at this one point is what keeps a
+        // toggle effective on the next tick instead of after the TTL — and
+        // keeps a cached lastPostedDate from going stale after a post.
+        await database.invalidateDailyVerseGuilds();
         return true;
     } catch (err) {
         logger.error(`[DailyVerseConfig] Save failed for guild=${guildId}: ${err.message}`);
