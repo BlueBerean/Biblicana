@@ -16,10 +16,26 @@ import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
 import swearWordFilter from './filter.js';
 import logger from './logger.js';
 
-const MODEL = 'gpt-4o-mini';
+const MODEL = 'gpt-5.6-luna';
+
+// Prompt-cache routing key. Caching itself is automatic on this model, but the
+// docs note that on GPT-5.6+ a stable key is needed for RELIABLE prefix
+// matching — it routes requests carrying the same long static prefix to the
+// same cache machine.
+//
+// Deliberately a single global key rather than per-guild or per-user: the whole
+// point is that every conversation shares the same SYSTEM_PROMPT +
+// TOOLS_GUIDANCE + tool-definition prefix, and sharding would fragment exactly
+// the thing we want shared. OpenAI suggests ~15 requests/minute per key; if
+// aggregate AI-chat volume ever exceeds that, shard this by a small bucket
+// (e.g. guildId % 4) rather than by user.
+//
+// Bump the suffix whenever the static prefix changes, so a stale cache can
+// never be matched against a prompt that no longer exists.
+const PROMPT_CACHE_KEY = 'biblicana-aichat-v1';
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const MAX_OUTPUT_TOKENS = 400;
-const TEMPERATURE = 0.6;
+// No TEMPERATURE constant: the GPT-5 family rejects any value but the default.
 const TIMEOUT_MS = 20_000;
 const MAX_INPUT_CHARS = 800;
 const MAX_RAG_CHARS_PER_SOURCE = 700;
@@ -222,20 +238,61 @@ function matchesHardBlock(text) {
 // max_tokens setting generally keeps responses under 2000 anyway.
 const MESSAGE_CONTENT_CAP = 1950;
 
-function disclaimerButtonRow() {
-    return new ActionRowBuilder().addComponents(
+function responseButtonRow({ hasSources = false } = {}) {
+    const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('bias_alert')
             .setLabel('Disclaimer')
             .setStyle(ButtonStyle.Secondary)
     );
+    // Only attached when the answer actually has provenance to show. A Sources
+    // button on an ungrounded answer would imply grounding that isn't there,
+    // which is worse than no button at all.
+    if (hasSources) {
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId('aichat_sources')
+                .setLabel('Sources')
+                .setStyle(ButtonStyle.Secondary)
+        );
+    }
+    return row;
 }
 
-function buildResponsePayload(responseText) {
+function buildResponsePayload(responseText, { hasSources = false } = {}) {
     const text = responseText.length > MESSAGE_CONTENT_CAP
         ? responseText.slice(0, MESSAGE_CONTENT_CAP - 1) + '…'
         : responseText;
-    return { content: text, components: [disclaimerButtonRow()] };
+    return { content: text, components: [responseButtonRow({ hasSources })] };
+}
+
+// The lookup tools name their "what was looked up" argument differently.
+function toolSubject(args = {}) {
+    return args.reference || args.name || args.term || args.subject || args.topic || args.strongs || null;
+}
+
+/**
+ * Collapse RAG grounding and tool calls into the record the [Sources] button
+ * renders. Returns null when nothing was consulted, so ungrounded answers
+ * simply don't get a button.
+ */
+function buildSourcePayload({ rag = [], tools = [] }) {
+    // The model legitimately calls the same tool twice in one turn (the log
+    // shows lookup_original fired for both a word and the whole verse), which
+    // would otherwise render as a duplicate line.
+    const seen = new Set();
+    const cleanTools = [];
+    for (const call of tools) {
+        const subject = toolSubject(call.args);
+        if (!subject) continue;
+        const key = `${call.name}|${String(subject).toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cleanTools.push({ name: call.name, subject: String(subject) });
+    }
+
+    if (rag.length === 0 && cleanTools.length === 0) return null;
+    return { rag, tools: cleanTools };
 }
 
 // Build RAG grounding. When the user's message mentions scripture, fetch
@@ -249,10 +306,15 @@ function buildResponsePayload(responseText) {
 // by the caller for observability logging.
 async function buildRagContext(userMessage) {
     const refs = parseScriptureRefs(userMessage).slice(0, MAX_REFS_FOR_RAG);
-    if (refs.length === 0) return { context: null, sources: [] };
+    if (refs.length === 0) return { context: null, sources: [], detail: [] };
 
     const lines = ['The user referenced one or more verses. Relevant source material:'];
     const sources = [];
+    // Structured mirror of `sources`. `sources` stays the compact log string
+    // ("1 John 4:8[BSB+Clarke+Augustine of Hippo]"); `detail` carries the same
+    // facts as fields, so the [Sources] button can render them readably instead
+    // of parsing that string back apart.
+    const detail = [];
 
     for (const ref of refs) {
         if (ref.startVerse == null) continue;
@@ -268,16 +330,19 @@ async function buildRagContext(userMessage) {
         ]);
 
         const gathered = [];
+        const entry = { reference: refLabel };
         const verseText = verseRows.map(r => r.BSB || r.KJV).filter(Boolean).join(' ');
         if (verseText) {
             lines.push(`\n${refLabel} (BSB): ${verseText.slice(0, 300)}`);
             gathered.push('BSB');
+            entry.translation = 'Berean Standard Bible';
         }
         if (clarkeRow?.text) {
             // No source_title in the commentary schema — Clarke's text blob is
             // our whole context. Label as his Commentary for correct attribution.
             lines.push(`Adam Clarke, from his Commentary on the Bible, on ${refLabel}: "${clarkeRow.text.slice(0, MAX_RAG_CHARS_PER_SOURCE)}"`);
             gathered.push('Clarke');
+            entry.commentary = { author: 'Adam Clarke', work: 'Commentary on the Bible' };
         }
         // Only genuine patristic-era authors qualify as the lead "Father" in
         // RAG. The collection includes medieval/modern writers (Aquinas, C.S.
@@ -296,14 +361,16 @@ async function buildRagContext(userMessage) {
                 : '';
             lines.push(`${leadRow.father_name}${sourceAttribution} on ${refLabel}: "${leadRow.txt.slice(0, MAX_RAG_CHARS_PER_SOURCE)}"`);
             gathered.push(leadRow.father_name);
+            entry.father = { name: leadRow.father_name, work: leadRow.source_title || null };
         }
 
         if (gathered.length > 0) {
             sources.push(`${refLabel}[${gathered.join('+')}]`);
+            detail.push(entry);
         }
     }
-    if (lines.length === 1) return { context: null, sources: [] };
-    return { context: lines.join('\n'), sources };
+    if (lines.length === 1) return { context: null, sources: [], detail: [] };
+    return { context: lines.join('\n'), sources, detail };
 }
 
 // Estimate total char count across the messages array. Used for the pre-flight
@@ -485,7 +552,7 @@ const AI_TOOLS = [
         type: 'function',
         function: {
             name: 'lookup_person',
-            description: 'Look up a biblical PERSON: who they were, family relations, tribe, and where they first appear. Use for "who was Nicodemus", "tell me about Barnabas". NOT for places, NOT for word meanings, NOT for topics.',
+            description: 'Look up a biblical PERSON: who they were, family relations, tribe, and where they first appear. Use for "who was Nicodemus", "tell me about Barnabas". ALWAYS call this before describing who someone was — never answer a biography from memory. NOT for places, NOT for word meanings, NOT for topics.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -499,7 +566,7 @@ const AI_TOOLS = [
         type: 'function',
         function: {
             name: 'lookup_place',
-            description: 'Look up a biblical PLACE: description, coordinates, and where it first appears. Use for "where is Patmos", "tell me about Capernaum". NOT for people.',
+            description: 'Look up a biblical PLACE: description, coordinates, and where it first appears. Use for "where is Patmos", "tell me about Capernaum". ALWAYS call this for any question about a biblical location, even one you believe you already know — the dataset carries coordinates and first-mention references you do not have, and geography answered from memory is exactly the kind of confident-sounding error this tool exists to prevent. NOT for people.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -550,8 +617,8 @@ const TOOLS_GUIDANCE = `You can look things up before answering:
 - lookup_strongs(strongs): a Strong's lexicon entry by number (e.g. G26). Use when given a Strong's number, or to define one surfaced by lookup_original.
 - lookup_crossrefs(reference): related verses (Treasury of Scripture Knowledge). Use for "what connects to / relates to this verse".
 - lookup_scripture(reference): exact BSB wording. Use sparingly.
-- lookup_person(name): who a biblical figure was — relations, tribe, first mention. Use for "who was X". Names are not unique, so if several match, say which one you mean.
-- lookup_place(name): a biblical location — description, coordinates, first mention. Use for "where is X".
+- lookup_person(name): who a biblical figure was — relations, tribe, first mention. Use for "who was X". ALWAYS call it before describing a person; never answer a biography from memory. Names are not unique, so if several match, say which one you mean.
+- lookup_place(name): a biblical location — description, coordinates, first mention. Use for "where is X". ALWAYS call it for a location question, including ones that feel like common knowledge.
 - lookup_dictionary(term): Easton's/Smith's definition of an ENGLISH biblical term. Use for "what does propitiation mean". NEVER for a Greek or Hebrew word — that is lookup_original / lookup_strongs.
 - lookup_profile(subject): a long-form encyclopedic article. Use when a short entry is not enough, or for GROUPS and movements (Pharisees, Samaritans, Essenes) that the person and place datasets do not cover.
 
@@ -578,6 +645,8 @@ Attribution is sacred here — never present one commentator's or Church Father'
 The Church Fathers collection actually spans the patristic era through modern times, so every lookup_father result is tagged with the author's era in [brackets]. ONLY call pre-AD-800 authors "the early church" or "a Church Father". If a result is tagged medieval or modern (e.g. Aquinas, C.S. Lewis, Tolkien), cite them by their own era and never imply they are a Father — for a plain "what did the early church say" the tool already returns only genuine Fathers.
 
 Original-language honesty: when you state what a Greek or Hebrew word MEANS, use the lexicon definition the tools return. If you have a Strong's number but not its definition, call lookup_strongs to get it — do not supply the meaning from memory. Do NOT layer on popular glosses the data doesn't support: e.g. ἀγάπη (agápē) is "affection or benevolence" per the lexicon, NOT "unconditional, selfless love" — that's a well-known over-reading (the NT even uses the word for misplaced love, 2 Tim 4:10). Any interpretive nuance you add must be labelled as interpretation, not presented as the word's lexical meaning.
+
+Geographic and biographical honesty: the same rule applies to WHERE a place is and WHO a person was. Call lookup_place or lookup_person before answering, even when the subject feels like common knowledge — "where is Capernaum" and "who was Barnabas" both have grounded answers in the local data, including coordinates, first-mention references and family relations you cannot reconstruct from memory. A fluent answer from training is the failure mode here, not the success case: it sounds authoritative, cites nothing, and silently omits what the dataset actually holds. If the lookup returns nothing, say the dataset has no entry rather than filling the gap yourself.
 
 Name the commentator when you cite them ("Clarke notes…"). If a tool returns an error or suggestions, adjust and retry. Never invent commentary text or source titles. Keep the final answer in your normal tight, warm voice and reference verses inline rather than quoting them in full.`;
 
@@ -981,7 +1050,10 @@ async function postChat(body) {
     });
     const msg = response?.data?.choices?.[0]?.message;
     if (!msg) throw new Error('Empty response from OpenAI');
-    return msg;
+    // usage carries prompt_tokens_details.cached_tokens, which is the only way
+    // to confirm prompt caching is actually landing. Returned rather than
+    // logged here so the caller can total it across tool rounds.
+    return { msg, usage: response?.data?.usage ?? null };
 }
 
 // Tool-calling loop. Offers tools for up to MAX_TOOL_ROUNDS rounds; if the model
@@ -990,20 +1062,40 @@ async function postChat(body) {
 // plumbing never leaks into the array the caller persists to memory.
 async function callOpenAI(messages) {
     const convo = [...messages];
+    // Provenance for the [Sources] button. Recorded here because this is the
+    // only place that knows what the model actually consulted.
+    const toolCalls = [];
+    let promptTokens = 0;
+    let cachedTokens = 0;
     for (let round = 0; ; round++) {
         const offerTools = round < MAX_TOOL_ROUNDS;
         const body = {
             model: MODEL,
             messages: convo,
-            max_tokens: MAX_OUTPUT_TOKENS,
-            temperature: TEMPERATURE,
+            // GPT-5 family: max_tokens is rejected in favour of
+            // max_completion_tokens, and that budget INCLUDES hidden reasoning
+            // tokens — so reasoning_effort must be pinned or the visible answer
+            // gets squeezed out of the same allowance.
+            max_completion_tokens: MAX_OUTPUT_TOKENS,
+            // 'none' matches how these prompts were tuned (against the
+            // non-reasoning gpt-4o-mini) and keeps the whole budget available
+            // for the actual reply. Raise to 'low' if answers feel shallow, but
+            // raise MAX_OUTPUT_TOKENS with it.
+            reasoning_effort: 'none',
+            // temperature is omitted deliberately: this model family only
+            // accepts the default (1) and 400s on any other value.
+            prompt_cache_key: PROMPT_CACHE_KEY,
         };
         if (offerTools) {
             body.tools = AI_TOOLS;
             body.tool_choice = 'auto';
         }
 
-        const msg = await postChat(body);
+        const { msg, usage } = await postChat(body);
+
+        // Total across every round of the tool loop, not just the last call.
+        promptTokens += usage?.prompt_tokens ?? 0;
+        cachedTokens += usage?.prompt_tokens_details?.cached_tokens ?? 0;
 
         if (offerTools && msg.tool_calls?.length) {
             convo.push(msg);   // assistant turn carrying the tool_calls
@@ -1012,6 +1104,11 @@ async function callOpenAI(messages) {
                 logger.info(`[AiChat tool] ${name}(${(rawArgs || '').slice(0, 120)})`);
                 const result = await executeTool(name, rawArgs);
                 logger.info(`[AiChat tool] ${name} → ${result.slice(0, 140)}`);
+                // Parsed leniently: malformed arguments must cost us the
+                // provenance line, never the answer itself.
+                let parsedArgs = {};
+                try { parsedArgs = JSON.parse(rawArgs || '{}'); } catch { /* provenance only */ }
+                toolCalls.push({ name, args: parsedArgs });
                 convo.push({ role: 'tool', tool_call_id: call.id, content: result });
             }
             continue;
@@ -1019,7 +1116,7 @@ async function callOpenAI(messages) {
 
         const content = msg.content;
         if (!content) throw new Error('Empty response from OpenAI');
-        return content.trim();
+        return { text: content.trim(), toolCalls, promptTokens, cachedTokens };
     }
 }
 
@@ -1123,7 +1220,7 @@ export async function handleAiChat(message, database, options = {}) {
         // prompt. Strip line breaks and cap at Discord's own 32-char nick limit.
         const rawName = message.member?.displayName || message.author.globalName || message.author.username || 'User';
         const displayName = rawName.replace(/[\r\n]+/g, ' ').slice(0, 32).trim() || 'User';
-        const { context: ragContext, sources: ragSources } = await buildRagContext(filteredText);
+        const { context: ragContext, sources: ragSources, detail: ragDetail } = await buildRagContext(filteredText);
 
         // In shared (multiplayer) mode, we tag the user's content with their
         // display name so the model can distinguish speakers across turns.
@@ -1137,10 +1234,23 @@ export async function handleAiChat(message, database, options = {}) {
             ? `You are in a shared channel where multiple users may be speaking. Each user turn is prefixed with the speaker's display name (e.g., "Alice: ..." / "Bob: ..."). The most recent speaker is: ${displayName}. Address people by their names when natural. Your own turns were addressed to whichever speaker was asking at the time — keep track of who said what.`
             : `You are currently speaking with: ${displayName}.`;
 
+        // ORDER IS LOAD-BEARING for prompt caching. Everything static must come
+        // first, because the cache matches the longest common PREFIX.
+        //
+        // speakerNote carries the user's display name, so it used to sit at
+        // position 2 — between SYSTEM_PROMPT and TOOLS_GUIDANCE. That truncated
+        // the cacheable prefix to SYSTEM_PROMPT alone: TOOLS_GUIDANCE and the
+        // eleven tool definitions could never be cached across different users,
+        // and in a shared channel the prefix re-broke every time a different
+        // person spoke. Moving it after the static blocks lets the whole
+        // static header cache.
+        //
+        // Anything per-user, per-conversation or per-message belongs BELOW this
+        // line, in this order: speaker note, RAG, memory, user turn.
         const messages = [
             { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'system', content: `${speakerNote}${hadProfanity ? ' Their most recent message contained some profanity; gently encourage more respectful language while still engaging sincerely with their question.' : ''}` },
             { role: 'system', content: TOOLS_GUIDANCE },
+            { role: 'system', content: `${speakerNote}${hadProfanity ? ' Their most recent message contained some profanity; gently encourage more respectful language while still engaging sincerely with their question.' : ''}` },
         ];
         if (ragContext) {
             messages.push({ role: 'system', content: ragContext });
@@ -1190,8 +1300,15 @@ export async function handleAiChat(message, database, options = {}) {
 
         // --- OpenAI call ---
         let aiResponse;
+        let toolCalls = [];
+        let promptTokens = 0;
+        let cachedTokens = 0;
         try {
-            aiResponse = await callOpenAI(messages);
+            const completion = await callOpenAI(messages);
+            aiResponse = completion.text;
+            toolCalls = completion.toolCalls;
+            promptTokens = completion.promptTokens;
+            cachedTokens = completion.cachedTokens;
         } catch (err) {
             logger.error(`[AiChat] OpenAI call failed for user=${message.author.id}: ${err.message}`);
             await message.reply({
@@ -1203,12 +1320,30 @@ export async function handleAiChat(message, database, options = {}) {
 
         // --- Reply + persist memory ---
         const ragTag = ragSources.length > 0 ? ragSources.join(',') : 'none';
-        logger.info(`[AiChat] scope=${scopeKey} shared=${isShared} user=${message.author.id} inLen=${filteredText.length} outLen=${aiResponse.length} rag=${ragTag}`);
+        // cache=<cached>/<total> prompt tokens. A healthy steady state is most
+        // of the static header (SYSTEM_PROMPT + TOOLS_GUIDANCE + tool defs)
+        // coming back cached; a persistent 0 means the prefix is being broken
+        // by something variable creeping above the speaker note.
+        const cachePct = promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : 0;
+        logger.info(`[AiChat] scope=${scopeKey} shared=${isShared} user=${message.author.id} inLen=${filteredText.length} outLen=${aiResponse.length} rag=${ragTag} cache=${cachedTokens}/${promptTokens} (${cachePct}%)`);
 
-        await message.reply({
-            ...buildResponsePayload(aiResponse),
+        // Provenance for the [Sources] button. Keyed by the ID of the message we
+        // are about to send, so the button carries no state in its customId
+        // (capped at 100 chars, nowhere near enough for a source list).
+        const sourcePayload = buildSourcePayload({ rag: ragDetail, tools: toolCalls });
+
+        const sentMessage = await message.reply({
+            ...buildResponsePayload(aiResponse, { hasSources: sourcePayload !== null }),
             allowedMentions: { repliedUser: false },
         });
+
+        // Stored AFTER the reply, since the message ID is the key. A failed
+        // write costs the Sources button on this one answer and nothing else —
+        // setChatSources swallows its own errors for exactly that reason.
+        if (sourcePayload && sentMessage?.id) {
+            await database.setChatSources(sentMessage.id, sourcePayload);
+            logger.debug(`[ChatSources] Stored ${sourcePayload.rag.length} RAG + ${sourcePayload.tools.length} tool source(s) for message ${sentMessage.id}`);
+        }
 
         // Save the exchange to memory. Persists the TAGGED user content
         // in shared mode so subsequent turns can see who spoke. Uses

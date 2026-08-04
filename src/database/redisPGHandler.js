@@ -217,7 +217,7 @@ class DatabaseHandler {
         // command (aichat, find, web, etc.) without touching Redis. Loud
         // startup warning in index.js surfaces when this is on. NEVER set
         // this in production — it opens the bot to abusive usage and could
-        // run up significant OpenAI/Tavily bills.
+        // run up significant OpenAI bills.
         if (process.env.DISABLE_RATE_LIMITS) {
             return { allowed: true, count: 0, retryAfterSeconds: 0 };
         }
@@ -426,6 +426,42 @@ class DatabaseHandler {
         } catch (err) {
             logger.error(`[ChatMemory] Append failed for ${scope}: ${err.message}`);
             return false;
+        }
+    }
+
+    // --- AI chat source attribution (Redis only) -----------------------------
+    // Records which grounded sources produced a given AI answer, keyed by the
+    // MESSAGE ID of the answer itself. The [Sources] button on that message can
+    // then look them up with no state encoded in the customId (which is capped
+    // at 100 chars and could never hold a source list).
+    //
+    // Redis-only and TTL-bounded by design: this is provenance for a
+    // conversation, not durable record-keeping. A week is long enough that
+    // clicking Sources on yesterday's answer still works, short enough that the
+    // keyspace stays bounded without eviction pressure.
+    chatSourcesKey(messageId) {
+        return `aichat:src:${messageId}`;
+    }
+
+    async setChatSources(messageId, payload, ttlSeconds = 604800) {
+        try {
+            await this.redis.set(this.chatSourcesKey(messageId), JSON.stringify(payload), 'EX', ttlSeconds);
+            return true;
+        } catch (err) {
+            // Never throw into the reply path — losing provenance is much less
+            // bad than failing to answer the user.
+            logger.error(`[ChatSources] Write failed for ${messageId}: ${err.message}`);
+            return false;
+        }
+    }
+
+    async getChatSources(messageId) {
+        try {
+            const raw = await this.redis.get(this.chatSourcesKey(messageId));
+            return raw ? JSON.parse(raw) : null;
+        } catch (err) {
+            logger.error(`[ChatSources] Read failed for ${messageId}: ${err.message}`);
+            return null;
         }
     }
 
