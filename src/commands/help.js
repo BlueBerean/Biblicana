@@ -74,7 +74,7 @@ export const CATEGORIES = [
         label: 'Commentary',
         body: [
             '• `/commentary` — 6 classic commentators (Adam Clarke default, or Gill / Matthew Henry / JFB / Keil & Delitzsch / Tyndale). Verse-level and chapter-level.',
-            '• `/fathers` — Early Church Fathers commentary on a passage (334 writers incl. Augustine, Chrysostom, Jerome).',
+            '• `/fathers` — Commentary from 334 writers, mostly genuine Early Church Fathers (Augustine, Chrysostom, Jerome). The collection also holds medieval and modern authors; those are labelled with their era so they are never presented as the early church.',
             '• `/topic` — Search 25,000+ topical commentaries.'
         ].join('\n')
     },
@@ -128,7 +128,13 @@ export const CATEGORIES = [
         id: 'web',
         emoji: '🌐',
         label: 'Web Search',
-        body: '• `/web` — AI-powered Christian apologetics search with cited sources.'
+        body: [
+            '• `/web` — AI-powered Christian apologetics search with cited, clickable sources.',
+            '',
+            'Searches are restricted to a curated list of trusted Christian reference sites — CCEL, Blue Letter Bible, Bible Hub, STEP Bible, Got Questions, The Gospel Coalition, Desiring God, Ligonier, CARM and others, plus Catholic and Orthodox sources so contested questions can be answered from each tradition\'s own words.',
+            '',
+            '*Nothing outside that list can reach an answer, so very recent news or niche topics may simply not be covered.*',
+        ].join('\n')
     },
     {
         id: 'ai_chat',
@@ -145,7 +151,12 @@ export const CATEGORIES = [
             '• `/forget` — Erase the AI conversation history for your current scope (this channel in shared mode, or your own thread in private mode).',
             '',
             '**How it works:**',
-            'When you reference a specific verse, Biblicana pulls the actual commentary (Adam Clarke, Augustine, etc.) into context before answering. Responses are grounded in real sources, not just generic AI knowledge.',
+            'When you reference a specific verse, Biblicana pulls the actual commentary (Adam Clarke, Augustine, etc.) into context before answering. It can also look things up mid-conversation — commentary, Church Fathers, cross-references, the Greek or Hebrew, Strong\'s numbers, the topical index, Bible dictionaries, and biblical people and places.',
+            '',
+            'If the local library has nothing (a ministry\'s current position, a recent event), it can search the same trusted Christian sites `/web` uses. Responses are grounded in real sources, not just generic AI knowledge.',
+            '',
+            '**Sources button:**',
+            'Answers that drew on sources carry a **Sources** button showing exactly what was consulted — which verse, which commentator, which Father, which sites. If an answer has no button, nothing specific was consulted.',
             '',
             '*AI chat must be enabled by a server admin via `/config ai`. Disabled by default for new servers.*',
         ].join('\n')

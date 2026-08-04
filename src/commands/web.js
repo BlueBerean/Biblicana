@@ -101,7 +101,7 @@ function buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources, d
 export default {
     data: new SlashCommandBuilder()
         .setName('web')
-        .setDescription('(Beta) Search the web and get AI-powered answers with sources')
+        .setDescription('Search trusted Christian sources and get AI-powered answers with citations')
         .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
         .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel)
         .addStringOption(option =>

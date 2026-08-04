@@ -38,7 +38,17 @@ import logger from './logger.js';
 //
 // History:
 //   2026-04-17 — v1: initial launch of the per-user AI-chat ack gate.
-export const TERMS_MIN_ACK_DATE = '2026-04-17T00:00:00.000Z';
+//   2026-08-03 — v2: /web moved from Tavily to OpenAI's built-in web search,
+//     and AI chat gained the ability to trigger a web search when the local
+//     library can't answer.
+//
+//     The Tavily removal alone would NOT justify a re-ack — dropping a
+//     recipient narrows sharing versus what users already agreed to. The bump
+//     is for the addition: an @mention previously produced text generation
+//     only, and now may cause an outbound search. Same processor, new
+//     processing activity, and the Art. 6(1)(a) consent basis leans on the
+//     disclosure being accurate about what actually happens.
+export const TERMS_MIN_ACK_DATE = '2026-08-03T00:00:00.000Z';
 
 /**
  * Check whether the user has a valid ack for the current Terms version.
