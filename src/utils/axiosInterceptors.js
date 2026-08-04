@@ -24,7 +24,21 @@ function setupAxiosInterceptors() {
         return response;
     }, error => {
         if (error.response) {
-            logger.error(`[API Response Error] ${error.response.status} ${error.response.statusText} from ${error.config?.url}`);
+            // Surface the provider's OWN error message, not just the status.
+            // A bare "400 Bad Request" hides the one detail that makes a 4xx
+            // actionable: OpenAI names the offending parameter outright
+            // ("Unsupported parameter: 'max_tokens' is not supported with this
+            // model"), and without it a model swap looks like a mystery outage.
+            // Response bodies from these APIs carry no credentials.
+            const body = error.response.data;
+            const detail = body?.error?.message
+                ?? (typeof body === 'string' ? body.slice(0, 300) : null);
+            const code = body?.error?.code ? ` code=${body.error.code}` : '';
+            const param = body?.error?.param ? ` param=${body.error.param}` : '';
+            logger.error(
+                `[API Response Error] ${error.response.status} ${error.response.statusText} from ${error.config?.url}`
+                + `${detail ? ` — ${detail}` : ''}${code}${param}`
+            );
         } else {
             logger.error(`[API Connection Error] ${error.message}`);
         }
