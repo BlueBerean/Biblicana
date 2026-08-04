@@ -21,9 +21,10 @@ import logger from '../utils/logger.js';
 
 export const VERSES_PER_PAGE = 5;
 const PAGINATION_TIMEOUT_MS = 900_000;
-const OPENAI_MODEL = 'gpt-4o-mini';
-const OPENAI_MAX_TOKENS = 500;
-const OPENAI_TEMPERATURE = 0.7;
+const OPENAI_MODEL = 'gpt-5.6-luna';
+// Budget shares with hidden reasoning tokens on the GPT-5 family, so it is
+// sized well above the JSON array this actually needs to emit.
+const OPENAI_MAX_TOKENS = 2000;
 const OPENAI_TIMEOUT_MS = 15_000;
 const VERSE_TEXT_TRUNCATE = 300;
 const RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
@@ -34,8 +35,11 @@ async function fetchAndParseVerseReferences(topic) {
     const apiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
         model: OPENAI_MODEL,
         messages: [{ role: 'user', content: prompt }],
-        temperature: OPENAI_TEMPERATURE,
-        max_tokens: OPENAI_MAX_TOKENS
+        // GPT-5 family: max_tokens is rejected for max_completion_tokens, and
+        // temperature only accepts the default (1). Strict JSON output makes
+        // reasoning unnecessary here.
+        max_completion_tokens: OPENAI_MAX_TOKENS,
+        reasoning_effort: 'none'
     }, {
         headers: {
             'Content-Type': 'application/json',

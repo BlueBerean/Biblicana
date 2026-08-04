@@ -118,7 +118,14 @@ const MECHANICS_BULLETS_AICHAT = [
 ];
 
 const MECHANICS_BULLETS_SLASH = [
-    '• Your query is sent to OpenAI to generate a response (for `/web`, also to Tavily for web search).',
+    // Tavily was removed when /web moved to OpenAI's built-in web_search tool.
+    // The query now reaches only OpenAI, and its searches are confined to a
+    // curated allowlist of Christian reference sites (see ALLOWED_DOMAINS in
+    // web.js). This is strictly FEWER third parties than users previously
+    // agreed to, so TERMS_MIN_ACK_DATE is deliberately NOT bumped — forcing a
+    // re-acknowledgment would be noise for a change that only narrows data
+    // sharing. Bump it only if a change ever widens what is shared.
+    '• Your query is sent to OpenAI to generate a response (for `/web`, OpenAI also searches a fixed list of Christian reference sites).',
     '• No conversation memory is kept — each `/find` or `/web` invocation is one-shot.',
     '• This acknowledgment also covers AI chat (mention or reply).',
     `• Details: [Privacy Policy](${PRIVACY_URL}) · [Terms of Service](${TERMS_URL})`,

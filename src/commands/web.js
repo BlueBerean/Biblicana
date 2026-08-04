@@ -10,7 +10,6 @@ import {
     InteractionContextType
 } from 'discord.js';
 import axios from 'axios';
-import { setTimeout as wait } from 'node:timers/promises';
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { accentColor, footerLine } from '../utils/theme.js';
@@ -18,35 +17,80 @@ import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.
 import { checkAckStatus, buildAckDisclosureV2 } from '../utils/aiAck.js';
 import 'dotenv/config';
 
-const INTENT_MODEL = 'gpt-4o-mini';
-const SUMMARY_MODEL = 'gpt-4o-mini';
-const INTENT_MAX_TOKENS = 10;
-const INTENT_TEMPERATURE = 0.1;
+const INTENT_MODEL = 'gpt-5.6-luna';
+const SUMMARY_MODEL = 'gpt-5.6-luna';
+// Was 10, which was safe when max_tokens counted only visible output. On the
+// GPT-5 family the budget also covers hidden reasoning tokens, so a tiny value
+// risks an empty completion. reasoning_effort:'none' should keep reasoning at
+// zero, but the headroom costs nothing on a one-word answer.
+const INTENT_MAX_TOKENS = 64;
 const INTENT_TIMEOUT_MS = 10_000;
-const SUMMARY_MAX_TOKENS = 1500;
-const SUMMARY_TEMPERATURE = 0.7;
-const TAVILY_MAX_RESULTS = 5;
-const TAVILY_RATE_LIMIT_MS = 1000;
-const TAVILY_RETRY_DELAY_MS = 5000;
-const TAVILY_MAX_RETRIES = 1;
+const SUMMARY_MAX_TOKENS = 4000;   // raised: this budget now shares with reasoning tokens
+const SEARCH_TIMEOUT_MS = 60_000;   // search + generation in one call; slower than a bare completion
 const MAX_CHARS_PER_PAGE = 3500;
 const MAX_BUTTON_LABEL = 80;
 const RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
 
-const rateLimit = {
-    tavily: { lastRequest: 0, minDelay: TAVILY_RATE_LIMIT_MS }
-};
+// Domains /web is allowed to search. Replaces the old approach of appending
+// "Christian perspective biblical teaching" to the query string and hoping the
+// general web returned something sound — this is an actual allowlist enforced
+// server-side by the web_search tool, so nothing outside it can be cited.
+//
+// Cross-denominational by design: the non-Protestant entries are here so that
+// contested questions can be answered from a tradition's OWN words rather than
+// only from critiques of it. The answer's doctrinal stance is set by the
+// instructions below (Protestant), not by starving the model of primary sources.
+//
+// Omit the scheme; subdomains are included automatically. The tool accepts up
+// to 100 entries.
+const ALLOWED_DOMAINS = [
+    // Primary texts, lexicons, and study tools.
+    'ccel.org',             // Christian Classics Ethereal Library — public-domain primary texts
+    'newadvent.org',        // Church Fathers, Summa, Catholic Encyclopedia
+    'biblehub.com',         // interlinear, lexicons, parallel translations
+    'blueletterbible.org',  // Strong's, lexicons, concordance
+    'stepbible.org',        // Tyndale House — scholarly open Bible tools
+    'biblicaltraining.org', // seminary-level lecture material
+    'bible.org',            // NET Bible + translators' notes
+    'chapellibrary.org',    // public-domain Puritan / Reformed literature
 
-async function waitForRateLimit(service) {
-    const now = Date.now();
-    const serviceLimit = rateLimit[service];
-    const timeSinceLastRequest = now - serviceLimit.lastRequest;
-    if (timeSinceLastRequest < serviceLimit.minDelay) {
-        const waitTime = serviceLimit.minDelay - timeSinceLastRequest;
-        await wait(waitTime);
-    }
-    serviceLimit.lastRequest = Date.now();
-}
+    // Teaching ministries and Q&A.
+    'thegospelcoalition.org',
+    'desiringgod.org',
+    'ligonier.org',
+    'gotquestions.org',     // Got Questions Ministries
+    'compellingtruth.org',  // same ministry as gotquestions.org
+    'carm.org',             // Christian Apologetics & Research Ministry
+    'answersingenesis.org', // young-earth creation apologetics
+    'creation.com',         // Creation Ministries International — likewise
+
+    // Non-Protestant traditions. Present so contested questions can be answered
+    // from more than one tradition's own words rather than only from critiques
+    // of it — see the cross-denominational note above.
+    'catholic.com',
+    'oca.org',              // Orthodox Church in America
+];
+
+// System-level instructions for the search-and-answer call. Previously this
+// summarised a pre-fetched result set; the model now does its own retrieval,
+// so the "base your answer EXCLUSIVELY on the provided Sources" framing becomes
+// "only on what you retrieved".
+const WEB_ANSWER_INSTRUCTIONS = `You are a thorough Christian apologetics research assistant providing factual, evidence-based info from a Protestant perspective.
+
+Guidelines:
+- Salvation is through Christ alone (John 14:6). Scripture is the ultimate authority. Avoid non-biblical traditions. Redirect non-Protestant views respectfully to biblical sources. Emphasize unity in Christ.
+- Target 500–800 words written primarily as flowing prose paragraphs. Do NOT default to bullet points. Target roughly 75% prose, 25% bullets at most.
+- Bullets are only appropriate for: (a) lists of three or more genuinely parallel enumerable items (e.g., three pieces of archaeological evidence), or (b) contrasting distinct viewpoints side-by-side. Any time you'd write a bullet point for a single fact or a narrative step, write a prose sentence instead.
+- Format: Start with a single '## Title Derived from User Query'. Use '### Subsection Heading' only when the answer has 2+ genuinely distinct major parts. Otherwise write as continuous paragraphs under the title.
+
+Sourcing requirements:
+- You MUST search the web before answering. Base the answer exclusively on what you retrieve. Do not add outside knowledge. If the retrieved material doesn't cover an aspect, say so explicitly.
+- Cite every claim inline using ONLY the bare domain in parentheses — e.g. (gotquestions.org), (ccel.org). Never invent a domain, and never cite one you did not actually retrieve from. These markers are turned into clickable links, so an invented one becomes a broken link.
+- Some sources represent Catholic or Orthodox teaching. When drawing on those, attribute the view to that tradition rather than presenting it as the Protestant position.`;
+
+// waitForRateLimit / the client-side rate-limit bookkeeping went away with
+// Tavily. OpenAI's own rate limiting governs the single search call now, and
+// the per-user quota is still enforced by database.checkRateLimit below.
 
 function truncateLabel(text, max = MAX_BUTTON_LABEL) {
     if (!text) return 'Source';
@@ -67,7 +111,8 @@ function buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources, d
 
     const components = [container];
 
-    // Sources become link buttons (max 5 per row, Tavily caps at 5 results).
+    // Sources become link buttons. Discord allows 5 components per row, and the
+    // citation list is sliced to match.
     if (usedSources.length > 0) {
         const linkRow = new ActionRowBuilder().addComponents(
             ...usedSources.slice(0, 5).map(({ name, info }) => {
@@ -106,7 +151,7 @@ export default {
 
         try {
             // First-use Terms acknowledgment gate. Sits above rate-limit,
-            // OpenAI intent check, and Tavily search — unacked users don't
+            // the intent check, and the web search — unacked users don't
             // burn quota or hit external APIs until they've clicked through.
             const ack = await checkAckStatus(database, interaction.user.id);
             if (!ack.valid) {
@@ -155,8 +200,16 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                         },
                         { role: 'user', content: query }
                     ],
-                    max_tokens: INTENT_MAX_TOKENS,
-                    temperature: INTENT_TEMPERATURE
+                    max_completion_tokens: INTENT_MAX_TOKENS,
+                    // Critical for this call: max_completion_tokens includes
+                    // hidden reasoning tokens, so with reasoning enabled a
+                    // small budget is consumed entirely by reasoning and the
+                    // model returns EMPTY content — which would have read as
+                    // the content filter silently refusing every query.
+                    reasoning_effort: 'none',
+                    // temperature omitted — this model family only accepts the
+                    // default (1). The prompt is tightly constrained to a single
+                    // word, so determinism comes from the prompt, not the knob.
                 }, {
                     headers: {
                         'Authorization': `Bearer ${process.env.OPENAIKEY}`,
@@ -189,137 +242,107 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                 });
             }
 
-            // Tavily search
-            let tavily_results = null;
-            let retries = 0;
-            while (retries <= TAVILY_MAX_RETRIES && !tavily_results) {
-                try {
-                    await waitForRateLimit('tavily');
-                    const tavily_response = await axios.post('https://api.tavily.com/search', {
-                        query: query + ' Christian perspective biblical teaching',
-                        search_depth: 'advanced',
-                        include_images: false,
-                        max_results: TAVILY_MAX_RESULTS,
-                        include_answer: true,
-                        include_raw_content: false,
-                        include_content: true
-                    }, {
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${process.env.TAVILY_API_KEY}`
-                        },
-                        timeout: 10000
-                    });
-                    if (!tavily_response.data) throw new Error('Tavily returned no data.');
-                    tavily_results = tavily_response.data;
-                } catch (tavilyError) {
-                    if (axios.isAxiosError(tavilyError) && tavilyError.response?.status === 429 && retries < TAVILY_MAX_RETRIES) {
-                        retries++;
-                        await wait(TAVILY_RETRY_DELAY_MS);
-                    } else {
-                        throw new Error('Failed to get search results from Tavily.');
-                    }
-                }
-            }
-
-            let results = (tavily_results.results || []).filter(result => {
-                if (!result || !result.url || typeof result.url !== 'string') return false;
-                const urlLower = result.url.toLowerCase();
-                const isPDF = urlLower.endsWith('.pdf') || urlLower.includes('format=pdf') ||
-                    (result.title?.toLowerCase() || '').includes('pdf') ||
-                    ((result.content || result.raw_content || result.snippet || '').substring(0, 50).includes('%PDF'));
-                return !isPDF && result.content;
-            });
-
-            if (results.length === 0) {
-                return interaction.editReply({
-                    flags: MessageFlags.IsComponentsV2,
-                    components: [new TextDisplayBuilder().setContent(
-                        `I couldn't find any relevant, non-PDF web results for your query.`
-                    )]
-                });
-            }
-
-            // Build source map from search results
-            const sourceMap = new Map();
-            const sourceDataForGPT = [];
-
-            results.forEach((result, index) => {
-                let derivedName = 'Source';
-                try {
-                    const url = new URL(result.url);
-                    derivedName = url.hostname.replace(/^www\./, '');
-                } catch (e) {
-                    derivedName = `Source-${index + 1}`;
-                }
-
-                let uniqueName = derivedName;
-                let collisionCounter = 2;
-                while (sourceMap.has(uniqueName)) {
-                    uniqueName = `${derivedName}-${collisionCounter}`;
-                    collisionCounter++;
-                }
-                derivedName = uniqueName;
-
-                sourceMap.set(derivedName, { url: result.url, title: result.title || derivedName });
-                sourceDataForGPT.push(`Source ${derivedName}: ${result.title || derivedName}\nURL: ${result.url}\nContent: ${result.content || ''}`);
-            });
-
-            const sourcesForGPT = sourceDataForGPT.join('\n\n---\n\n');
-
-            // GPT summarize
-            let gptAnswer = '';
+            // Search + answer in ONE call. Previously this hit Tavily and then
+            // made a second OpenAI call to summarise the results; the built-in
+            // web_search tool does the retrieval itself, and — unlike Tavily —
+            // enforces the domain allowlist server-side, so nothing outside
+            // ALLOWED_DOMAINS can reach the answer.
+            //
+            // Responses API, not Chat Completions: filters.allowed_domains is
+            // only supported there.
+            let answerText = '';
+            let annotations = [];
+            let retrievedSources = [];
             try {
-                const gpt_response = await axios.post('https://api.openai.com/v1/chat/completions', {
+                const searchResponse = await axios.post('https://api.openai.com/v1/responses', {
                     model: SUMMARY_MODEL,
-                    messages: [
-                        {
-                            role: 'system',
-                            content: `You are a thorough Christian apologetics research assistant providing factual, evidence-based info from a Protestant perspective.
-Guidelines:
-- Salvation is through Christ alone (John 14:6). Scripture is the ultimate authority. Avoid non-biblical traditions. Redirect non-Protestant views respectfully to biblical sources. Emphasize unity in Christ.
-- Target 500–800 words written primarily as flowing prose paragraphs. Do NOT default to bullet points. Target roughly 75% prose, 25% bullets at most.
-- Bullets are only appropriate for: (a) lists of three or more genuinely parallel enumerable items (e.g., three pieces of archaeological evidence), or (b) contrasting distinct viewpoints side-by-side. Any time you'd write a bullet point for a single fact or a narrative step, write a prose sentence instead.
-- Format: Start with a single '## Title Derived from User Query'. Use '### Subsection Heading' only when the answer has 2+ genuinely distinct major parts. Otherwise write as continuous paragraphs under the title.
-- Requirements: Base your answer EXCLUSIVELY on the provided Sources. Do not add outside knowledge. If sources don't cover an aspect, state that explicitly. Cite sources using ONLY (SourceName) where SourceName is the name provided after 'Source ' in the user prompt (e.g., (christianity.com), (gotquestions.org)). Cite ALL evidence/facts. Only referenced sources will be listed. Adhere to doctrinal guidelines, especially for denominational questions.`
-                        },
-                        {
-                            role: 'user',
-                            content: `Query: "${query}"
-
-Based *only* on the provided sources below, write a thorough, evidence-focused answer (500–800 words, follow ALL system guidelines — primarily prose, bullets only for genuine 3+ item enumerations).
-
-Incorporate where the sources support it: historical evidence and dates, archaeological findings, biblical references, specific names and places, verifiable facts, and multiple viewpoints when sources present them — but weave these into prose rather than bulleting them.
-
-Cite every claim. Prefer prose.
-
-Sources:
-${sourcesForGPT}`
-                        }
-                    ],
-                    max_tokens: SUMMARY_MAX_TOKENS,
-                    temperature: SUMMARY_TEMPERATURE
+                    instructions: WEB_ANSWER_INSTRUCTIONS,
+                    // Without this the web_search_call items come back WITHOUT
+                    // their sources array, so a run where the model doesn't
+                    // inline-cite leaves us with no URLs at all.
+                    include: ['web_search_call.action.sources'],
+                    input: `Query: "${query}"\n\nSearch the allowed sources and write a thorough, evidence-focused answer (500–800 words, primarily prose; bullets only for genuine 3+ item enumerations).\n\nIncorporate where the sources support it: historical evidence and dates, archaeological findings, biblical references, specific names and places, verifiable facts, and multiple viewpoints when the sources present them — but weave these into prose rather than bulleting them.\n\nCite every claim with a bare domain in parentheses.`,
+                    tools: [{
+                        type: 'web_search',
+                        filters: { allowed_domains: ALLOWED_DOMAINS },
+                    }],
+                    max_output_tokens: SUMMARY_MAX_TOKENS,
+                    // NOTE the shape difference: Chat Completions takes a flat
+                    // `reasoning_effort`, the Responses API nests it under
+                    // `reasoning.effort`. Same concept, different parameter —
+                    // the flat form is rejected outright here.
+                    reasoning: { effort: 'none' },
+                    // temperature omitted — default (1) only on this family.
                 }, {
                     headers: {
                         'Authorization': `Bearer ${process.env.OPENAIKEY}`,
                         'Content-Type': 'application/json'
                     },
-                    timeout: 20000
+                    timeout: SEARCH_TIMEOUT_MS
                 });
-                gptAnswer = gpt_response.data.choices[0]?.message?.content || '';
-                if (!gptAnswer) throw new Error('GPT returned an empty answer.');
-            } catch (summaryError) {
-                logger.error(`[Web Command] GPT summary failed: ${summaryError.message}`);
-                if (tavily_results.answer) {
-                    gptAnswer = tavily_results.answer;
-                } else {
-                    throw new Error('Failed to generate a summary for the search results.');
+
+                // output is a mixed array: web_search_call items followed by the
+                // assistant message. Find by type rather than index — the number
+                // of search calls varies with the question.
+                const output = searchResponse.data?.output ?? [];
+                const messageItem = output.find(item => item.type === 'message');
+                const textBlock = messageItem?.content?.find(part => part.type === 'output_text');
+                answerText = textBlock?.text ?? '';
+                annotations = (textBlock?.annotations ?? []).filter(a => a.type === 'url_citation');
+
+                // Everything the search actually retrieved, regardless of what
+                // the model chose to cite inline. Used as the fallback below.
+                const searchCallItems = output.filter(item => item.type === 'web_search_call');
+                retrievedSources = searchCallItems.flatMap(item => item.action?.sources ?? item.sources ?? []);
+
+                logger.info(`[Web Command] web_search completed — ${searchCallItems.length} search call(s), ${annotations.length} inline citation(s), ${retrievedSources.length} retrieved source(s), ${answerText.length} chars`);
+
+                if (!answerText) throw new Error('The model returned an empty answer.');
+            } catch (searchError) {
+                const detail = searchError.response?.data?.error?.message || searchError.message;
+                logger.error(`[Web Command] web_search failed: ${detail}`);
+                throw new Error('Failed to search and generate an answer.');
+            }
+
+            // Source map keyed by bare hostname, matching the (domain.com)
+            // citation markers the instructions ask for. Only URLs the API
+            // actually reports are added, so a hallucinated domain simply won't
+            // match and stays plain text rather than becoming a broken link.
+            const sourceMap = new Map();
+            const addSource = (url, title) => {
+                if (!url || typeof url !== 'string') return;
+                let host;
+                try {
+                    host = new URL(url).hostname.replace(/^www\./, '');
+                } catch {
+                    return;   // unparseable URL — no way to cite it
                 }
+                if (!sourceMap.has(host)) sourceMap.set(host, { url, title: title || host });
+            };
+
+            // Prefer inline citations: those are what the model actually leaned
+            // on. Fall back to everything the search retrieved, because the
+            // model does not always emit url_citation annotations even on a
+            // successful, well-sourced answer — observed live on the first
+            // real query, which returned 5,696 characters and zero citations.
+            for (const annotation of annotations) addSource(annotation.url, annotation.title);
+            if (sourceMap.size === 0) {
+                for (const source of retrievedSources) addSource(source.url, source.title);
+                logger.warn(`[Web Command] No inline citations; fell back to ${sourceMap.size} retrieved source(s).`);
+            }
+
+            // NOTE: deliberately NOT bailing out when sourceMap is empty. The
+            // old Tavily code bailed on "no search results", which is a real
+            // dead end; "no parseable citations" is not the same condition and
+            // must never discard a good answer. Worst case the answer renders
+            // without link buttons.
+            if (sourceMap.size === 0) {
+                logger.warn(`[Web Command] Answer produced with no attributable sources for query: "${query}"`);
             }
 
             // Process citation markdown — replace (sourcename) with [(sourcename)](url).
             const usedSourceNames = new Set();
-            let finalAnswer = gptAnswer.replace(/\(([\w.-]+(?:-\d+)?)\)/g, (match, sourceName) => {
+            let finalAnswer = answerText.replace(/\(([\w.-]+(?:-\d+)?)\)/g, (match, sourceName) => {
                 if (sourceMap.has(sourceName)) {
                     usedSourceNames.add(sourceName);
                     const sourceInfo = sourceMap.get(sourceName);
