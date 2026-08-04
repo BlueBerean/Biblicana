@@ -9,8 +9,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { placesWrapper } from '../utils/studyHelper.js';
-import { getBookId } from '../utils/bookNames.js';
+import { placesWrapper, displayName } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
@@ -19,29 +18,8 @@ import 'dotenv/config';
 
 const MAX_DESC_LENGTH = 3000;
 
-// uniqueName format: "PlaceName_Book.Chapter.Verse" (e.g., "Akeldama_Mat.27.7").
-// Returns display name, human-readable first-ref string, and a structured
-// { bookId, chapter, verse } when the ref is resolvable to an openverse target.
-function displayName(uniqueName) {
-    if (!uniqueName) return { name: 'Unknown', firstRef: '', structured: null };
-    const parts = uniqueName.split('_');
-    const ref = parts[parts.length - 1];
-    const name = parts.slice(0, -1).join(' ');
-
-    let structured = null;
-    const refParts = ref.split('.');
-    if (refParts.length === 3) {
-        const [bookCode, chapterStr, verseStr] = refParts;
-        const bookId = getBookId(bookCode.toLowerCase());
-        const chapter = parseInt(chapterStr);
-        const verse = parseInt(verseStr);
-        if (bookId && !isNaN(chapter) && !isNaN(verse)) {
-            structured = { bookId, chapter, verse };
-        }
-    }
-
-    return { name, firstRef: ref.replace(/\./g, ' '), structured };
-}
+// displayName now lives in studyHelper.js — see the note in persons.js. The two
+// command copies were identical apart from local variable names.
 
 // uStrong format: "G0184", "H1234", or occasionally "H1035G" (compound with
 // trailing noise — seen on Bethlehem). Leading zeros are stripped; anything

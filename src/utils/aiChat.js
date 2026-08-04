@@ -7,7 +7,10 @@ import {
 import { parseScriptureRefs } from './scriptureRefs.js';
 import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
 import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
-import { commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS } from './studyHelper.js';
+import {
+    commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
+    personsWrapper, placesWrapper, dictionaryWrapper, displayName,
+} from './studyHelper.js';
 import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
 import swearWordFilter from './filter.js';
@@ -341,6 +344,22 @@ const MAX_TOPIC_CITATIONS = 12;     // verses returned per lookup_topic
 const TOPIC_FETCH_CAP = 200;        // DB-side row cap for lookup_topic (major topics index 1000s)
 const CROSSREF_FETCH_CAP = 50;      // DB-side row cap for lookup_crossrefs (uses 15)
 const TOOL_COMMENTARY_CHARS = 900;  // per-commentary slice fed back to the model
+const ENTITY_RESULTS = 3;           // person/place entries returned (names are not unique)
+const ENTITY_DESC_CHARS = 500;      // per-entity description slice
+const DICTIONARY_RESULTS = 3;       // Easton's + Smith's often both match one term
+const DICTIONARY_DEF_CHARS = 600;   // per-definition slice
+const PROFILE_CONTENT_CHARS = 900;  // Tyndale articles are long-form; cap hard
+
+// Trim to a character budget on a word boundary where possible, so the model
+// never receives a definition cut mid-word and repeats the fragment as if it
+// were the whole term.
+function clampText(text, limit) {
+    const s = String(text ?? '').trim();
+    if (s.length <= limit) return s;
+    const cut = s.slice(0, limit);
+    const lastSpace = cut.lastIndexOf(' ');
+    return `${(lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
 const TOOL_SCRIPTURE_CHARS = 600;
 
 // Default commentator fallback order (Keil is OT-only — skipped for NT books).
@@ -458,6 +477,66 @@ const AI_TOOLS = [
             },
         },
     },
+    // Descriptions below are deliberately EXCLUSIONARY as well as descriptive —
+    // each says what it is not for. With 11 tools the dominant risk is
+    // mis-selection between overlapping lookups, not the model failing to find
+    // a relevant one.
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_person',
+            description: 'Look up a biblical PERSON: who they were, family relations, tribe, and where they first appear. Use for "who was Nicodemus", "tell me about Barnabas". NOT for places, NOT for word meanings, NOT for topics.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'A person\'s name, e.g. "Nicodemus".' },
+                },
+                required: ['name'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_place',
+            description: 'Look up a biblical PLACE: description, coordinates, and where it first appears. Use for "where is Patmos", "tell me about Capernaum". NOT for people.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'A place name, e.g. "Capernaum".' },
+                },
+                required: ['name'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_dictionary',
+            description: 'Define an English biblical TERM or concept from Easton\'s and Smith\'s Bible dictionaries. Use for "what does propitiation mean", "define covenant". NOT for Greek or Hebrew words — use lookup_original or lookup_strongs for those.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    term: { type: 'string', description: 'An English term, e.g. "propitiation".' },
+                },
+                required: ['term'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'lookup_profile',
+            description: 'Fetch a long-form encyclopedic ARTICLE (Tyndale) on a person, group, place, or theme — substantially fuller than lookup_person or lookup_dictionary. Use only when a short entry is not enough, or for GROUPS and movements such as "Pharisees" or "Samaritans", which the person and place datasets do not cover.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    subject: { type: 'string', description: 'The article subject, e.g. "Pharisees".' },
+                },
+                required: ['subject'],
+            },
+        },
+    },
 ];
 
 // Injected as a system message so the model knows the tools exist and the
@@ -471,6 +550,10 @@ const TOOLS_GUIDANCE = `You can look things up before answering:
 - lookup_strongs(strongs): a Strong's lexicon entry by number (e.g. G26). Use when given a Strong's number, or to define one surfaced by lookup_original.
 - lookup_crossrefs(reference): related verses (Treasury of Scripture Knowledge). Use for "what connects to / relates to this verse".
 - lookup_scripture(reference): exact BSB wording. Use sparingly.
+- lookup_person(name): who a biblical figure was — relations, tribe, first mention. Use for "who was X". Names are not unique, so if several match, say which one you mean.
+- lookup_place(name): a biblical location — description, coordinates, first mention. Use for "where is X".
+- lookup_dictionary(term): Easton's/Smith's definition of an ENGLISH biblical term. Use for "what does propitiation mean". NEVER for a Greek or Hebrew word — that is lookup_original / lookup_strongs.
+- lookup_profile(subject): a long-form encyclopedic article. Use when a short entry is not enough, or for GROUPS and movements (Pharisees, Samaritans, Essenes) that the person and place datasets do not cover.
 
 Match your tool use to what the user actually asked for:
 
@@ -483,6 +566,10 @@ Match your tool use to what the user actually asked for:
 - They want a WORD STUDY / the original language ("what's the Greek/Hebrew for X", "break down the original of Y", "what does G#### mean"): call lookup_original (and lookup_strongs to define a word by its number) and NOTHING else — a word-study request does not need commentary or cross-references.
 
 - They want RELATED verses ("what connects to / relates to X", "cross-references for X"): call lookup_crossrefs only. Don't fetch cross-references for requests that didn't ask about relatedness.
+
+- They asked WHO or WHERE ("who was Nicodemus", "where is Patmos", "tell me about Capernaum"): call lookup_person or lookup_place and nothing else. If the subject is a GROUP or movement rather than an individual or a location (Pharisees, Samaritans, Essenes, Levites), those datasets won't have it — call lookup_profile instead.
+
+- They asked what an ENGLISH term MEANS ("what does propitiation mean", "define covenant"): call lookup_dictionary. If the word is GREEK or HEBREW, that is lookup_original / lookup_strongs instead — never use the English dictionary to state what an original-language word means.
 
 Whichever path, prefer what the tools return over your own training.
 
@@ -760,6 +847,102 @@ async function toolLookupCrossrefs({ reference }) {
     return `${ref} cross-references (Treasury of Scripture Knowledge), ${xrefCount} total: ${cites.join('; ')}. Reference these inline so Biblicana expands them; call lookup_commentary or lookup_father on any for depth.`;
 }
 
+async function toolLookupPerson({ name }) {
+    const query = String(name ?? '').trim();
+    if (!query) return 'Error: a name is required.';
+
+    const rows = await personsWrapper.search(query).catch(() => []);
+    if (!rows?.length) return `No biblical figure named "${query}" in the dataset. Say so rather than answering from memory.`;
+
+    // Names are NOT unique in this dataset — it disambiguates by first-mention
+    // reference ("Zechariah_Luk.1.5" vs "Zechariah_Zec.1.1"). Return a few and
+    // let the model pick, rather than silently asserting the first is "the" one.
+    const entries = rows.slice(0, ENTITY_RESULTS).map(row => {
+        const { name: label, firstRef } = displayName(row.unique_name);
+        const relations = [
+            row.father && `father ${displayName(row.father).name}`,
+            row.mother && `mother ${displayName(row.mother).name}`,
+            row.tribe && `tribe ${row.tribe}`,
+        ].filter(Boolean).join(', ');
+        const description = clampText(row.ext_description || row.short_description || '', ENTITY_DESC_CHARS);
+        return `${label}${firstRef ? ` (first mentioned ${firstRef})` : ''}${relations ? ` — ${relations}` : ''}: ${description || 'no description available'}`;
+    });
+
+    const extra = rows.length > ENTITY_RESULTS
+        ? ` NOTE: ${rows.length} people share this name; ${ENTITY_RESULTS} shown. If the user meant a different one, say so.`
+        : '';
+    return `Biblical figure "${query}" — ${entries.join(' | ')}.${extra} Reference any verses inline so Biblicana expands them.`;
+}
+
+async function toolLookupPlace({ name }) {
+    const query = String(name ?? '').trim();
+    if (!query) return 'Error: a name is required.';
+
+    const rows = await placesWrapper.search(query).catch(() => []);
+    if (!rows?.length) return `No biblical place named "${query}" in the dataset. Say so rather than answering from memory.`;
+
+    const entries = rows.slice(0, ENTITY_RESULTS).map(row => {
+        const { name: label, firstRef } = displayName(row.unique_name);
+        const alias = row.openbible_name && row.openbible_name !== label ? ` (also "${row.openbible_name}")` : '';
+        // The column is NAMED lonlat but actually stores lat,lon — verified
+        // against real data (Capernaum reads "32.88,35.57", and Capernaum is
+        // 32.88N 35.57E, not the reverse). places.js:41 buildMapsLink reads it
+        // the same way. Labelled explicitly so the model can't transpose it.
+        const coords = row.lonlat ? ` Coordinates (lat,lon): ${row.lonlat}.` : '';
+        const description = clampText(row.ext_description || row.short_description || '', ENTITY_DESC_CHARS);
+        return `${label}${alias}${firstRef ? `, first mentioned ${firstRef}` : ''}: ${description || 'no description available'}.${coords}`;
+    });
+
+    const extra = rows.length > ENTITY_RESULTS ? ` (+${rows.length - ENTITY_RESULTS} further matches)` : '';
+    return `Biblical place "${query}"${extra} — ${entries.join(' | ')} Reference any verses inline so Biblicana expands them.`;
+}
+
+async function toolLookupDictionary({ term }) {
+    const query = String(term ?? '').trim();
+    if (!query) return 'Error: a term is required.';
+
+    const { results, matchType } = await dictionaryWrapper
+        .search(query)
+        .catch(() => ({ results: [], matchType: 'none' }));
+
+    if (!results?.length) return `No dictionary entry for "${query}" in Easton's or Smith's. Say so rather than inventing a definition.`;
+
+    const entries = results.slice(0, DICTIONARY_RESULTS).map(row =>
+        `${row.term} (${row.source_name}): ${clampText(row.definition, DICTIONARY_DEF_CHARS)}`
+    );
+
+    // Honest attribution: a fallback match hit the definition TEXT, not the
+    // headword, so the entry may be about something adjacent to what was asked.
+    const caveat = matchType === 'exact'
+        ? ''
+        : ` WARNING: no exact headword "${query}" exists — these matched on definition text and may be about a related term. Check relevance before citing, and tell the user if it is only adjacent.`;
+
+    return `Dictionary lookup "${query}"${caveat} — ${entries.join(' | ')}. Cite the dictionary by name (Easton's or Smith's).`;
+}
+
+async function toolLookupProfile({ subject }) {
+    const query = String(subject ?? '').trim();
+    if (!query) return 'Error: a subject is required.';
+
+    const { results, matchType } = await commentaryWrapper
+        .searchProfiles(query)
+        .catch(() => ({ results: [], matchType: 'none' }));
+
+    if (!results?.length) return `No encyclopedic article on "${query}". Try lookup_person, lookup_place, or lookup_dictionary instead.`;
+
+    const top = results[0];
+    const source = top.commentaryName || 'Tyndale';
+    const anchor = top.referenceBook && top.referenceChapter
+        ? ` Anchored at ${top.referenceBook} ${top.referenceChapter}${top.referenceVerse ? `:${top.referenceVerse}` : ''}.`
+        : '';
+    const alternatives = results.length > 1
+        ? ` Other articles matched: ${results.slice(1, 4).map(r => r.subject).join(', ')}.`
+        : '';
+    const caveat = matchType === 'exact' ? '' : ` (no exact subject "${query}"; closest article is "${top.subject}")`;
+
+    return `Encyclopedic article on "${top.subject}"${caveat}, from ${source}.${anchor} ${clampText(top.content, PROFILE_CONTENT_CHARS)}${alternatives} Attribute this to ${source} by name.`;
+}
+
 async function executeTool(name, argsJson) {
     let args;
     try {
@@ -776,6 +959,10 @@ async function executeTool(name, argsJson) {
             case 'lookup_original': return await toolLookupOriginal(args);
             case 'lookup_strongs': return await toolLookupStrongs(args);
             case 'lookup_crossrefs': return await toolLookupCrossrefs(args);
+            case 'lookup_person': return await toolLookupPerson(args);
+            case 'lookup_place': return await toolLookupPlace(args);
+            case 'lookup_dictionary': return await toolLookupDictionary(args);
+            case 'lookup_profile': return await toolLookupProfile(args);
             default: return `Error: unknown tool "${name}".`;
         }
     } catch (err) {

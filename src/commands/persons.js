@@ -9,8 +9,7 @@ import {
     ApplicationIntegrationType,
     InteractionContextType
 } from 'discord.js';
-import { personsWrapper } from '../utils/studyHelper.js';
-import { getBookId } from '../utils/bookNames.js';
+import { personsWrapper, displayName } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
@@ -20,27 +19,9 @@ import 'dotenv/config';
 const MAX_DESC_LENGTH = 2500;
 const MAX_RELATION_LIST_CHARS = 400;
 
-// uniqueName format: "PersonName_Book.Chapter.Verse" (e.g., "Mary_Magdalene_Mat.27.56").
-// Returns display name, human-readable firstRef, and structured { bookId, chapter, verse } when resolvable.
-function displayName(uniqueName) {
-    if (!uniqueName) return { name: 'Unknown', firstRef: '', structured: null };
-    const parts = uniqueName.split('_');
-    const ref = parts[parts.length - 1];
-    const name = parts.slice(0, -1).join(' ');
-
-    let structured = null;
-    const refParts = ref.split('.');
-    if (refParts.length === 3) {
-        const bookId = getBookId(refParts[0].toLowerCase());
-        const chapter = parseInt(refParts[1]);
-        const verse = parseInt(refParts[2]);
-        if (bookId && !isNaN(chapter) && !isNaN(verse)) {
-            structured = { bookId, chapter, verse };
-        }
-    }
-
-    return { name, firstRef: ref.replace(/\./g, ' '), structured };
-}
+// displayName now lives in studyHelper.js — persons.js, places.js and the AI
+// chat tools all needed byte-identical formatting of the "Name_Book.Ch.Vs"
+// unique_name shape, and it was duplicated verbatim across the command files.
 
 function parseStrongs(uStrong) {
     if (!uStrong) return null;

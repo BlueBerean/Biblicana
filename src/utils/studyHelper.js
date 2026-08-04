@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import path, { dirname } from 'node:path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
-import { toTSKSource } from './bookNames.js';
+import { toTSKSource, getBookId } from './bookNames.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +142,40 @@ class FathersWrapper {
                 c.father_name ASC`
         );
     }
+}
+
+/**
+ * Split a person/place `unique_name` into its display parts.
+ *
+ * Format is "Name_Book.Chapter.Verse" — "Mary_Magdalene_Mat.27.56",
+ * "Akeldama_Mat.27.7" — i.e. the name may itself contain underscores, so only
+ * the LAST segment is the reference.
+ *
+ * Lives here rather than in a command file because persons.js, places.js and
+ * the AI chat tools all need identical formatting; it was previously duplicated
+ * verbatim (modulo variable names) in the two command files.
+ *
+ * @returns {{name: string, firstRef: string, structured: ?{bookId: number, chapter: number, verse: number}}}
+ */
+export function displayName(uniqueName) {
+    if (!uniqueName) return { name: 'Unknown', firstRef: '', structured: null };
+    const parts = String(uniqueName).split('_');
+    const ref = parts[parts.length - 1];
+    const name = parts.slice(0, -1).join(' ');
+
+    let structured = null;
+    const refParts = ref.split('.');
+    if (refParts.length === 3) {
+        const [bookCode, chapterStr, verseStr] = refParts;
+        const bookId = getBookId(bookCode.toLowerCase(), { silent: true });
+        const chapter = parseInt(chapterStr, 10);
+        const verse = parseInt(verseStr, 10);
+        if (bookId && !isNaN(chapter) && !isNaN(verse)) {
+            structured = { bookId, chapter, verse };
+        }
+    }
+
+    return { name, firstRef: ref.replace(/\./g, ' '), structured };
 }
 
 class PersonsWrapper {
