@@ -4,7 +4,7 @@ Guidance for Claude Code sessions working in this repository.
 
 ## What this is
 
-**Biblicana** — a Node.js Discord bot for scripture lookups, commentary, cross-references, Bible dictionary, prophecies of Jesus, random verses, and more. Deployed in ~457 Discord servers. Live instance runs on a DigitalOcean droplet managed by PM2.
+**Biblicana** — a Node.js Discord bot for scripture lookups, commentary, cross-references, Bible dictionary, prophecies of Jesus, random verses, and more. Deployed in **~543 Discord servers** (2026-08-03; was 457 in April, 527 in July — it grows, so re-check `/stats` rather than trusting this number). Live instance runs on a DigitalOcean droplet managed by PM2, currently **v1.5.1 on the `refactor` branch**.
 
 Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a contributor.
 
@@ -15,10 +15,11 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 - **State**: ioredis 5.x (local Redis on the same host as the bot) + pg 8.x (Neon serverless Postgres)
 - **Bible data**: SQLite — all gitignored.
   - On `main`: `bible.db` (~131 MB, verse text + interlinear), `strongs.db` (~2.7 MB, Hebrew/Greek lexicon). Both present on prod.
-  - On `refactor`, six additional local SQLite DBs (~560 MB total): `extrabiblical_data.sqlite` (100 MB, 334 Church Fathers, 61k entries), `clean_commentary.db` (428 MB, 6 modern commentators incl. Gill/Clarke/Henry/JFB/Keil/Tyndale, 88k verse + 4.5k chapter-intro entries), `person_places.db` (6.3 MB, biblical figures/places w/ coordinates), `dictionary.sqlite` (5 MB, Easton's + Smith's, 8.4k entries), `cross-references.sqlite` (11 MB, Treasury of Scripture Knowledge, 340k refs), `categories.sqlite` (11 MB, 7.4k topical categories, 406k refs). **Not on prod yet** — require upload as part of any refactor-to-prod migration.
-- **Package manager**: prod uses `npm` with `package-lock.json`; local dev uses `pnpm@10` with a derived `pnpm-lock.yaml` (local-only)
+  - Six additional local SQLite DBs (~560 MB total): `extrabiblical_data.sqlite` (100 MB, 334 authors — 285 patristic plus 49 medieval/modern, see the era-labelling note below — 61k entries), `clean_commentary.db` (428 MB, 6 modern commentators incl. Gill/Clarke/Henry/JFB/Keil/Tyndale, 88k verse + 4.5k chapter-intro entries), `person_places.db` (6.3 MB, biblical figures/places w/ coordinates), `dictionary.sqlite` (5 MB, Easton's + Smith's, 8.4k entries), `cross-references.sqlite` (11 MB, Treasury of Scripture Knowledge, 340k refs), `categories.sqlite` (11 MB, 7.4k topical categories, 406k refs). **All present on prod** since the 2026-06-30 v1.5.0 migration.
+- **AI model**: `gpt-5.6-luna` (since v1.5.1). GPT-5 family, so the API surface differs from 4o: `max_completion_tokens` not `max_tokens`, `temperature` accepts only the default, and `max_completion_tokens` INCLUDES hidden reasoning tokens — `reasoning_effort: 'none'` is pinned everywhere for that reason. Chat Completions takes flat `reasoning_effort`; the Responses API nests it as `reasoning.effort`.
+- **Package manager**: prod uses `npm`; local dev uses `pnpm@10`. Note `pnpm-lock.yaml` IS tracked in git, while prod's `package-lock.json` is **untracked and stale (v1.4.0)** — so `git pull` never touches it, and `npm ci` should be skipped unless dependencies actually changed.
 - **Process manager (prod)**: PM2 v5 (`pm2 list`, `pm2 logs index`, `pm2 restart index`)
-- **External APIs**: OpenAI (`/find`, `/web` intent check), Tavily (on `refactor`, `/web` AI search). RapidAPI still used by `/audio`, `/bookinfo`, `/originaltext`, `/parallel`, `/semantics`, `/topic` — but on `refactor`, `/dictionary`, `/crossref`, `/topicalindex`, `/commentary` have all been moved to local SQLite and no longer hit RapidAPI.
+- **External APIs**: OpenAI only for AI features — `/find`, the `/web` intent check, `/web` search itself, and AI chat. **Tavily was removed in v1.5.1**; `/web` now uses OpenAI's built-in `web_search` tool restricted to an 18-domain allowlist in `src/utils/webSearch.js` (shared with AI chat's `search_web` tool). RapidAPI still used by `/audio`, `/bookinfo`, `/originaltext`, `/parallel`, `/semantics`, `/topic`; `/dictionary`, `/crossref`, `/topicalindex`, `/commentary` are local SQLite.
 
 ## Repository layout
 
@@ -26,7 +27,9 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 src/
   index.js                # Bot entry; wires up Discord client, loads commands/events/buttons
   config.js               # (refactor) Centralized Postgres config object
-  commands/               # Slash commands — one file per command (26 on refactor, 22 on main)
+  commands/               # Slash commands — one file per command (33 on refactor: 32 global
+                          #   + /testwelcome, which carries `devOnly: true` and is excluded
+                          #   from the global registry by deploy.js)
   components/buttons/     # Button interaction handlers
   database/
     redisPGHandler.js     # Combined Redis + Postgres wrapper (both always-available)
@@ -90,11 +93,11 @@ This pattern is load-bearing for grep-based log analysis on prod (e.g., `pm2 log
 
 ### Environment variables
 
-All env var names are UPPERCASE, **no underscores** (except `TAVILY_API_KEY` which was added later on refactor with underscores — an inconsistency). Examples: `DISCORDTOKEN`, `CLIENTID`, `GUILDID`, `PGHOST`, `OPENAIKEY`. When adding new vars, match the prevailing style (no underscores) for consistency unless the var follows an external convention.
+All env var names are UPPERCASE, **no underscores**. Examples: `DISCORDTOKEN`, `CLIENTID`, `GUILDID`, `PGHOST`, `OPENAIKEY`. The one exception (`TAVILY_API_KEY`) disappeared with Tavily in v1.5.1, so the convention is now uniform. When adding new vars, match it unless the var follows an external convention.
 
 ### Slash command deployment
 
-Never run `src/deploy.js` with the `--global` flag for development. The `deploy` npm script registers commands to a single guild (instant); `deployg` registers globally (up to an hour propagation across all 457 servers). The test bot has its own `CLIENTID` and is deployed to a test guild only.
+Never run `src/deploy.js` with the `--global` flag for development. The `deploy` npm script registers commands to a single guild (instant); `deployg` registers globally (up to an hour propagation across all ~543 servers). The test bot has its own `CLIENTID` and is deployed to a test guild only.
 
 ### Embed colors / chrome
 
@@ -110,14 +113,14 @@ See `/Users/kenneth/Development/lionmark/discord-bot/BIBLICANA_OPS.md` for the f
 2. `pnpm install` (installs 264 deps; `pnpm.onlyBuiltDependencies: ["sqlite3"]` in package.json allows the native binding to build)
 3. Populate `data/` with the runtime SQLite files (all gitignored):
    - `books.json`, `bible.db`, `strongs.db` — scp from prod droplet
-   - On `refactor` you also need: `extrabiblical_data.sqlite`, `clean_commentary.db`, `person_places.db`, `dictionary.sqlite`, `cross-references.sqlite`, `categories.sqlite`. These are **not on prod yet** — source from Kenneth's local `data/new_data/` archive (provenance: upstream dataset aggregator). See `BIBLICANA_OPS.md` for details.
+   - You also need: `extrabiblical_data.sqlite`, `clean_commentary.db`, `person_places.db`, `dictionary.sqlite`, `cross-references.sqlite`, `categories.sqlite`. These **are on prod** (since v1.5.0), so scp them from the droplet like the others, or source from Kenneth's local `data/new_data/` archive. See `BIBLICANA_OPS.md`.
 4. `.env` with test bot credentials + Neon dev-branch credentials (dev branch is isolated from prod data)
 5. Run `pnpm run deploy` to register slash commands with the test guild
 6. `node src/index.js` to start the bot
 
 ### Testing changes
 
-All code changes should be tested with the test bot against the test server BEFORE merging to `main`. The prod bot is in 457 Discord servers; breakage affects real users. The test bot token + test server ID are in local `.env`; the Neon `dev-local` branch is a sandbox copy-on-write clone of prod's database.
+All code changes should be tested with the test bot against the test server BEFORE deploying `refactor` to the droplet (`main` is not deployed). The prod bot is in ~543 Discord servers; breakage affects real users. The test bot token + test server ID are in local `.env`; the Neon `dev-local` branch is a sandbox copy-on-write clone of prod's database.
 
 ### Deploying to prod
 
@@ -140,17 +143,22 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 - **Never pipe `scp` output** (e.g., `| tail -5`) when copying data files from prod — scp can see the pipe fill and truncate the transfer silently with a clean exit code, producing corrupted files. Run scp without any pipe.
 - **Postgres auth failures are logged but not fatal** — `redisPGHandler` continues even if the DB connection fails (`[Database ERR] ... Error creating tables: ...`). This means a broken local `.env` can produce a bot that "looks up" but silently fails every DB-dependent command. Check for `[Database ERR]` lines at startup.
 - **`/ping` command does not log anything** — it's a pure latency check, no console.log. Don't use it to verify the bot received a command in log-based tests; use `/randomverse` or `/bible` instead.
+- **The "Church Fathers" DB is not all Church Fathers.** `extrabiblical_data.sqlite` holds 334 authors: 285 patristic, plus 49 medieval, Reformation-era and modern writers (Aquinas, C.S. Lewis, Tolkien, at least one living author). Anything surfacing these rows must classify by `default_year` — `classifyFather` for model-facing text, `fatherEraBadge` for UI, both in `studyHelper.js`. Presenting a 1963 author as "the early church" is a factual error, and the two helpers are tested to never disagree.
+- **Test names must be ASCII.** Prod's Node 18.13 TAP lexer dies on a non-ASCII character in a `test()` description and reports the whole FILE as 0 passed, naming nothing. Local Node 18.20 parses it fine, so it only shows up on the droplet. Em-dashes are fine in comments, assertions and log lines — just not in test titles.
+- **Neon bills compute-time, not queries.** Anything polling on a timer shorter than the ~5-minute autosuspend threshold keeps the endpoint awake permanently, regardless of how few queries it makes. The daily-verse tick did exactly this from 2026-06-30 to 2026-08-01. Cache timer-driven reads in Redis and invalidate on write; see `getDailyVerseGuilds`.
 
 ## Branches
 
-- `main` — what prod runs. CommonJS, npm, 190+ deps, 53 open Dependabot vulnerabilities (4 critical, 28 high). Still hits RapidAPI for dictionary/commentary/crossref/topic index. 22 commands. **Do not push directly here** until `refactor` has been verified in prod.
-- `refactor` — ESM-migrated, pnpm, 11 real deps, 0 critical Dependabot alerts on its own tree. Six RapidAPI-dependent commands (`/dictionary`, `/crossref`, `/topicalindex`, `/commentary`) have been replaced with local SQLite. Four new commands added (`/fathers`, `/persons`, `/places`, `/profile`). 26 commands total. Booted and tested end-to-end locally. Major commits in timeline order:
-  - `647681e` — slim deps + patch 48+ Dependabot issues
-  - `eeee957` — add CLAUDE.md
-  - `6bd3d78` — full ESM migration; add 3 new commands; migrate `/dictionary` to local
-  - `ef678ad` — migrate `/crossref`, `/topicalindex`, `/commentary` to local; add chapter-level commentary; default commentator → JFB
-  - (uncommitted local) — add `/profile` command; strip debug-log spam from `bible.js`
-- All refactor changes remain unmerged until a deliberate droplet-migration push (upload data files, switch branch, pnpm install on droplet, pm2 restart).
+- **`refactor` — what prod actually runs**, and has since the v1.5.0 migration on 2026-06-30. This is the working branch: deploys are a `git pull` on the droplet from `refactor`. ESM, 11 real deps, 0 critical Dependabot alerts on its own tree. `/dictionary`, `/crossref`, `/topicalindex` and `/commentary` are local SQLite rather than RapidAPI; `/fathers`, `/persons`, `/places` and `/profile` were added. 33 command files, 32 registered globally (`/testwelcome` is `devOnly`).
+- **`main` — stale, NOT deployed.** CommonJS, 190+ deps, 100+ open Dependabot vulnerabilities. Left behind by the refactor and increasingly divergent. **Do not push here**, and do not treat it as production — several docs (including older revisions of this file) wrongly said it was.
+
+### Release history
+
+- `647681e` — slim deps + patch 48+ Dependabot issues
+- `6bd3d78` — full ESM migration; 3 new commands; `/dictionary` moved local
+- `ef678ad` — `/crossref`, `/topicalindex`, `/commentary` moved local; chapter-level commentary
+- **v1.5.0 (2026-06-30)** — first `refactor` deploy to the droplet. Data files uploaded; `main` not deployed since.
+- **v1.5.1 (2026-08-03)** — reliability + cost batch: ack-before-I/O across 16 handlers, `pg.Pool` bounds (and a missing `pool.on('error')` listener that could crash the process), Redis negative caching, a single-query daily-verse tick with its guild list cached to stop the 5-minute tick waking Neon, GPT-5.6-Luna with prompt caching, Tavily replaced by OpenAI `web_search` on an 18-domain allowlist, a Sources button on AI answers, era labelling in `/fathers`, and passage-slice anchoring so a passage-grouped commentator answers the verse actually asked about. `followups.md` (gitignored, local-only) has the item-by-item record.
 
 ## References
 
