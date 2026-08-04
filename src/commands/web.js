@@ -15,6 +15,7 @@ import splitString from '../utils/splitString.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import { checkAckStatus, buildAckDisclosureV2 } from '../utils/aiAck.js';
+import { searchAllowedWeb, buildWebSourceMap } from '../utils/webSearch.js';
 import 'dotenv/config';
 
 const INTENT_MODEL = 'gpt-5.6-luna';
@@ -31,45 +32,9 @@ const MAX_CHARS_PER_PAGE = 3500;
 const MAX_BUTTON_LABEL = 80;
 const RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
 
-// Domains /web is allowed to search. Replaces the old approach of appending
-// "Christian perspective biblical teaching" to the query string and hoping the
-// general web returned something sound — this is an actual allowlist enforced
-// server-side by the web_search tool, so nothing outside it can be cited.
-//
-// Cross-denominational by design: the non-Protestant entries are here so that
-// contested questions can be answered from a tradition's OWN words rather than
-// only from critiques of it. The answer's doctrinal stance is set by the
-// instructions below (Protestant), not by starving the model of primary sources.
-//
-// Omit the scheme; subdomains are included automatically. The tool accepts up
-// to 100 entries.
-const ALLOWED_DOMAINS = [
-    // Primary texts, lexicons, and study tools.
-    'ccel.org',             // Christian Classics Ethereal Library — public-domain primary texts
-    'newadvent.org',        // Church Fathers, Summa, Catholic Encyclopedia
-    'biblehub.com',         // interlinear, lexicons, parallel translations
-    'blueletterbible.org',  // Strong's, lexicons, concordance
-    'stepbible.org',        // Tyndale House — scholarly open Bible tools
-    'biblicaltraining.org', // seminary-level lecture material
-    'bible.org',            // NET Bible + translators' notes
-    'chapellibrary.org',    // public-domain Puritan / Reformed literature
-
-    // Teaching ministries and Q&A.
-    'thegospelcoalition.org',
-    'desiringgod.org',
-    'ligonier.org',
-    'gotquestions.org',     // Got Questions Ministries
-    'compellingtruth.org',  // same ministry as gotquestions.org
-    'carm.org',             // Christian Apologetics & Research Ministry
-    'answersingenesis.org', // young-earth creation apologetics
-    'creation.com',         // Creation Ministries International — likewise
-
-    // Non-Protestant traditions. Present so contested questions can be answered
-    // from more than one tradition's own words rather than only from critiques
-    // of it — see the cross-denominational note above.
-    'catholic.com',
-    'oca.org',              // Orthodox Church in America
-];
+// ALLOWED_DOMAINS now lives in utils/webSearch.js — the AI chat's search_web
+// tool searches the same list, and a trust boundary defined in two places is a
+// trust boundary that drifts.
 
 // System-level instructions for the search-and-answer call. Previously this
 // summarised a pre-fetched result set; the model now does its own retrieval,
@@ -254,48 +219,18 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
             let annotations = [];
             let retrievedSources = [];
             try {
-                const searchResponse = await axios.post('https://api.openai.com/v1/responses', {
-                    model: SUMMARY_MODEL,
+                const result = await searchAllowedWeb({
+                    query: `Query: "${query}"\n\nSearch the allowed sources and write a thorough, evidence-focused answer (500–800 words, primarily prose; bullets only for genuine 3+ item enumerations).\n\nIncorporate where the sources support it: historical evidence and dates, archaeological findings, biblical references, specific names and places, verifiable facts, and multiple viewpoints when the sources present them — but weave these into prose rather than bulleting them.\n\nCite every claim with a bare domain in parentheses.`,
                     instructions: WEB_ANSWER_INSTRUCTIONS,
-                    // Without this the web_search_call items come back WITHOUT
-                    // their sources array, so a run where the model doesn't
-                    // inline-cite leaves us with no URLs at all.
-                    include: ['web_search_call.action.sources'],
-                    input: `Query: "${query}"\n\nSearch the allowed sources and write a thorough, evidence-focused answer (500–800 words, primarily prose; bullets only for genuine 3+ item enumerations).\n\nIncorporate where the sources support it: historical evidence and dates, archaeological findings, biblical references, specific names and places, verifiable facts, and multiple viewpoints when the sources present them — but weave these into prose rather than bulleting them.\n\nCite every claim with a bare domain in parentheses.`,
-                    tools: [{
-                        type: 'web_search',
-                        filters: { allowed_domains: ALLOWED_DOMAINS },
-                    }],
-                    max_output_tokens: SUMMARY_MAX_TOKENS,
-                    // NOTE the shape difference: Chat Completions takes a flat
-                    // `reasoning_effort`, the Responses API nests it under
-                    // `reasoning.effort`. Same concept, different parameter —
-                    // the flat form is rejected outright here.
-                    reasoning: { effort: 'none' },
-                    // temperature omitted — default (1) only on this family.
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${process.env.OPENAIKEY}`,
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: SEARCH_TIMEOUT_MS
+                    maxOutputTokens: SUMMARY_MAX_TOKENS,
+                    timeoutMs: SEARCH_TIMEOUT_MS,
                 });
 
-                // output is a mixed array: web_search_call items followed by the
-                // assistant message. Find by type rather than index — the number
-                // of search calls varies with the question.
-                const output = searchResponse.data?.output ?? [];
-                const messageItem = output.find(item => item.type === 'message');
-                const textBlock = messageItem?.content?.find(part => part.type === 'output_text');
-                answerText = textBlock?.text ?? '';
-                annotations = (textBlock?.annotations ?? []).filter(a => a.type === 'url_citation');
+                answerText = result.text;
+                annotations = result.annotations;
+                retrievedSources = result.retrieved;
 
-                // Everything the search actually retrieved, regardless of what
-                // the model chose to cite inline. Used as the fallback below.
-                const searchCallItems = output.filter(item => item.type === 'web_search_call');
-                retrievedSources = searchCallItems.flatMap(item => item.action?.sources ?? item.sources ?? []);
-
-                logger.info(`[Web Command] web_search completed — ${searchCallItems.length} search call(s), ${annotations.length} inline citation(s), ${retrievedSources.length} retrieved source(s), ${answerText.length} chars`);
+                logger.info(`[Web Command] web_search completed — ${result.searchCallCount} search call(s), ${annotations.length} inline citation(s), ${retrievedSources.length} retrieved source(s), ${answerText.length} chars`);
 
                 if (!answerText) throw new Error('The model returned an empty answer.');
             } catch (searchError) {
@@ -304,32 +239,10 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                 throw new Error('Failed to search and generate an answer.');
             }
 
-            // Source map keyed by bare hostname, matching the (domain.com)
-            // citation markers the instructions ask for. Only URLs the API
-            // actually reports are added, so a hallucinated domain simply won't
-            // match and stays plain text rather than becoming a broken link.
-            const sourceMap = new Map();
-            const addSource = (url, title) => {
-                if (!url || typeof url !== 'string') return;
-                let host;
-                try {
-                    host = new URL(url).hostname.replace(/^www\./, '');
-                } catch {
-                    return;   // unparseable URL — no way to cite it
-                }
-                if (!sourceMap.has(host)) sourceMap.set(host, { url, title: title || host });
-            };
-
-            // Prefer inline citations: those are what the model actually leaned
-            // on. Fall back to everything the search retrieved, because the
-            // model does not always emit url_citation annotations even on a
-            // successful, well-sourced answer — observed live on the first
-            // real query, which returned 5,696 characters and zero citations.
-            for (const annotation of annotations) addSource(annotation.url, annotation.title);
-            if (sourceMap.size === 0) {
-                for (const source of retrievedSources) addSource(source.url, source.title);
-                logger.warn(`[Web Command] No inline citations; fell back to ${sourceMap.size} retrieved source(s).`);
-            }
+            // Hostname-keyed, matching the (domain.com) citation markers the
+            // instructions ask for. Prefers inline citations, falls back to
+            // everything retrieved — see buildWebSourceMap.
+            const sourceMap = buildWebSourceMap({ annotations, retrieved: retrievedSources });
 
             // NOTE: deliberately NOT bailing out when sourceMap is empty. The
             // old Tavily code bailed on "no search results", which is a real

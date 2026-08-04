@@ -11,6 +11,7 @@ import {
     commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
     personsWrapper, placesWrapper, dictionaryWrapper, displayName,
 } from './studyHelper.js';
+import { searchAllowedWeb, buildWebSourceMap } from './webSearch.js';
 import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
 import swearWordFilter from './filter.js';
@@ -266,9 +267,11 @@ function buildResponsePayload(responseText, { hasSources = false } = {}) {
     return { content: text, components: [responseButtonRow({ hasSources })] };
 }
 
-// The lookup tools name their "what was looked up" argument differently.
+// The tools name their "what was looked up" argument differently. `query` is
+// search_web's — omitting it silently dropped every web search from the
+// provenance record, since a subject-less call is filtered out below.
 function toolSubject(args = {}) {
-    return args.reference || args.name || args.term || args.subject || args.topic || args.strongs || null;
+    return args.reference || args.name || args.term || args.subject || args.topic || args.strongs || args.query || null;
 }
 
 /**
@@ -276,7 +279,7 @@ function toolSubject(args = {}) {
  * renders. Returns null when nothing was consulted, so ungrounded answers
  * simply don't get a button.
  */
-function buildSourcePayload({ rag = [], tools = [] }) {
+function buildSourcePayload({ rag = [], tools = [], web = [] }) {
     // The model legitimately calls the same tool twice in one turn (the log
     // shows lookup_original fired for both a word and the whole verse), which
     // would otherwise render as a duplicate line.
@@ -291,8 +294,18 @@ function buildSourcePayload({ rag = [], tools = [] }) {
         cleanTools.push({ name: call.name, subject: String(subject) });
     }
 
-    if (rag.length === 0 && cleanTools.length === 0) return null;
-    return { rag, tools: cleanTools };
+    // Dedupe web sources by host too — several citations commonly land on the
+    // same site, and the panel should list each site once.
+    const seenHosts = new Set();
+    const cleanWeb = [];
+    for (const source of web) {
+        if (!source?.host || seenHosts.has(source.host)) continue;
+        seenHosts.add(source.host);
+        cleanWeb.push({ host: source.host, url: source.url, title: source.title, cited: source.cited === true });
+    }
+
+    if (rag.length === 0 && cleanTools.length === 0 && cleanWeb.length === 0) return null;
+    return { rag, tools: cleanTools, web: cleanWeb };
 }
 
 // Build RAG grounding. When the user's message mentions scripture, fetch
@@ -416,6 +429,22 @@ const ENTITY_DESC_CHARS = 500;      // per-entity description slice
 const DICTIONARY_RESULTS = 3;       // Easton's + Smith's often both match one term
 const DICTIONARY_DEF_CHARS = 600;   // per-definition slice
 const PROFILE_CONTENT_CHARS = 900;  // Tyndale articles are long-form; cap hard
+const WEB_RESULT_CHARS = 1400;      // web results are the longest tool payload
+const WEB_MAX_OUTPUT_TOKENS = 2000;
+// Longer than the 20s chat timeout: this performs a real web search plus
+// generation. Safe because AI chat replies to a MESSAGE, so there is no
+// 3-second interaction deadline to miss — only a user waiting.
+const WEB_TIMEOUT_MS = 45_000;
+
+// Deliberately terser than /web's instructions. A chat reply is capped at ~1950
+// characters, so a 500-800 word research essay would be truncated; this asks for
+// something that fits the conversation it lands in.
+const CHAT_WEB_INSTRUCTIONS = `You are researching on behalf of a Bible study assistant in a Discord conversation.
+
+- Search the allowed sites and answer in at most 200 words of plain prose. No headings, no bullet lists.
+- Base the answer only on what you retrieve. If the sites don't cover it, say so plainly rather than filling the gap from memory.
+- Name the site each claim came from, as a bare domain in parentheses, e.g. (gotquestions.org).
+- Some allowed sites represent Catholic or Orthodox teaching. Attribute those views to that tradition rather than presenting them as the Protestant position.`;
 
 // Trim to a character budget on a word boundary where possible, so the model
 // never receives a definition cut mid-word and repeats the fragment as if it
@@ -604,6 +633,20 @@ const AI_TOOLS = [
             },
         },
     },
+    {
+        type: 'function',
+        function: {
+            name: 'search_web',
+            description: 'Search a curated list of trusted Christian reference sites for something the local library does not hold — a ministry\'s current position, a recent event, or a topic with no scripture, commentary or dictionary entry. This is the ONLY tool that reaches outside the local data, and it is the SLOWEST. Do NOT use it for scripture text, commentary, Church Fathers, word studies, cross-references, or dictionary definitions: those all have dedicated tools with better and faster data. Reach for this only once the local tools have come up empty.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string', description: 'What to search for, phrased as a search query.' },
+                },
+                required: ['query'],
+            },
+        },
+    },
 ];
 
 // Injected as a system message so the model knows the tools exist and the
@@ -621,6 +664,7 @@ const TOOLS_GUIDANCE = `You can look things up before answering:
 - lookup_place(name): a biblical location — description, coordinates, first mention. Use for "where is X". ALWAYS call it for a location question, including ones that feel like common knowledge.
 - lookup_dictionary(term): Easton's/Smith's definition of an ENGLISH biblical term. Use for "what does propitiation mean". NEVER for a Greek or Hebrew word — that is lookup_original / lookup_strongs.
 - lookup_profile(subject): a long-form encyclopedic article. Use when a short entry is not enough, or for GROUPS and movements (Pharisees, Samaritans, Essenes) that the person and place datasets do not cover.
+- search_web(query): searches a curated list of trusted Christian sites. The ONLY tool that leaves the local library, and the slowest. LAST RESORT — use it when the local tools genuinely cannot answer (a ministry's current position, a recent event, a topic with no entry anywhere above), never for scripture, commentary, Fathers, word studies, cross-references or dictionary definitions.
 
 Match your tool use to what the user actually asked for:
 
@@ -637,6 +681,8 @@ Match your tool use to what the user actually asked for:
 - They asked WHO or WHERE ("who was Nicodemus", "where is Patmos", "tell me about Capernaum"): call lookup_person or lookup_place and nothing else. If the subject is a GROUP or movement rather than an individual or a location (Pharisees, Samaritans, Essenes, Levites), those datasets won't have it — call lookup_profile instead.
 
 - They asked what an ENGLISH term MEANS ("what does propitiation mean", "define covenant"): call lookup_dictionary. If the word is GREEK or HEBREW, that is lookup_original / lookup_strongs instead — never use the English dictionary to state what an original-language word means.
+
+- The question needs something OUTSIDE the library — current events, a ministry or denomination's present-day position, a modern controversy, or anything the tools above returned nothing for: call search_web. Try the local tools FIRST; search_web is slower and its sources are secondary literature rather than the primary texts and commentary you already have. When you use it, name the sites you drew on, and say plainly if the trusted sites don't cover the question rather than filling the gap from memory.
 
 Whichever path, prefer what the tools return over your own training.
 
@@ -1012,7 +1058,54 @@ async function toolLookupProfile({ subject }) {
     return `Encyclopedic article on "${top.subject}"${caveat}, from ${source}.${anchor} ${clampText(top.content, PROFILE_CONTENT_CHARS)}${alternatives} Attribute this to ${source} by name.`;
 }
 
-async function executeTool(name, argsJson) {
+/**
+ * The only tool that leaves the local library.
+ *
+ * `webSourceCollector` is passed down rather than returned because every other
+ * tool's contract is "return a string for the model". Collecting into a
+ * per-call array keeps that contract intact and stays concurrency-safe — a
+ * module-level accumulator would interleave between simultaneous chats.
+ */
+async function toolSearchWeb({ query }, webSourceCollector) {
+    const searchQuery = String(query ?? '').trim();
+    if (!searchQuery) return 'Error: a query is required.';
+
+    try {
+        const result = await searchAllowedWeb({
+            query: searchQuery,
+            instructions: CHAT_WEB_INSTRUCTIONS,
+            maxOutputTokens: WEB_MAX_OUTPUT_TOKENS,
+            timeoutMs: WEB_TIMEOUT_MS,
+        });
+
+        if (!result.text) return `The web search returned nothing usable for "${searchQuery}". Say the trusted sites don't cover it rather than answering from memory.`;
+
+        const sourceMap = buildWebSourceMap(result);
+        // Distinguish what the answer CITED from what the search merely
+        // retrieved. Without inline citations we only know these pages were
+        // fetched — a retrieved-but-uncited page may be entirely unrelated
+        // (a search for "Lausanne 2026" returned six pages about other
+        // topics), and presenting those as sources would imply support the
+        // answer never had.
+        const cited = result.annotations.length > 0;
+        for (const [host, info] of sourceMap) {
+            webSourceCollector.push({ host, url: info.url, title: info.title, cited });
+        }
+
+        const hosts = [...sourceMap.keys()];
+        logger.info(`[AiChat tool] search_web "${searchQuery}" — ${result.searchCallCount} search(es), ${hosts.length} source(s)${hosts.length ? `: ${hosts.join(', ')}` : ''}`);
+
+        return `Web search for "${searchQuery}", restricted to trusted Christian sites${hosts.length ? ` (${hosts.join(', ')})` : ''}: ${clampText(result.text, WEB_RESULT_CHARS)} Attribute each claim to the site it came from.`;
+    } catch (err) {
+        // Never fail the whole turn over a search: the model can still answer
+        // from the local library, and a partial answer beats an error message.
+        const detail = err.response?.data?.error?.message || err.message;
+        logger.error(`[AiChat tool] search_web failed: ${detail}`);
+        return `The web search failed. Answer from the local library if you can, or tell the user you couldn't reach the web just now.`;
+    }
+}
+
+async function executeTool(name, argsJson, webSourceCollector = []) {
     let args;
     try {
         args = JSON.parse(argsJson || '{}');
@@ -1032,6 +1125,7 @@ async function executeTool(name, argsJson) {
             case 'lookup_place': return await toolLookupPlace(args);
             case 'lookup_dictionary': return await toolLookupDictionary(args);
             case 'lookup_profile': return await toolLookupProfile(args);
+            case 'search_web': return await toolSearchWeb(args, webSourceCollector);
             default: return `Error: unknown tool "${name}".`;
         }
     } catch (err) {
@@ -1065,6 +1159,9 @@ async function callOpenAI(messages) {
     // Provenance for the [Sources] button. Recorded here because this is the
     // only place that knows what the model actually consulted.
     const toolCalls = [];
+    // Populated by search_web only — the URLs it actually retrieved, so the
+    // [Sources] button can list real links rather than just "Web search: <q>".
+    const webSources = [];
     let promptTokens = 0;
     let cachedTokens = 0;
     for (let round = 0; ; round++) {
@@ -1102,7 +1199,7 @@ async function callOpenAI(messages) {
             for (const call of msg.tool_calls) {
                 const { name, arguments: rawArgs } = call.function;
                 logger.info(`[AiChat tool] ${name}(${(rawArgs || '').slice(0, 120)})`);
-                const result = await executeTool(name, rawArgs);
+                const result = await executeTool(name, rawArgs, webSources);
                 logger.info(`[AiChat tool] ${name} → ${result.slice(0, 140)}`);
                 // Parsed leniently: malformed arguments must cost us the
                 // provenance line, never the answer itself.
@@ -1116,7 +1213,7 @@ async function callOpenAI(messages) {
 
         const content = msg.content;
         if (!content) throw new Error('Empty response from OpenAI');
-        return { text: content.trim(), toolCalls, promptTokens, cachedTokens };
+        return { text: content.trim(), toolCalls, webSources, promptTokens, cachedTokens };
     }
 }
 
@@ -1301,12 +1398,14 @@ export async function handleAiChat(message, database, options = {}) {
         // --- OpenAI call ---
         let aiResponse;
         let toolCalls = [];
+        let webSources = [];
         let promptTokens = 0;
         let cachedTokens = 0;
         try {
             const completion = await callOpenAI(messages);
             aiResponse = completion.text;
             toolCalls = completion.toolCalls;
+            webSources = completion.webSources;
             promptTokens = completion.promptTokens;
             cachedTokens = completion.cachedTokens;
         } catch (err) {
@@ -1330,7 +1429,7 @@ export async function handleAiChat(message, database, options = {}) {
         // Provenance for the [Sources] button. Keyed by the ID of the message we
         // are about to send, so the button carries no state in its customId
         // (capped at 100 chars, nowhere near enough for a source list).
-        const sourcePayload = buildSourcePayload({ rag: ragDetail, tools: toolCalls });
+        const sourcePayload = buildSourcePayload({ rag: ragDetail, tools: toolCalls, web: webSources });
 
         const sentMessage = await message.reply({
             ...buildResponsePayload(aiResponse, { hasSources: sourcePayload !== null }),
@@ -1342,7 +1441,7 @@ export async function handleAiChat(message, database, options = {}) {
         // setChatSources swallows its own errors for exactly that reason.
         if (sourcePayload && sentMessage?.id) {
             await database.setChatSources(sentMessage.id, sourcePayload);
-            logger.debug(`[ChatSources] Stored ${sourcePayload.rag.length} RAG + ${sourcePayload.tools.length} tool source(s) for message ${sentMessage.id}`);
+            logger.debug(`[ChatSources] Stored ${sourcePayload.rag.length} RAG + ${sourcePayload.tools.length} tool + ${sourcePayload.web.length} web source(s) for message ${sentMessage.id}`);
         }
 
         // Save the exchange to memory. Persists the TAGGED user content

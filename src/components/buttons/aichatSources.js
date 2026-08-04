@@ -28,6 +28,10 @@ const TOOL_LABELS = {
     lookup_place: 'Place',
     lookup_dictionary: 'Bible dictionary',
     lookup_profile: 'Encyclopedic article',
+    // Normally filtered out of "Looked up" in favour of the linked "From the
+    // web" section; kept here so a record written before that section existed
+    // still renders a readable label rather than a raw tool name.
+    search_web: 'Web search',
 };
 
 // Father source_title values are frequently stored in shouting caps
@@ -61,16 +65,49 @@ function buildSourceLines(payload) {
         }
     }
 
-    const lookups = (payload.tools ?? []).map(tool => {
-        const label = TOOL_LABELS[tool.name] ?? tool.name.replace(/^lookup_/, '').replace(/_/g, ' ');
-        return `${label}: ${tool.subject}`;
-    });
+    // search_web is listed under its own "From the web" heading with real
+    // links, so exclude it here — otherwise it appears twice, once as a bare
+    // query string and once with its sources.
+    const lookups = (payload.tools ?? [])
+        .filter(tool => tool.name !== 'search_web')
+        .map(tool => {
+            const label = TOOL_LABELS[tool.name] ?? tool.name.replace(/^lookup_/, '').replace(/_/g, ' ');
+            return `${label}: ${tool.subject}`;
+        });
+
+    // Markdown links rather than bare URLs: the panel should read as citations,
+    // and Discord renders these as clickable site names.
+    const asLink = source => (source.url ? `[${source.title || source.host}](${source.url})` : (source.title || source.host));
+    const webAll = payload.web ?? [];
+    const webCited = webAll.filter(source => source.cited).map(asLink);
+    const webRetrieved = webAll.filter(source => !source.cited).map(asLink);
 
     const sections = [];
     if (scripture.length) sections.push({ heading: 'Scripture', items: scripture });
     if (commentary.length) sections.push({ heading: 'Commentary', items: commentary });
     if (fathers.length) sections.push({ heading: 'Early Church', items: fathers });
     if (lookups.length) sections.push({ heading: 'Looked up', items: lookups });
+    if (webCited.length) sections.push({ heading: 'From the web', items: webCited });
+    // Deliberately a DIFFERENT heading. Without inline citations all we know is
+    // that these pages were fetched — a search can return pages unrelated to the
+    // question, and listing them as "sources" would claim support the answer
+    // never had. Say what actually happened instead.
+    if (webRetrieved.length) {
+        // Capped. When a question falls outside the corpus the search returns
+        // whatever it can from the allowlist — 11 unrelated pages for a query
+        // about a 2026 conference, in one observed run. A long list reads as
+        // thorough grounding even under an honest heading, so show a few and
+        // state the rest numerically.
+        const SHOWN = 5;
+        const items = webRetrieved.slice(0, SHOWN);
+        if (webRetrieved.length > SHOWN) {
+            items.push(`_…and ${webRetrieved.length - SHOWN} more_`);
+        }
+        sections.push({
+            heading: 'Sites searched (not necessarily quoted)',
+            items,
+        });
+    }
     return sections;
 }
 
