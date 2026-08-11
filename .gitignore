@@ -14,3 +14,12 @@ data/categories.sqlite
 data/clean_commentary.db
 data/.DS_Store
 FOLLOWUPS.md
+
+# Agent tooling installed locally by `npx neon@latest init` (2026-08-10).
+# Machine-local artifacts, not project source — each dev regenerates them.
+# .neon holds only {"_init":{"features":[...]}}, no credentials, but it is
+# still per-machine binding state.
+.neon
+.agents/
+.claude/skills/
+skills-lock.json
