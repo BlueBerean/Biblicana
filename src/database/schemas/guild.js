@@ -37,6 +37,19 @@ const guildModel = joi.object({
     // IDs (threads inherit their parent). Slash commands (/find, /web, etc.) are
     // NOT affected — they work everywhere regardless of this list.
     aiChannels: joi.array().items(joi.string()).default([]),
+    // AI chat role DENYLIST — the inverse of aiChannels. EMPTY = nobody denied
+    // (the default, and backward-compatible with guilds configured before this
+    // existed). When NON-EMPTY, a member holding any of these roles gets no
+    // response from the @mention/reply conversation. Built for servers that
+    // want a "No AI" role they can hand out.
+    //
+    // Members with Manage Server are exempt, so an admin cannot lock themselves
+    // out of a bot they administer.
+    //
+    // Slash commands are NOT affected — Discord's own per-command permissions
+    // (Server Settings -> Integrations) already cover those, and cover them
+    // more reliably since Discord enforces before the interaction reaches us.
+    aiDeniedRoles: joi.array().items(joi.string()).default([]),
     dailyVerse: dailyVerseSchema,
 });
 

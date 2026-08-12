@@ -4,6 +4,7 @@ import {
     saveAiMemoryScope,
     readAiEnabled,
     readAiChannels,
+    readAiDeniedRoles,
     buildAiConfigView,
     AI_MEMORY_SCOPE_OPTIONS,
 } from '../../utils/aiConfig.js';
@@ -54,13 +55,14 @@ export default {
 
         const pickedLabel = AI_MEMORY_SCOPE_OPTIONS.find(o => o.value === picked)?.label ?? picked;
         try {
-            const [currentEnabled, currentChannels] = await Promise.all([
+            const [currentEnabled, currentChannels, currentDeniedRoles] = await Promise.all([
                 readAiEnabled(database, interaction.guildId),
                 readAiChannels(database, interaction.guildId),
+                readAiDeniedRoles(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildAiConfigView({ currentEnabled, currentMemoryScope: picked, currentChannels }),
+                components: buildAiConfigView({ currentEnabled, currentMemoryScope: picked, currentChannels, currentDeniedRoles }),
             });
             await interaction.followUp({
                 content: `✅ Memory scope set to **${pickedLabel}**. Any existing conversation history is untouched — new turns use the new scope.`,

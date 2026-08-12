@@ -3,6 +3,7 @@ import {
     saveAiChannels,
     readAiEnabled,
     readAiMemoryScope,
+    readAiDeniedRoles,
     buildAiConfigView,
 } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
@@ -50,13 +51,14 @@ export default {
         }
 
         try {
-            const [currentEnabled, currentMemoryScope] = await Promise.all([
+            const [currentEnabled, currentMemoryScope, currentDeniedRoles] = await Promise.all([
                 readAiEnabled(database, interaction.guildId),
                 readAiMemoryScope(database, interaction.guildId),
+                readAiDeniedRoles(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels: channelIds }),
+                components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels: channelIds, currentDeniedRoles }),
             });
 
             const confirmation = channelIds.length === 0
