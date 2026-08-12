@@ -98,22 +98,49 @@ function buildSourceLines(payload) {
     // question, and listing them as "sources" would claim support the answer
     // never had. Say what actually happened instead.
     if (webRetrieved.length) {
-        // Capped. When a question falls outside the corpus the search returns
-        // whatever it can from the allowlist — 11 unrelated pages for a query
-        // about a 2026 conference, in one observed run. A long list reads as
-        // thorough grounding even under an honest heading, so show a few and
-        // state the rest numerically.
-        const SHOWN = 5;
-        const items = webRetrieved.slice(0, SHOWN);
-        if (webRetrieved.length > SHOWN) {
-            items.push(`_…and ${webRetrieved.length - SHOWN} more_`);
-        }
+        // Shown in FULL, deliberately. An earlier revision capped this at 5 with
+        // an "…and N more" line, on the theory that a long list reads as
+        // thorough grounding. That reasoning was backwards: the heading already
+        // says these were not necessarily quoted, so showing every site searched
+        // is the more transparent option — a reader can see the search swept 11
+        // sites and turned up nothing relevant, which is exactly the useful
+        // signal. Hiding some of them obscured it.
+        //
+        // Length is bounded by the per-section character budget in the renderer
+        // rather than by an arbitrary item count.
         sections.push({
             heading: 'Sites searched (not necessarily quoted)',
-            items,
+            items: webRetrieved,
         });
     }
     return sections;
+}
+
+// Discord rejects a TextDisplay over 4000 characters, and a rejected component
+// means the whole Sources reply fails rather than degrading. Sections are shown
+// in full up to this budget; only a pathological result set reaches it. At ~70
+// characters per source link that is roughly 50 entries, where a realistic
+// search returns 4-17.
+const SECTION_CHAR_BUDGET = 3800;
+
+function renderSection(section) {
+    const header = `**${section.heading}**\n`;
+    const lines = [];
+    let used = header.length;
+
+    for (let i = 0; i < section.items.length; i++) {
+        const line = `· ${section.items[i]}`;
+        // Reserve room for the "N more" note so the budget can't be blown by
+        // the very line that explains the truncation.
+        if (used + line.length + 40 > SECTION_CHAR_BUDGET) {
+            lines.push(`_…and ${section.items.length - i} more, omitted for length_`);
+            break;
+        }
+        lines.push(line);
+        used += line.length + 1;
+    }
+
+    return header + lines.join('\n');
 }
 
 export default {
@@ -154,7 +181,7 @@ export default {
         } else {
             for (const section of sections) {
                 container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
-                    `**${section.heading}**\n${section.items.map(item => `· ${item}`).join('\n')}`
+                    renderSection(section)
                 ));
             }
             container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
