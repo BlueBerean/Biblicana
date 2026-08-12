@@ -158,7 +158,7 @@ export const CATEGORIES = [
             '**Sources button:**',
             'Answers that drew on sources carry a **Sources** button showing exactly what was consulted — which verse, which commentator, which Father, which sites. If an answer has no button, nothing specific was consulted.',
             '',
-            '*AI chat must be enabled by a server admin via `/config ai`. Disabled by default for new servers.*',
+            '*AI chat must be enabled by a server admin via `/config ai`. Disabled by default for new servers. Admins can also limit it to certain channels, restrict it to specific roles, or block roles from it — so if Biblicana stays silent when you mention it, ask a server admin.*',
         ].join('\n')
     },
     {
@@ -193,7 +193,7 @@ export const CATEGORIES = [
             '**Admin-only** (requires Manage Server permission).',
             '',
             '• `/config passive` — Choose how Biblicana reacts when users type scripture references in chat. Modes: `react to BibleBot` (default, coexistence), `react to user messages`, `auto-post verses`, or `silent`.',
-            '• `/config ai` — Enable or disable AI chat for this server. Toggle shared-per-channel vs. private-per-user memory scope. Full explanation of how it works inside the panel.',
+            '• `/config ai` — Enable or disable AI chat for this server. Toggle shared-per-channel vs. private-per-user memory scope, limit it to specific channels, and control who may use it with **required roles** (only these roles may chat) and **blocked roles** (a `No AI` role you hand out). Blocked overrules required, and Manage Server bypasses both. Full explanation inside the panel.',
             '• `/config daily` — Enable the Verse of the Day auto-post. Pick a channel and an hour (UTC).',
             '',
             '*Per-server settings persist across bot restarts. New servers see a welcome card on install with quick toggles for each.*',

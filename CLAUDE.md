@@ -31,6 +31,9 @@ src/
                           #   + /testwelcome, which carries `devOnly: true` and is excluded
                           #   from the global registry by deploy.js)
   components/buttons/     # Button interaction handlers
+  components/selects/     # Select-menu handlers (string/channel/role pickers), matched by
+                          #   customId at interaction time — NOT registered with Discord,
+                          #   so a new one ships on a restart alone (no deploy/deployg)
   database/
     redisPGHandler.js     # Combined Redis + Postgres wrapper (both always-available)
     schemas/              # Postgres schema definitions (guild, user)
@@ -103,6 +106,32 @@ Never run `src/deploy.js` with the `--global` flag for development. The `deploy`
 
 Embed color is `0x083459` (a dark teal). Embed footer, icon, and color values live in `.env` (not hardcoded), so they can be overridden per environment — useful for making local dev visually distinct from prod.
 
+### AI chat access gates
+
+Four independent gates decide whether the **@mention / reply** conversation fires. All of them live on the guild row and are read in `src/events/messageCreate.js`; **none of them touch slash commands** — `/find`, `/web` and the rest work regardless, and are governed by Discord's own Command Permissions (Server Settings → Integrations), which Discord enforces before the interaction ever reaches the bot.
+
+| Gate | Field | Empty means | Helper |
+|---|---|---|---|
+| Enabled | `aiEnabled` | off (opt-in) | `readAiEnabled` |
+| Where | `aiChannels` | all channels | `isAiChannelAllowed` |
+| Who may | `aiRequiredRoles` | everyone | `isAiAllowedForMember` |
+| Who may not | `aiDeniedRoles` | nobody blocked | `isAiAllowedForMember` |
+
+Evaluation order inside `isAiAllowedForMember` (`src/utils/aiConfig.js`), and the reasoning that fixes it:
+
+1. **Manage Server → always allowed**, bypassing both role lists. An admin must not be able to lock themselves out of the bot they configure, and testing a setting shouldn't require juggling their own roles.
+2. **Denylist → blocks**, even when the member also holds a required role. A `No AI` role stays authoritative without the admin unpicking every other assignment.
+3. **Required list → must hold at least one.** Empty means no requirement, which is what keeps guilds configured before this existed unaffected.
+
+Two things that look like bugs and aren't:
+
+- **The two lists fail in OPPOSITE directions** on a member whose roles can't be resolved. `memberRoleIds` returns `[]`, so a denylist can't match (allowed) while a required list can't match (blocked). Each is faithful to its own meaning: "block these" can't block someone unidentifiable, "only allow these" can't allow them.
+- **`memberRoleIds` reads two shapes.** A cached `GuildMember` exposes `roles.cache` (a `GuildMemberRoleManager`); raw gateway payloads carry a plain array of ID strings. Reading only `.cache` would see zero roles on the raw shape and silently let a denied member through. Snowflakes stay **strings** end to end — they're 18–19 digits, past `Number.MAX_SAFE_INTEGER`, so anything that coerces one to a Number has already corrupted it and no later `String()` can undo it.
+
+Suppression is **silent** by design — a "you are not allowed" reply would be noisier than the feature it enforces and invites argument in-channel. The trail is `logger.debug('[AiChat] Suppressed by role gate — user=… guild=…')`.
+
+Each `/config ai` select handler re-renders the **whole** panel after saving its own setting, so it must read all the settings it did *not* change. Miss one and the database keeps the right value while the panel renders it as unset — which reads to an admin as their setting having just been cleared. This has been got wrong twice; `tests/aiConfig.test.js` now asserts structurally that every handler calling `buildAiConfigView` sources all five.
+
 ## Development workflow
 
 ### Local setup (first time)
@@ -159,6 +188,7 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 - `ef678ad` — `/crossref`, `/topicalindex`, `/commentary` moved local; chapter-level commentary
 - **v1.5.0 (2026-06-30)** — first `refactor` deploy to the droplet. Data files uploaded; `main` not deployed since.
 - **v1.5.1 (2026-08-03)** — reliability + cost batch: ack-before-I/O across 16 handlers, `pg.Pool` bounds (and a missing `pool.on('error')` listener that could crash the process), Redis negative caching, a single-query daily-verse tick with its guild list cached to stop the 5-minute tick waking Neon, GPT-5.6-Luna with prompt caching, Tavily replaced by OpenAI `web_search` on a domain allowlist, a Sources button on AI answers, era labelling in `/fathers`, and passage-slice anchoring so a passage-grouped commentator answers the verse actually asked about. `followups.md` (gitignored, local-only) has the item-by-item record.
+- **post-v1.5.1, deployed 2026-08-11** (`package.json` still reads 1.5.1) — AI chat role gating in `/config ai`: a **blocked-roles** denylist (`228791d`, so a server can hand out a `No AI` role) and a **required-roles** allowlist (`b7c44c2`, so AI chat can be kept to a study group or supporter tier), with blocked overruling required and Manage Server bypassing both. See "AI chat access gates" above. Both are select-menu components, so they needed no `deployg`.
 
 ## References
 
