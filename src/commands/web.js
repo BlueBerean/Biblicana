@@ -16,6 +16,7 @@ import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import { checkAckStatus, buildAckDisclosureV2 } from '../utils/aiAck.js';
 import { searchAllowedWeb, buildWebSourceMap } from '../utils/webSearch.js';
+import { stripModelMarkup } from '../utils/filter.js';
 import 'dotenv/config';
 
 const INTENT_MODEL = 'gpt-5.6-luna';
@@ -226,7 +227,13 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                     timeoutMs: SEARCH_TIMEOUT_MS,
                 });
 
-                answerText = result.text;
+                // Same model as AI chat, so the same entity-markup leak applies
+                // here. Strip before the citation regex runs, or a token like
+                // entity["book","X","y"] can interfere with (domain.com) matching.
+                answerText = stripModelMarkup(result.text);
+                if (answerText !== result.text) {
+                    logger.warn(`[Web Command] Stripped model-internal markup from answer (${result.text.length} → ${answerText.length} chars)`);
+                }
                 annotations = result.annotations;
                 retrievedSources = result.retrieved;
 

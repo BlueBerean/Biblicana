@@ -15,7 +15,7 @@ import {
 import { searchAllowedWeb, buildWebSourceMap } from './webSearch.js';
 import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
-import swearWordFilter from './filter.js';
+import swearWordFilter, { stripModelMarkup } from './filter.js';
 import logger from './logger.js';
 
 const MODEL = 'gpt-5.6-luna';
@@ -263,9 +263,16 @@ function responseButtonRow({ hasSources = false } = {}) {
 }
 
 function buildResponsePayload(responseText, { hasSources = false } = {}) {
-    const text = responseText.length > MESSAGE_CONTENT_CAP
-        ? responseText.slice(0, MESSAGE_CONTENT_CAP - 1) + '…'
-        : responseText;
+    // Strip model-internal markup BEFORE the length cap, so the cap applies to
+    // what the user actually sees rather than to invisible delimiters.
+    const sanitized = stripModelMarkup(responseText);
+    if (sanitized !== responseText) {
+        logger.warn(`[AiChat] Stripped model-internal markup from reply (${responseText.length} → ${sanitized.length} chars)`);
+    }
+
+    const text = sanitized.length > MESSAGE_CONTENT_CAP
+        ? sanitized.slice(0, MESSAGE_CONTENT_CAP - 1) + '…'
+        : sanitized;
     return { content: text, components: [responseButtonRow({ hasSources })] };
 }
 
