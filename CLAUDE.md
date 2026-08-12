@@ -19,7 +19,7 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 - **AI model**: `gpt-5.6-luna` (since v1.5.1). GPT-5 family, so the API surface differs from 4o: `max_completion_tokens` not `max_tokens`, `temperature` accepts only the default, and `max_completion_tokens` INCLUDES hidden reasoning tokens — `reasoning_effort: 'none'` is pinned everywhere for that reason. Chat Completions takes flat `reasoning_effort`; the Responses API nests it as `reasoning.effort`.
 - **Package manager**: prod uses `npm`; local dev uses `pnpm@10`. Note `pnpm-lock.yaml` IS tracked in git, while prod's `package-lock.json` is **untracked and stale (v1.4.0)** — so `git pull` never touches it, and `npm ci` should be skipped unless dependencies actually changed.
 - **Process manager (prod)**: PM2 v5 (`pm2 list`, `pm2 logs index`, `pm2 restart index`)
-- **External APIs**: OpenAI only for AI features — `/find`, the `/web` intent check, `/web` search itself, and AI chat. **Tavily was removed in v1.5.1**; `/web` now uses OpenAI's built-in `web_search` tool restricted to an 18-domain allowlist in `src/utils/webSearch.js` (shared with AI chat's `search_web` tool). RapidAPI still used by `/audio`, `/bookinfo`, `/originaltext`, `/parallel`, `/semantics`, `/topic`; `/dictionary`, `/crossref`, `/topicalindex`, `/commentary` are local SQLite.
+- **External APIs**: OpenAI only for AI features — `/find`, the `/web` intent check, `/web` search itself, and AI chat. **Tavily was removed in v1.5.1**; `/web` now uses OpenAI's built-in `web_search` tool restricted to a domain allowlist in `src/utils/webSearch.js` (shared with AI chat's `search_web` tool). RapidAPI still used by `/audio`, `/bookinfo`, `/originaltext`, `/parallel`, `/semantics`, `/topic`; `/dictionary`, `/crossref`, `/topicalindex`, `/commentary` are local SQLite.
 
 ## Repository layout
 
@@ -158,7 +158,7 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 - `6bd3d78` — full ESM migration; 3 new commands; `/dictionary` moved local
 - `ef678ad` — `/crossref`, `/topicalindex`, `/commentary` moved local; chapter-level commentary
 - **v1.5.0 (2026-06-30)** — first `refactor` deploy to the droplet. Data files uploaded; `main` not deployed since.
-- **v1.5.1 (2026-08-03)** — reliability + cost batch: ack-before-I/O across 16 handlers, `pg.Pool` bounds (and a missing `pool.on('error')` listener that could crash the process), Redis negative caching, a single-query daily-verse tick with its guild list cached to stop the 5-minute tick waking Neon, GPT-5.6-Luna with prompt caching, Tavily replaced by OpenAI `web_search` on an 18-domain allowlist, a Sources button on AI answers, era labelling in `/fathers`, and passage-slice anchoring so a passage-grouped commentator answers the verse actually asked about. `followups.md` (gitignored, local-only) has the item-by-item record.
+- **v1.5.1 (2026-08-03)** — reliability + cost batch: ack-before-I/O across 16 handlers, `pg.Pool` bounds (and a missing `pool.on('error')` listener that could crash the process), Redis negative caching, a single-query daily-verse tick with its guild list cached to stop the 5-minute tick waking Neon, GPT-5.6-Luna with prompt caching, Tavily replaced by OpenAI `web_search` on a domain allowlist, a Sources button on AI answers, era labelling in `/fathers`, and passage-slice anchoring so a passage-grouped commentator answers the verse actually asked about. `followups.md` (gitignored, local-only) has the item-by-item record.
 
 ## References
 

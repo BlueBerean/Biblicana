@@ -50,6 +50,13 @@ export const ALLOWED_DOMAINS = [
     // of it — see the cross-denominational note above.
     'catholic.com',
     'oca.org',              // Orthodox Church in America
+
+    // Individual authors. A separate group on purpose: everything above is an
+    // established institution with editorial process behind it, whereas a
+    // personal site can change content at any time with no oversight. Add here
+    // only when the author is known and trusted, and re-read periodically —
+    // this is the part of the allowlist most likely to drift.
+    'airylvat.github.io',   // airyLvat — personal Christian theology/apologetics essays, evangelical Protestant, continuationist
 ];
 
 /**
