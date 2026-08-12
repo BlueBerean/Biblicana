@@ -4,6 +4,7 @@ import {
     readAiEnabled,
     readAiMemoryScope,
     readAiChannels,
+    readAiRequiredRoles,
     buildAiConfigView,
 } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
@@ -54,10 +55,16 @@ export default {
         }
 
         try {
-            const [currentEnabled, currentMemoryScope, currentChannels] = await Promise.all([
+            // Re-read EVERY other setting, required roles included. Omitting one
+            // here doesn't lose it from the database, but the re-rendered panel
+            // would show it as unset — an admin reading "Who can use it:
+            // Everyone" right after blocking a role would reasonably believe
+            // their requirement had just been cleared.
+            const [currentEnabled, currentMemoryScope, currentChannels, currentRequiredRoles] = await Promise.all([
                 readAiEnabled(database, interaction.guildId),
                 readAiMemoryScope(database, interaction.guildId),
                 readAiChannels(database, interaction.guildId),
+                readAiRequiredRoles(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
@@ -66,12 +73,20 @@ export default {
                     currentMemoryScope,
                     currentChannels,
                     currentDeniedRoles: roleIds,
+                    currentRequiredRoles,
                 }),
             });
 
+            // Mirror of the note in configAiRequiredRoles.js — name the overlap
+            // from whichever picker the admin happens to be standing in.
+            const overlapNote = (roleIds.length > 0 && currentRequiredRoles.length > 0)
+                ? '\n\n-# This overrules the required roles — someone holding both gets no response.'
+                : '';
             const confirmation = roleIds.length === 0
-                ? '✅ Cleared — **everyone** can use the AI conversation again.'
-                : `✅ Blocked from AI chat: ${roleIds.map(id => `<@&${id}>`).join(' ')}. Members with those roles get no response when they mention or reply to Biblicana. Admins with Manage Server are still exempt.\n\n-# Slash commands like \`/find\` and \`/web\` are not affected — restrict those via **Server Settings → Integrations → Biblicana**.`;
+                ? (currentRequiredRoles.length > 0
+                    ? '✅ Cleared — nobody is blocked. AI chat is still limited to the required roles.'
+                    : '✅ Cleared — **everyone** can use the AI conversation again.')
+                : `✅ Blocked from AI chat: ${roleIds.map(id => `<@&${id}>`).join(' ')}. Members with those roles get no response when they mention or reply to Biblicana. Admins with Manage Server are still exempt.${overlapNote}\n\n-# Slash commands like \`/find\` and \`/web\` are not affected — restrict those via **Server Settings → Integrations → Biblicana**.`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
             logger.error(`[Config AI Roles] Update failed for guild ${interaction.guildId}: ${err.message}`);

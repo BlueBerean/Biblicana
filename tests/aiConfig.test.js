@@ -10,9 +10,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdir, readFile } from 'node:fs/promises';
 import { PermissionFlagsBits } from 'discord.js';
 
-import { isAiDeniedForMember, isAiChannelAllowed } from '../src/utils/aiConfig.js';
+import { isAiDeniedForMember, isAiChannelAllowed, isAiAllowedForMember } from '../src/utils/aiConfig.js';
 
 // A cached GuildMember: roles is a manager with a .cache Collection.
 const cachedMember = (roleIds, { admin = false } = {}) => ({
@@ -118,6 +119,107 @@ test('a member without a permissions object is still evaluated', () => {
     // No permissions field means "not an admin" — it must not throw, and must
     // not accidentally exempt everyone.
     assert.equal(isAiDeniedForMember([NO_AI], { roles: [NO_AI] }), true);
+});
+
+// --- isAiAllowedForMember: the two lists combined --------------------------
+// Evaluation order is: Manage Server bypass, then denylist, then required list.
+// "Blocked overrules required" is the rule an admin is most likely to rely on
+// and most likely to get wrong, so it is pinned from several angles.
+
+const STUDY = '333333333333333333';
+
+test('both lists empty means everyone is allowed', () => {
+    assert.equal(isAiAllowedForMember({}, cachedMember([REGULAR])), true);
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [], deniedRoleIds: [] }, cachedMember([])), true);
+});
+
+test('a required list limits access to holders of a required role', () => {
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, cachedMember([STUDY])), true);
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, cachedMember([REGULAR])), false);
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, cachedMember([])), false);
+});
+
+test('holding ANY one required role is enough', () => {
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY, MUTED] }, cachedMember([MUTED])), true);
+});
+
+test('BLOCKED OVERRULES REQUIRED', () => {
+    // The headline rule: a "No AI" role stays authoritative without the admin
+    // having to strip every other role the member holds.
+    assert.equal(
+        isAiAllowedForMember({ requiredRoleIds: [STUDY], deniedRoleIds: [NO_AI] }, cachedMember([STUDY, NO_AI])),
+        false
+    );
+});
+
+test('blocked overrules required regardless of role order on the member', () => {
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY], deniedRoleIds: [NO_AI] }, cachedMember([NO_AI, STUDY])), false);
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY], deniedRoleIds: [NO_AI] }, rawMember([NO_AI, STUDY])), false);
+});
+
+test('a denylist alone still blocks when no requirement is set', () => {
+    assert.equal(isAiAllowedForMember({ deniedRoleIds: [NO_AI] }, cachedMember([NO_AI])), false);
+    assert.equal(isAiAllowedForMember({ deniedRoleIds: [NO_AI] }, cachedMember([REGULAR])), true);
+});
+
+test('Manage Server bypasses BOTH lists', () => {
+    // Without this an admin who requires a role they do not hold locks
+    // themselves out of the bot they administer.
+    const admin = cachedMember([], { admin: true });
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, admin), true);
+
+    const adminWithBoth = cachedMember([NO_AI], { admin: true });
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY], deniedRoleIds: [NO_AI] }, adminWithBoth), true);
+});
+
+test('the two lists fail in OPPOSITE directions on an unresolvable member', () => {
+    // Deliberate, and each faithful to its own meaning: "block these" cannot
+    // block someone you can't identify, "only allow these" cannot allow them.
+    assert.equal(isAiAllowedForMember({ deniedRoleIds: [NO_AI] }, null), true);
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, null), false);
+});
+
+test('required-role IDs compare by value across member shapes', () => {
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, rawMember([STUDY])), true);
+    assert.equal(isAiAllowedForMember({ requiredRoleIds: [STUDY] }, cachedMember([STUDY])), true);
+});
+
+test('called with no config at all, nobody is gated', () => {
+    assert.equal(isAiAllowedForMember(undefined, cachedMember([REGULAR])), true);
+});
+
+// --- panel re-render completeness ------------------------------------------
+// Every /config ai select handler re-renders the WHOLE panel after saving its
+// own setting, so it must source all five settings — the one it just changed
+// plus the four it did not. Miss one and the database still holds the right
+// value while the panel renders it as unset, which reads to an admin as "my
+// setting was just cleared". Caught twice by hand already (configAi.js and
+// config.js lost readAiRequiredRoles; configAiRoles.js rendered the required
+// picker blank), so it is pinned here rather than trusted to review.
+
+const SETTINGS = [
+    ['enabled', /readAiEnabled|saveAiEnabled/],
+    ['memory scope', /readAiMemoryScope|saveAiMemoryScope/],
+    ['channels', /readAiChannels|saveAiChannels/],
+    ['denied roles', /readAiDeniedRoles|saveAiDeniedRoles/],
+    ['required roles', /readAiRequiredRoles|saveAiRequiredRoles/],
+];
+
+test('every config ai select handler sources all five settings', async () => {
+    const dir = new URL('../src/components/selects/', import.meta.url);
+    const files = (await readdir(dir)).filter(f => /^configAi.*\.js$/.test(f));
+
+    // Guard the guard: a bad glob that matches nothing would pass silently.
+    assert.ok(files.length >= 4, `expected several configAi* handlers, found ${files.length}`);
+
+    for (const file of files) {
+        const src = await readFile(new URL(file, dir), 'utf8');
+        // Only handlers that re-render the shared panel are subject to this.
+        if (!src.includes('buildAiConfigView')) continue;
+        for (const [label, pattern] of SETTINGS) {
+            assert.match(src, pattern, `${file} never reads or writes ${label}, so the panel it renders will show it as unset`);
+        }
+    }
 });
 
 // --- interaction with the channel allowlist --------------------------------

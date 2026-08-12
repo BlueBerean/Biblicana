@@ -5,7 +5,7 @@ import {
     TextDisplayBuilder,
 } from 'discord.js';
 import { buildConfigView, readPassiveMode } from '../utils/passiveConfig.js';
-import { buildAiConfigView, readAiEnabled, readAiMemoryScope, readAiChannels, readAiDeniedRoles } from '../utils/aiConfig.js';
+import { buildAiConfigView, readAiEnabled, readAiMemoryScope, readAiChannels, readAiDeniedRoles, readAiRequiredRoles } from '../utils/aiConfig.js';
 import { buildDailyVerseConfigView, readDailyVerseConfig } from '../utils/dailyVerseConfig.js';
 import logger from '../utils/logger.js';
 
@@ -57,15 +57,16 @@ export default {
                 });
             }
             if (sub === 'ai') {
-                const [currentEnabled, currentMemoryScope, currentChannels, currentDeniedRoles] = await Promise.all([
+                const [currentEnabled, currentMemoryScope, currentChannels, currentDeniedRoles, currentRequiredRoles] = await Promise.all([
                     readAiEnabled(database, interaction.guildId),
                     readAiMemoryScope(database, interaction.guildId),
                     readAiChannels(database, interaction.guildId),
                     readAiDeniedRoles(database, interaction.guildId),
+                    readAiRequiredRoles(database, interaction.guildId),
                 ]);
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-                    components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels, currentDeniedRoles }),
+                    components: buildAiConfigView({ currentEnabled, currentMemoryScope, currentChannels, currentDeniedRoles, currentRequiredRoles }),
                 });
             }
             if (sub === 'daily') {

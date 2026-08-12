@@ -204,12 +204,72 @@ export function isAiDeniedForMember(deniedRoleIds, member) {
     return held.some(roleId => denied.has(roleId));
 }
 
+export const AI_REQUIRED_ROLES_MAX = 25;
+
+export async function saveAiRequiredRoles(database, guildId, roleIds) {
+    try {
+        const clean = [...new Set((roleIds ?? []).map(String))].slice(0, AI_REQUIRED_ROLES_MAX);
+        const existing = await database.getGuildValue(guildId) ?? {};
+        const merged = { ...existing, id: guildId, aiRequiredRoles: clean };
+        await database.setGuildValue(guildId, merged);
+        return true;
+    } catch (err) {
+        logger.error(`[AiConfig] Required-roles save failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+export async function readAiRequiredRoles(database, guildId) {
+    try {
+        const g = await database.getGuildValue(guildId);
+        if (Array.isArray(g?.aiRequiredRoles)) return g.aiRequiredRoles.map(String);
+    } catch (err) {
+        logger.debug(`[AiConfig] Required-roles read failed for guild=${guildId}: ${err.message}`);
+    }
+    return [];  // default: no requirement
+}
+
+/**
+ * The single question messageCreate actually asks: may this member use the
+ * @mention/reply AI conversation?
+ *
+ * Composes the two role lists, in this order:
+ *
+ *   1. Manage Server  → always allowed, bypassing both lists. The admins who
+ *      configure these must not be able to lock themselves out, and testing a
+ *      setting shouldn't require juggling their own roles.
+ *   2. Denylist       → holding a denied role blocks, even if the member also
+ *      holds a required one. A "No AI" role stays authoritative without the
+ *      admin unpicking every other assignment.
+ *   3. Required list  → EMPTY means no requirement (default, backward
+ *      compatible). Otherwise the member must hold at least one.
+ *
+ * UNRESOLVABLE MEMBER: the two lists fail in opposite directions, deliberately.
+ * memberRoleIds returns [] , so a denylist cannot match (allowed) and a required
+ * list cannot match (blocked). Each is faithful to its own meaning — "block
+ * these" can't block someone you can't identify, and "only allow these" can't
+ * allow them either. In practice message.member is always present on a guild
+ * message, so this is defensive rather than expected.
+ */
+export function isAiAllowedForMember({ requiredRoleIds = [], deniedRoleIds = [] } = {}, member) {
+    if (member?.permissions?.has?.(PermissionFlagsBits.ManageGuild)) return true;
+
+    // Denylist first — it overrules the requirement.
+    if (isAiDeniedForMember(deniedRoleIds, member)) return false;
+
+    if (!requiredRoleIds || requiredRoleIds.length === 0) return true;
+
+    const held = memberRoleIds(member);
+    const required = new Set(requiredRoleIds.map(String));
+    return held.some(roleId => required.has(roleId));
+}
+
 /**
  * Build the /config ai panel — the canonical place admins learn what AI
  * chat does, how memory works, and where to get support. Shows current
  * enabled state + memory scope with a select menu for each.
  */
-export function buildAiConfigView({ currentEnabled = false, currentMemoryScope = 'channel', currentChannels = [], currentDeniedRoles = [] }) {
+export function buildAiConfigView({ currentEnabled = false, currentMemoryScope = 'channel', currentChannels = [], currentDeniedRoles = [], currentRequiredRoles = [] }) {
     const currentToggleValue = currentEnabled ? 'on' : 'off';
     const currentToggleLabel = AI_OPTIONS.find(o => o.value === currentToggleValue).label;
     const currentScopeLabel = AI_MEMORY_SCOPE_OPTIONS.find(o => o.value === currentMemoryScope)?.label ?? currentMemoryScope;
@@ -219,6 +279,9 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
     const deniedRolesSummary = currentDeniedRoles.length === 0
         ? 'Nobody blocked'
         : currentDeniedRoles.map(id => `<@&${id}>`).join(' ');
+    const requiredRolesSummary = currentRequiredRoles.length === 0
+        ? 'Everyone'
+        : currentRequiredRoles.map(id => `<@&${id}>`).join(' ');
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
@@ -230,6 +293,7 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
                 `**State:** ${currentToggleLabel}`,
                 `**Memory:** ${currentScopeLabel}`,
                 `**Channels:** ${channelsSummary}`,
+                `**Who can use it:** ${requiredRolesSummary}`,
                 `**Blocked roles:** ${deniedRolesSummary}`,
             ].join('\n')
         ))
@@ -259,9 +323,13 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             [
                 '### Who it responds to',
-                'By default the AI conversation responds to **everyone**. Use the role picker below to **block specific roles** — create a role like `No AI`, hand it out, and members holding it get no response when they mention or reply to Biblicana.',
+                'Two role pickers below, and they work together:',
                 '',
-                '*Members with **Manage Server** are always exempt, so you can\'t lock yourself out by giving yourself the role.*',
+                '**Required roles** — leave empty and the AI responds to **everyone** (the default). Pick roles and it responds **only** to members holding at least one of them. Useful for keeping AI chat to a study group or supporters.',
+                '',
+                '**Blocked roles** — create a role like `No AI`, hand it out, and holders get no response. **Blocked overrules required**: someone holding both a required and a blocked role is still blocked, so a `No AI` role always wins without you unpicking their other roles.',
+                '',
+                '*Members with **Manage Server** bypass both lists, so you can\'t lock yourself out.*',
                 '',
                 '*This only affects the **@mention / reply** conversation. To restrict slash commands like `/find` and `/web` by role, use Discord\'s own controls: **Server Settings → Integrations → Biblicana → Command Permissions**. Discord enforces those before the command ever reaches Biblicana, so they\'re stricter than anything the bot can do.*',
             ].join('\n')
@@ -358,5 +426,20 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
     }
     const rolesRow = new ActionRowBuilder().addComponents(roleSelect);
 
-    return [container, toggleRow, scopeRow, channelsRow, rolesRow];
+    // Required-roles picker. Listed BEFORE the denylist in the panel so the
+    // reading order matches the evaluation story: who may use it, then who is
+    // carved back out.
+    const requiredSelect = new RoleSelectMenuBuilder()
+        .setCustomId('config:ai:reqroles')
+        .setPlaceholder(currentRequiredRoles.length
+            ? `AI limited to ${currentRequiredRoles.length} role${currentRequiredRoles.length === 1 ? '' : 's'} — edit or clear`
+            : 'AI open to everyone — pick roles to require')
+        .setMinValues(0)
+        .setMaxValues(AI_REQUIRED_ROLES_MAX);
+    if (currentRequiredRoles.length > 0) {
+        requiredSelect.setDefaultRoles(...currentRequiredRoles);
+    }
+    const requiredRow = new ActionRowBuilder().addComponents(requiredSelect);
+
+    return [container, toggleRow, scopeRow, channelsRow, requiredRow, rolesRow];
 }

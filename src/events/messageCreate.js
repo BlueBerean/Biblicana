@@ -2,7 +2,7 @@ import { Events, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 import { handleMessageForPassiveDetection } from '../utils/passiveDetection.js';
 import { handleAiChat } from '../utils/aiChat.js';
-import { readAiEnabled, readAiChannels, isAiChannelAllowed, readAiDeniedRoles, isAiDeniedForMember } from '../utils/aiConfig.js';
+import { readAiEnabled, readAiChannels, isAiChannelAllowed, readAiDeniedRoles, readAiRequiredRoles, isAiAllowedForMember } from '../utils/aiConfig.js';
 
 // Decide whether this message should trigger AI chat, weighing reply-context
 // and @mention signals correctly.
@@ -84,18 +84,23 @@ export default {
                     const allowedChannels = await readAiChannels(database, message.guild.id);
                     aiEligible = isAiChannelAllowed(allowedChannels, message.channel);
 
-                    // Role denylist: a server can hand out a "No AI" role and
-                    // members holding it get no response. Checked only after the
-                    // channel gate passes, so the common case (no denylist
-                    // configured) costs one cached read and nothing more.
+                    // Role gates: a server can require roles to use AI chat,
+                    // block roles from it, or both — with blocked overruling
+                    // required. Checked only after the channel gate passes, so
+                    // the common case (neither list configured) costs two
+                    // cached reads and nothing more.
                     if (aiEligible) {
-                        const deniedRoles = await readAiDeniedRoles(database, message.guild.id);
-                        if (isAiDeniedForMember(deniedRoles, message.member)) {
-                            // Silent, deliberately. A "you are blocked" reply
-                            // would be noisier than the feature it enforces and
-                            // invites argument in-channel; the admin who set the
-                            // role is the right person to explain it.
-                            logger.debug(`[AiChat] Suppressed for denied role — user=${message.author.id} guild=${message.guild.id}`);
+                        const [deniedRoles, requiredRoles] = await Promise.all([
+                            readAiDeniedRoles(database, message.guild.id),
+                            readAiRequiredRoles(database, message.guild.id),
+                        ]);
+                        if (!isAiAllowedForMember({ requiredRoleIds: requiredRoles, deniedRoleIds: deniedRoles }, message.member)) {
+                            // Silent, deliberately. A "you are not allowed"
+                            // reply would be noisier than the feature it
+                            // enforces and invites argument in-channel; the
+                            // admin who configured the roles is the right
+                            // person to explain it.
+                            logger.debug(`[AiChat] Suppressed by role gate — user=${message.author.id} guild=${message.guild.id}`);
                             aiEligible = false;
                         }
                     }

@@ -50,6 +50,16 @@ const guildModel = joi.object({
     // (Server Settings -> Integrations) already cover those, and cover them
     // more reliably since Discord enforces before the interaction reaches us.
     aiDeniedRoles: joi.array().items(joi.string()).default([]),
+    // AI chat role REQUIREMENT. EMPTY = no requirement (the default). When
+    // NON-EMPTY, a member must hold at least one of these roles for the
+    // @mention/reply conversation to respond at all.
+    //
+    // aiDeniedRoles OVERRULES this: holding a denied role blocks a member even
+    // if they also hold a required one, so a "No AI" role stays authoritative
+    // without an admin having to unpick every other role assignment.
+    //
+    // Manage Server bypasses BOTH lists.
+    aiRequiredRoles: joi.array().items(joi.string()).default([]),
     dailyVerse: dailyVerseSchema,
 });
 
