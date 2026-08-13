@@ -15,7 +15,7 @@ import {
 import { searchAllowedWeb, buildWebSourceMap } from './webSearch.js';
 import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
-import swearWordFilter, { stripModelMarkup } from './filter.js';
+import swearWordFilter, { stripModelMarkup, trimToLastCompleteSentence } from './filter.js';
 import logger from './logger.js';
 
 const MODEL = 'gpt-5.6-luna';
@@ -36,7 +36,19 @@ const MODEL = 'gpt-5.6-luna';
 // never be matched against a prompt that no longer exists.
 const PROMPT_CACHE_KEY = 'biblicana-aichat-v2';   // v2: added the no-code rule to SYSTEM_PROMPT
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
-const MAX_OUTPUT_TOKENS = 400;
+// Sized to Discord's single plain-message ceiling, NOT picked freely. At the
+// ~3.5 chars/token this model averages in English prose, 550 tokens is ~1925
+// chars, just under MESSAGE_CONTENT_CAP (1950) and Discord's hard 2000.
+//
+// It was 400 until 2026-08-13, which capped replies around 1400 chars — so the
+// model could never produce a message long enough for the send-side cap to
+// matter, and ~530 chars of every reply were unreachable. A user who asked for
+// a long list got it cut off mid-word ("...and finally **Evangel") because the
+// two caps were never reconciled. Raise these two together or not at all.
+//
+// Going HIGHER than this needs splitString on the reply path, plus decisions
+// about which message carries the buttons and what goes into chat memory.
+const MAX_OUTPUT_TOKENS = 550;
 // No TEMPERATURE constant: the GPT-5 family rejects any value but the default.
 const TIMEOUT_MS = 20_000;
 const MAX_INPUT_CHARS = 800;
@@ -54,9 +66,9 @@ const MEMORY_TTL_SECONDS = 3600;
 //   RAG grounding       ≈  4.5K chars / ~1.1K tokens   (2 refs × 3 sources)
 //   Memory (10 turns)   ≈  8.0K chars / ~2.0K tokens
 //   User turn           ≈  0.8K chars / ~0.2K tokens   (MAX_INPUT_CHARS cap)
-//   Output reserved     ≈  1.6K chars / ~0.4K tokens   (MAX_OUTPUT_TOKENS)
+//   Output reserved     ≈  1.9K chars / ~0.55K tokens  (MAX_OUTPUT_TOKENS)
 //   ─────────────────────────────────────────────
-//   Grand total         ≈ 19.6K chars / ~4.9K tokens
+//   Grand total         ≈ 19.9K chars / ~5.1K tokens
 //   128K window - 4.9K = ~123K headroom.
 //
 // Safe input-chars threshold below which we *know* we're under the window:
@@ -237,8 +249,11 @@ function matchesHardBlock(text) {
 // the embed chrome.
 //
 // Note: plain message content is capped at 2000 chars by Discord (vs V2's
-// 4000-char TextDisplay), so truncation is tighter here. The AI's
-// max_tokens setting generally keeps responses under 2000 anyway.
+// 4000-char TextDisplay), so truncation is tighter here. MAX_OUTPUT_TOKENS is
+// sized so the model tops out just under this — the two are a matched pair and
+// must move together. This one truncates VISIBLY (appends an ellipsis); the
+// token ceiling does not, which is why it is handled separately at the call
+// site via finish_reason.
 const MESSAGE_CONTENT_CAP = 1950;
 
 function responseButtonRow({ hasSources = false } = {}) {
@@ -1172,7 +1187,16 @@ async function postChat(body) {
     // usage carries prompt_tokens_details.cached_tokens, which is the only way
     // to confirm prompt caching is actually landing. Returned rather than
     // logged here so the caller can total it across tool rounds.
-    return { msg, usage: response?.data?.usage ?? null };
+    //
+    // finish_reason is returned for the same reason: 'length' means the model
+    // was still writing when max_completion_tokens ran out, and the content is
+    // a fragment cut mid-word. Dropping this field made every truncated answer
+    // indistinguishable from a complete one, in the reply AND in the logs.
+    return {
+        msg,
+        usage: response?.data?.usage ?? null,
+        finishReason: response?.data?.choices?.[0]?.finish_reason ?? null,
+    };
 }
 
 // Tool-calling loop. Offers tools for up to MAX_TOOL_ROUNDS rounds; if the model
@@ -1213,7 +1237,7 @@ async function callOpenAI(messages) {
             body.tool_choice = 'auto';
         }
 
-        const { msg, usage } = await postChat(body);
+        const { msg, usage, finishReason } = await postChat(body);
 
         // Total across every round of the tool loop, not just the last call.
         promptTokens += usage?.prompt_tokens ?? 0;
@@ -1238,7 +1262,20 @@ async function callOpenAI(messages) {
 
         const content = msg.content;
         if (!content) throw new Error('Empty response from OpenAI');
-        return { text: content.trim(), toolCalls, webSources, promptTokens, cachedTokens };
+
+        // The model ran out of output budget mid-thought. Fall back to the last
+        // complete sentence so the reply ends cleanly rather than mid-word — a
+        // short answer reads as an answer, a dangling fragment reads as a bug.
+        // Logged at warn because a run of these means MAX_OUTPUT_TOKENS is
+        // genuinely too tight for how people are using the bot, and that signal
+        // was previously invisible.
+        let text = content.trim();
+        if (finishReason === 'length') {
+            const clean = trimToLastCompleteSentence(text);
+            logger.warn(`[AiChat] Hit the ${MAX_OUTPUT_TOKENS}-token output ceiling — reply was cut off at ${text.length} chars, trimmed to ${clean.length}`);
+            text = clean;
+        }
+        return { text, toolCalls, webSources, promptTokens, cachedTokens };
     }
 }
 
