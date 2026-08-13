@@ -13,6 +13,8 @@ import { getBookId, toCanonical } from './bookNames.js';
 //   "I John 1:1" / "II Cor 5"  -> Roman-numeral prefix
 //   "Rom. 8:28" / "1 Jn. 1:1"  -> abbreviated book w/ trailing period
 //   "Song of Solomon 2:1"      -> multi-word book name
+//   "Acts 3:15, 4:33, 17:31"   -> continuation list, book carries across
+//   "Acts 3:15, 26; 4:33"      -> bare 26 inherits chapter 3
 //
 // Design: the book-name part of the regex is deliberately permissive — we
 // accept any word shape that could plausibly be a book, then validate with
@@ -26,6 +28,34 @@ import { getBookId, toCanonical } from './bookNames.js';
 // the second ":" would anchor the parse ambiguously. Caller treats such
 // inputs as two separate refs if needed.
 const SCRIPTURE_REGEX = /\b(?:([1-3]|I{1,3})\s*)?([A-Za-z]+(?:\s+of\s+[A-Za-z]+)?)\.?\s+(\d+)(?:\s*:\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?\b/g;
+
+// CONTINUATION lists — the standard citation shorthand where one book name
+// carries across several references:
+//
+//   "Acts 3:15, 3:26, 4:33, 17:31"   comma-separated chapter:verse pairs
+//   "Acts 3:15, 26; 4:33; 17:31"     bare 26 means "still chapter 3"
+//   "Rom 8:28, 31-32"                a bare range, still chapter 8
+//   "John 1; 3; 5"                   chapter-only anchor, so bare = chapter
+//
+// Sticky (/y) so it can only match IMMEDIATELY after the previous reference.
+// A global regex would happily pair a book at the top of a message with a
+// number at the bottom.
+//
+// A bare number's meaning depends on the reference before it: after "3:15" it
+// is a verse in chapter 3, after a chapter-only "John 1" it is another chapter.
+// That mirrors how the notation is actually read.
+const CONTINUATION_REGEX = /\s*[,;]\s*(\d+)(?:\s*:\s*(\d+))?(?:\s*[-–—]\s*(\d+))?/y;
+
+// Sanity bounds for continuations only, NOT for book-anchored references.
+// A number after a comma is ambiguous — "John 3:16, 2020 was hard" would
+// otherwise parse "2020" as a verse. Psalms has 150 chapters and Psalm 119 has
+// 176 verses, so nothing real exceeds these, while years and counts do.
+//
+// Deliberately not applied to the anchored path: "John 3:999" has an explicit
+// book and colon, so it is unambiguously a (wrong) reference rather than prose,
+// and rejecting it here would change long-standing behaviour.
+const MAX_CONTINUATION_CHAPTER = 150;
+const MAX_CONTINUATION_VERSE = 176;
 
 /**
  * Parse Bible references out of a block of text.
@@ -86,17 +116,101 @@ export function parseScriptureRefs(text) {
             continue;
         }
 
+        const bookName = toCanonical(bookId);
         results.push({
             bookId,
-            bookName: toCanonical(bookId),
+            bookName,
             chapter,
             startVerse,
             endVerse,
             raw: raw.trim(),
         });
+
+        // Consume any continuation list hanging off this reference. Advances
+        // the main scanner past whatever it takes, so "4:33" in
+        // "Acts 3:15, 4:33" is never re-examined as a standalone fragment.
+        SCRIPTURE_REGEX.lastIndex = consumeContinuations(
+            text, SCRIPTURE_REGEX.lastIndex, { bookId, bookName, chapter, hasVerse: startVerse !== null }, results
+        );
     }
 
     return dedupeRefs(results);
+}
+
+/**
+ * Walk a comma/semicolon-separated continuation list following a reference,
+ * pushing each entry onto `results`. Returns the index to resume scanning from.
+ *
+ * Context carries forward as it does when a human reads the notation: the book
+ * always, and the chapter until an entry names a new one. Stops at the first
+ * entry that doesn't parse or fails the sanity bounds rather than skipping it —
+ * once the list stops looking like a citation, the rest is prose.
+ */
+function consumeContinuations(text, startIndex, context, results) {
+    const { bookId, bookName } = context;
+    let chapter = context.chapter;
+    let hasVerse = context.hasVerse;
+    let cursor = startIndex;
+
+    for (;;) {
+        CONTINUATION_REGEX.lastIndex = cursor;
+        const match = CONTINUATION_REGEX.exec(text);
+        if (!match) break;
+
+        const [rawMatch, firstStr, secondStr, rangeStr] = match;
+
+        // A bare 1, 2 or 3 might not be a verse at all — it might be the
+        // numeric prefix of the NEXT book: "1 Cor 6:14; 1 Cor 15:1-58" would
+        // otherwise read the second "1" as a verse in chapter 6 and swallow the
+        // book name behind it, losing 1 Cor 15 entirely. If a book-shaped
+        // reference follows, stop and let the main scanner have it.
+        if (secondStr === undefined && rangeStr === undefined && /^[1-3]$/.test(firstStr)) {
+            const rest = text.slice(CONTINUATION_REGEX.lastIndex);
+            if (/^\s*[A-Za-z]+\.?\s*\d/.test(rest)) break;
+        }
+
+        let nextChapter;
+        let nextStart = null;
+        let nextEnd = null;
+
+        if (secondStr !== undefined) {
+            // "4:33" — names its own chapter.
+            nextChapter = parseInt(firstStr, 10);
+            nextStart = parseInt(secondStr, 10);
+            nextEnd = rangeStr !== undefined ? parseInt(rangeStr, 10) : nextStart;
+        } else if (hasVerse) {
+            // "26" following "3:15" — a verse in the chapter still in context.
+            nextChapter = chapter;
+            nextStart = parseInt(firstStr, 10);
+            nextEnd = rangeStr !== undefined ? parseInt(rangeStr, 10) : nextStart;
+        } else {
+            // "3" following a chapter-only "John 1" — another chapter.
+            nextChapter = parseInt(firstStr, 10);
+            if (rangeStr !== undefined) break;   // "John 1, 3-5" is a chapter range; not supported
+        }
+
+        if (!Number.isFinite(nextChapter) || nextChapter < 1 || nextChapter > MAX_CONTINUATION_CHAPTER) break;
+        if (nextStart !== null) {
+            if (!Number.isFinite(nextStart) || nextStart < 1 || nextStart > MAX_CONTINUATION_VERSE) break;
+            if (!Number.isFinite(nextEnd) || nextEnd < nextStart || nextEnd > MAX_CONTINUATION_VERSE) break;
+        }
+
+        results.push({
+            bookId,
+            bookName,
+            chapter: nextChapter,
+            startVerse: nextStart,
+            endVerse: nextEnd,
+            // The separator isn't part of the reference a user would recognise.
+            raw: rawMatch.replace(/^\s*[,;]\s*/, '').trim(),
+        });
+
+        chapter = nextChapter;
+        hasVerse = nextStart !== null;
+        cursor = CONTINUATION_REGEX.lastIndex;
+    }
+
+    return cursor;
 }
 
 // Two parses at the same (bookId, chapter, startVerse, endVerse) coordinate
