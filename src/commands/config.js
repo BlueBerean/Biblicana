@@ -4,7 +4,7 @@ import {
     PermissionFlagsBits,
     TextDisplayBuilder,
 } from 'discord.js';
-import { buildConfigView, readPassiveMode } from '../utils/passiveConfig.js';
+import { buildConfigView, readPassiveMode, readPassiveChannels, readPassivePaginate, readPassivePagerPrivate } from '../utils/passiveConfig.js';
 import { buildAiConfigView, readAiEnabled, readAiMemoryScope, readAiChannels, readAiDeniedRoles, readAiRequiredRoles } from '../utils/aiConfig.js';
 import { buildDailyVerseConfigView, readDailyVerseConfig } from '../utils/dailyVerseConfig.js';
 import logger from '../utils/logger.js';
@@ -50,10 +50,15 @@ export default {
 
         try {
             if (sub === 'passive') {
-                const currentPassiveMode = await readPassiveMode(database, interaction.guildId);
+                const [currentPassiveMode, currentChannels, currentPaginate, currentPagerPrivate] = await Promise.all([
+                    readPassiveMode(database, interaction.guildId),
+                    readPassiveChannels(database, interaction.guildId),
+                    readPassivePaginate(database, interaction.guildId),
+                    readPassivePagerPrivate(database, interaction.guildId),
+                ]);
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
-                    components: buildConfigView({ currentPassiveMode }),
+                    components: buildConfigView({ currentPassiveMode, currentChannels, currentPaginate, currentPagerPrivate }),
                 });
             }
             if (sub === 'ai') {

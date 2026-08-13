@@ -10,10 +10,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
 import { PermissionFlagsBits } from 'discord.js';
 
-import { isAiDeniedForMember, isAiChannelAllowed, isAiAllowedForMember } from '../src/utils/aiConfig.js';
+import { isAiDeniedForMember, isAiAllowedForMember } from '../src/utils/aiConfig.js';
+import { isChannelAllowed } from '../src/utils/channelScope.js';
 
 // A cached GuildMember: roles is a manager with a .cache Collection.
 const cachedMember = (roleIds, { admin = false } = {}) => ({
@@ -188,39 +188,8 @@ test('called with no config at all, nobody is gated', () => {
     assert.equal(isAiAllowedForMember(undefined, cachedMember([REGULAR])), true);
 });
 
-// --- panel re-render completeness ------------------------------------------
-// Every /config ai select handler re-renders the WHOLE panel after saving its
-// own setting, so it must source all five settings — the one it just changed
-// plus the four it did not. Miss one and the database still holds the right
-// value while the panel renders it as unset, which reads to an admin as "my
-// setting was just cleared". Caught twice by hand already (configAi.js and
-// config.js lost readAiRequiredRoles; configAiRoles.js rendered the required
-// picker blank), so it is pinned here rather than trusted to review.
-
-const SETTINGS = [
-    ['enabled', /readAiEnabled|saveAiEnabled/],
-    ['memory scope', /readAiMemoryScope|saveAiMemoryScope/],
-    ['channels', /readAiChannels|saveAiChannels/],
-    ['denied roles', /readAiDeniedRoles|saveAiDeniedRoles/],
-    ['required roles', /readAiRequiredRoles|saveAiRequiredRoles/],
-];
-
-test('every config ai select handler sources all five settings', async () => {
-    const dir = new URL('../src/components/selects/', import.meta.url);
-    const files = (await readdir(dir)).filter(f => /^configAi.*\.js$/.test(f));
-
-    // Guard the guard: a bad glob that matches nothing would pass silently.
-    assert.ok(files.length >= 4, `expected several configAi* handlers, found ${files.length}`);
-
-    for (const file of files) {
-        const src = await readFile(new URL(file, dir), 'utf8');
-        // Only handlers that re-render the shared panel are subject to this.
-        if (!src.includes('buildAiConfigView')) continue;
-        for (const [label, pattern] of SETTINGS) {
-            assert.match(src, pattern, `${file} never reads or writes ${label}, so the panel it renders will show it as unset`);
-        }
-    }
-});
+// NOTE: the panel re-render completeness invariant that used to live here now
+// covers both the AI and passive panels, and moved to configPanels.test.js.
 
 // --- interaction with the channel allowlist --------------------------------
 
@@ -229,11 +198,11 @@ test('denylist and channel allowlist are independent gates', () => {
     // says WHERE, and neither substitutes for the other.
     const channel = { id: 'c1', parentId: null };
 
-    assert.equal(isAiChannelAllowed(['c1'], channel), true);
+    assert.equal(isChannelAllowed(['c1'], channel), true);
     assert.equal(isAiDeniedForMember([NO_AI], cachedMember([NO_AI])), true);
 
     // Allowed channel + denied member = no response, because messageCreate
     // requires the channel gate to pass AND the member not to be denied.
-    const wouldFire = isAiChannelAllowed(['c1'], channel) && !isAiDeniedForMember([NO_AI], cachedMember([NO_AI]));
+    const wouldFire = isChannelAllowed(['c1'], channel) && !isAiDeniedForMember([NO_AI], cachedMember([NO_AI]));
     assert.equal(wouldFire, false);
 });

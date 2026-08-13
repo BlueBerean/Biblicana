@@ -10,6 +10,7 @@ import {
     PermissionFlagsBits,
 } from 'discord.js';
 import { AI_MEMORY_SCOPES } from '../database/schemas/guild.js';
+import { isChannelAllowed } from './channelScope.js';
 import { accentColor, footerLine, SUPPORT_INVITE, PRIVACY_URL, TERMS_URL } from './theme.js';
 import logger from './logger.js';
 
@@ -117,20 +118,11 @@ export async function readAiChannels(database, guildId) {
     return [];  // default: no restriction (all channels)
 }
 
-/**
- * Is AI chat allowed to fire in this channel, given the guild's allowlist?
- * EMPTY allowlist → allowed everywhere (the default). Otherwise the channel's
- * own id must be listed, OR its parent's (so threads inherit the parent
- * channel's allowance without the admin having to list every thread).
- * Only gates the @mention/reply conversation — never slash commands.
- */
-export function isAiChannelAllowed(allowedChannelIds, channel) {
-    if (!allowedChannelIds || allowedChannelIds.length === 0) return true;
-    if (!channel) return false;
-    if (allowedChannelIds.includes(channel.id)) return true;
-    if (channel.parentId && allowedChannelIds.includes(channel.parentId)) return true;
-    return false;
-}
+// The allowlist rule itself lives in channelScope.js, shared with passive
+// detection. Re-exported here so AI-chat callers can keep importing it
+// alongside the readers above; when it gates AI chat it governs only the
+// @mention/reply conversation, never slash commands.
+export { isChannelAllowed };
 
 // Discord's RoleSelectMenu caps at 25 selections, same as the channel picker.
 export const AI_DENIED_ROLES_MAX = 25;
@@ -398,7 +390,7 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
     // Channel allowlist picker. minValues 0 so the admin can clear it back to
     // "all channels". Pre-selects the current allowlist; deleted channels in
     // default_values are ignored by Discord. Only GuildText/Announcement — threads
-    // inherit their parent via isAiChannelAllowed, so no need to list them here.
+    // inherit their parent via isChannelAllowed, so no need to list them here.
     const channelSelect = new ChannelSelectMenuBuilder()
         .setCustomId('config:ai:channels')
         .setPlaceholder(currentChannels.length

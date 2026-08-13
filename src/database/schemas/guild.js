@@ -26,6 +26,38 @@ const dailyVerseSchema = joi.object({
 const guildModel = joi.object({
     id: joi.string().required(),
     passiveMode: joi.string().valid(...PASSIVE_MODES).default('react_biblebot'),
+    // Passive-detection channel allowlist, same semantics as aiChannels below.
+    // EMPTY = scan in EVERY channel the bot can read (the default, and what
+    // every guild configured before this existed already had). When NON-EMPTY,
+    // passive detection only runs in these channel IDs; threads inherit their
+    // parent.
+    //
+    // Narrows processing rather than expanding it, which is why adding it did
+    // not require a Terms re-acknowledgment. The Privacy Policy has described
+    // passive detection as channel-scoped since before this field existed
+    // (Sections 1 and 1.7) — this is the code catching up to the disclosure.
+    passiveChannels: joi.array().items(joi.string()).default([]),
+    // Autopost layout. FALSE (default) posts a card per reference, up to three,
+    // with a "+N more" note beyond that. TRUE posts ONE card with prev/next
+    // buttons and drops the three-reference cap, so a message quoting twenty
+    // verses becomes a browsable pager instead of a wall or a truncation.
+    //
+    // Only affects the 'autopost' mode; the react-only modes post nothing to
+    // lay out.
+    passivePaginate: joi.boolean().default(false),
+    // Who the page buttons move. TRUE (default) gives each reader their own
+    // private pager, so two people browsing the same post don't tug the view
+    // between them; the public post stays on the first reference. FALSE makes
+    // the buttons move the public message for everyone, which keeps a channel
+    // reading together at the cost of that contention.
+    //
+    // Only meaningful when passivePaginate is on — the card layout has no
+    // buttons to move.
+    //
+    // NOTE: this one DEFAULTS TRUE, so readers must not use Boolean(value) —
+    // an unset field would read as false and silently flip the default. See
+    // readPassivePagerPrivate.
+    passivePagerPrivate: joi.boolean().default(true),
     // AI chat: admin opt-in per guild. Visible @mention responses are a
     // significant behavior change, so default is OFF — admins must enable.
     // (DM AI chat is currently disabled — see FOLLOWUPS.md "DM AI chat".)

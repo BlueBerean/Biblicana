@@ -4,6 +4,8 @@ import {
     ActionRowBuilder,
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder,
+    ChannelSelectMenuBuilder,
+    ChannelType,
 } from 'discord.js';
 import { PASSIVE_MODES } from '../database/schemas/guild.js';
 import { PASSIVE_MODE_OPTIONS } from './welcomeCard.js';
@@ -49,13 +51,141 @@ export async function readPassiveMode(database, guildId) {
     return 'silent';
 }
 
+// Discord's ChannelSelectMenu caps at 25 selections, matching AI_CHANNELS_MAX.
+export const PASSIVE_CHANNELS_MAX = 25;
+
 /**
- * Build the compact /config view — title, current-state line, select menu.
- * Deliberately smaller than the welcome card: admins running /config don't
- * need the onboarding demo buttons, just the knob.
+ * Persist the passive-detection channel allowlist. An EMPTY array is a valid,
+ * meaningful value — it clears the restriction back to "scan everywhere".
  */
-export function buildConfigView({ currentPassiveMode = 'silent' }) {
+export async function savePassiveChannels(database, guildId, channelIds) {
+    try {
+        const clean = [...new Set((channelIds ?? []).map(String))].slice(0, PASSIVE_CHANNELS_MAX);
+        const existing = await database.getGuildValue(guildId) ?? {};
+        const merged = { ...existing, id: guildId, passiveChannels: clean };
+        await database.setGuildValue(guildId, merged);
+        return true;
+    } catch (err) {
+        logger.error(`[PassiveConfig] Channels save failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+/**
+ * Read the passive-detection channel allowlist. Returns [] — meaning "every
+ * channel" — for guilds that have never set one, which is every guild
+ * configured before this feature existed.
+ */
+export async function readPassiveChannels(database, guildId) {
+    try {
+        const g = await database.getGuildValue(guildId);
+        if (Array.isArray(g?.passiveChannels)) return g.passiveChannels.map(String);
+    } catch (err) {
+        logger.debug(`[PassiveConfig] Channels read failed for guild=${guildId}: ${err.message}`);
+    }
+    return [];
+}
+
+// Autopost layout choice. Modelled as a two-option select rather than a
+// button toggle to match the mode picker directly above it.
+export const PASSIVE_STYLE_OPTIONS = [
+    {
+        value: 'cards',
+        label: 'Separate cards (default)',
+        description: 'Up to 3 verses shown at once, the rest summarised.',
+    },
+    {
+        value: 'paginated',
+        label: 'One card with page buttons',
+        description: 'Every verse, browsable with prev/next. No 3-verse cap.',
+    },
+];
+
+// Who the page buttons move. Only meaningful when the paginated layout is on.
+export const PASSIVE_PAGER_OPTIONS = [
+    {
+        value: 'private',
+        label: 'Owner paging (default)',
+        description: 'Poster drives the post; everyone else browses privately.',
+    },
+    {
+        value: 'shared',
+        label: 'Shared paging',
+        description: 'Anyone can move the post for the whole channel.',
+    },
+];
+
+export async function savePassivePagerPrivate(database, guildId, isPrivate) {
+    try {
+        const existing = await database.getGuildValue(guildId) ?? {};
+        const merged = { ...existing, id: guildId, passivePagerPrivate: Boolean(isPrivate) };
+        await database.setGuildValue(guildId, merged);
+        return true;
+    } catch (err) {
+        logger.error(`[PassiveConfig] Pager-privacy save failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+/**
+ * Read the pager-privacy setting. DEFAULTS TRUE, which is why this checks the
+ * type rather than coercing: joi's `.default(true)` never reaches Postgres
+ * (validateAndSetValue writes the original object, not joi's output), so an
+ * unset field arrives as undefined. Boolean(undefined) is false, which would
+ * silently invert the documented default for every guild that never touched
+ * the setting.
+ */
+export async function readPassivePagerPrivate(database, guildId) {
+    try {
+        const g = await database.getGuildValue(guildId);
+        if (typeof g?.passivePagerPrivate === 'boolean') return g.passivePagerPrivate;
+    } catch (err) {
+        logger.debug(`[PassiveConfig] Pager-privacy read failed for guild=${guildId}: ${err.message}`);
+    }
+    return true;
+}
+
+export async function savePassivePaginate(database, guildId, paginate) {
+    try {
+        const existing = await database.getGuildValue(guildId) ?? {};
+        const merged = { ...existing, id: guildId, passivePaginate: Boolean(paginate) };
+        await database.setGuildValue(guildId, merged);
+        return true;
+    } catch (err) {
+        logger.error(`[PassiveConfig] Paginate save failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+export async function readPassivePaginate(database, guildId) {
+    try {
+        const g = await database.getGuildValue(guildId);
+        return Boolean(g?.passivePaginate);
+    } catch (err) {
+        logger.debug(`[PassiveConfig] Paginate read failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+/**
+ * Build the compact /config view — title, current-state line, select menus.
+ * Deliberately smaller than the welcome card: admins running /config don't
+ * need the onboarding demo buttons, just the knobs.
+ */
+export function buildConfigView({
+    currentPassiveMode = 'silent',
+    currentChannels = [],
+    currentPaginate = false,
+    currentPagerPrivate = true,
+}) {
     const currentLabel = PASSIVE_MODE_OPTIONS.find(o => o.value === currentPassiveMode)?.label ?? currentPassiveMode;
+    const channelsSummary = currentChannels.length === 0
+        ? 'All channels'
+        : currentChannels.map(id => `<#${id}>`).join(' ');
+    const currentStyleValue = currentPaginate ? 'paginated' : 'cards';
+    const styleLabel = PASSIVE_STYLE_OPTIONS.find(o => o.value === currentStyleValue).label;
+    const currentPagerValue = currentPagerPrivate ? 'private' : 'shared';
+    const pagerLabel = PASSIVE_PAGER_OPTIONS.find(o => o.value === currentPagerValue).label;
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
@@ -63,9 +193,40 @@ export function buildConfigView({ currentPassiveMode = 'silent' }) {
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             [
                 `**Current mode:** ${currentLabel}`,
+                `**Channels:** ${channelsSummary}`,
+                `**Auto-post layout:** ${styleLabel}`,
+                ...(currentPaginate ? [`**Paging:** ${pagerLabel}`] : []),
                 '',
                 'When a user types a scripture reference in chat, what should Biblicana do?',
                 '*Changes apply immediately.*',
+            ].join('\n')
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            [
+                '### Where it scans',
+                'By default Biblicana watches for scripture references in **every channel it can read**. Use the channel picker below to **limit the scan to specific channels** — it will ignore every other channel entirely. Clear the selection to go back to all channels.',
+                '',
+                '*Threads inherit their parent channel. Setting the mode to `silent` turns the scan off everywhere regardless of this list.*',
+            ].join('\n')
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            [
+                '### Auto-post layout',
+                'Only applies to the **auto-post** mode — the react-only modes have nothing to lay out.',
+                '',
+                '**Separate cards (default)** — each reference gets its own card with study buttons. Capped at **3 references** per message; beyond that a note points to `/bible` for the rest.',
+                '',
+                '**One card with page buttons** — a single card showing one reference at a time, and **no 3-reference cap**. A message quoting twenty verses becomes twenty pages instead of three cards and a truncation note.',
+            ].join('\n')
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            [
+                '### Who the page buttons move',
+                'Only applies to the paginated layout. Every post carries ◀ ▶ and a **Jump to a reference** menu.',
+                '',
+                '**Owner paging (default)** — whoever posted the references (or asked the AI) drives the public post. Anyone else who taps a control gets **their own private copy**, showing up to 3 references at a time, that only they can see. Nobody pulls the post out from under anyone.',
+                '',
+                '**Shared paging** — anyone can move the post itself, for the whole channel. Good for a group reading together; the trade-off is that whoever clicks last decides what everyone sees.',
             ].join('\n')
         ))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
@@ -85,5 +246,47 @@ export function buildConfigView({ currentPassiveMode = 'silent' }) {
             ))
     );
 
-    return [container, selectRow];
+    // minValues 0 so the admin can clear it back to "all channels". Only
+    // GuildText/Announcement are offered — threads inherit their parent via
+    // isChannelAllowed, so listing them individually is unnecessary.
+    const channelSelect = new ChannelSelectMenuBuilder()
+        .setCustomId('config:passive:channels')
+        .setPlaceholder(currentChannels.length
+            ? `Scanning ${currentChannels.length} channel${currentChannels.length === 1 ? '' : 's'} — edit or clear`
+            : 'Scanning all channels — pick channels to restrict')
+        .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setMinValues(0)
+        .setMaxValues(PASSIVE_CHANNELS_MAX);
+    if (currentChannels.length > 0) {
+        channelSelect.setDefaultChannels(...currentChannels);
+    }
+    const channelsRow = new ActionRowBuilder().addComponents(channelSelect);
+
+    const styleRow = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId('config:passive:style')
+            .setPlaceholder('Auto-post layout')
+            .addOptions(PASSIVE_STYLE_OPTIONS.map(opt =>
+                new StringSelectMenuOptionBuilder()
+                    .setValue(opt.value)
+                    .setLabel(opt.label)
+                    .setDescription(opt.description)
+                    .setDefault(opt.value === currentStyleValue)
+            ))
+    );
+
+    const pagerRow = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId('config:passive:pager')
+            .setPlaceholder('Who the page buttons move')
+            .addOptions(PASSIVE_PAGER_OPTIONS.map(opt =>
+                new StringSelectMenuOptionBuilder()
+                    .setValue(opt.value)
+                    .setLabel(opt.label)
+                    .setDescription(opt.description)
+                    .setDefault(opt.value === currentPagerValue)
+            ))
+    );
+
+    return [container, selectRow, channelsRow, styleRow, pagerRow];
 }

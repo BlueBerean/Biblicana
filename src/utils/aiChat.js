@@ -5,6 +5,7 @@ import {
     ButtonStyle,
 } from 'discord.js';
 import { parseScriptureRefs } from './scriptureRefs.js';
+import { postVersePager, DEFAULT_TRANSLATION } from './passiveDetection.js';
 import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
 import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
 import {
@@ -1504,6 +1505,39 @@ export async function handleAiChat(message, database, options = {}) {
         if (sourcePayload && sentMessage?.id) {
             await database.setChatSources(sentMessage.id, sourcePayload);
             logger.debug(`[ChatSources] Stored ${sourcePayload.rag.length} RAG + ${sourcePayload.tools.length} tool + ${sourcePayload.web.length} web source(s) for message ${sentMessage.id}`);
+        }
+
+        // Expand the references the answer cited into a browsable verse card.
+        //
+        // The system prompt tells the model to REFERENCE verses rather than
+        // quote them, on the stated grounds that scripture detection expands
+        // them automatically — which was never true of Biblicana's own
+        // messages, since passive detection skips bot authors to avoid an
+        // autopost feedback loop. This closes that gap: the answer stays tight
+        // prose and the verses arrive underneath it, paged rather than dumped.
+        //
+        // Deliberately unconditional, unlike passive auto-post. A user who
+        // asked the AI a question has invited the answer, so the verses backing
+        // it are not unsolicited the way a scan of ordinary chat would be.
+        //
+        // Wrapped so it can never cost the answer itself: an expansion failure
+        // must leave the reply standing.
+        if (sentMessage && message.guild) {
+            try {
+                const answerRefs = parseScriptureRefs(aiResponse);
+                if (answerRefs.length > 0) {
+                    // Pinned to the house translation, NOT the asker's
+                    // /setversion. These are Biblicana's own citations in
+                    // Biblicana's own message; a reader's account-wide
+                    // preference should not rewrite what the bot is quoting.
+                    await postVersePager(sentMessage, answerRefs, database, {
+                        translation: DEFAULT_TRANSLATION,
+                    });
+                    logger.debug(`[AiChat] Expanded ${answerRefs.length} reference(s) from the answer into a verse pager`);
+                }
+            } catch (err) {
+                logger.warn(`[AiChat] Verse expansion failed for message ${sentMessage.id}: ${err.message}`);
+            }
         }
 
         // Save the exchange to memory. Persists the TAGGED user content

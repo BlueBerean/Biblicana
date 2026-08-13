@@ -2,7 +2,8 @@ import { Events, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 import { handleMessageForPassiveDetection } from '../utils/passiveDetection.js';
 import { handleAiChat } from '../utils/aiChat.js';
-import { readAiEnabled, readAiChannels, isAiChannelAllowed, readAiDeniedRoles, readAiRequiredRoles, isAiAllowedForMember } from '../utils/aiConfig.js';
+import { readAiEnabled, readAiChannels, readAiDeniedRoles, readAiRequiredRoles, isAiAllowedForMember } from '../utils/aiConfig.js';
+import { isChannelAllowed } from '../utils/channelScope.js';
 
 // Decide whether this message should trigger AI chat, weighing reply-context
 // and @mention signals correctly.
@@ -82,7 +83,7 @@ export default {
                     // thread parent) must be listed. Only gates the conversation —
                     // slash commands are unaffected.
                     const allowedChannels = await readAiChannels(database, message.guild.id);
-                    aiEligible = isAiChannelAllowed(allowedChannels, message.channel);
+                    aiEligible = isChannelAllowed(allowedChannels, message.channel);
 
                     // Role gates: a server can require roles to use AI chat,
                     // block roles from it, or both — with blocked overruling
@@ -116,17 +117,26 @@ export default {
                 return;
             }
 
-            // Passive scripture detection — guild-only. Respects per-guild mode.
+            // Passive scripture detection — guild-only. Respects per-guild mode
+            // and, when set, the per-channel allowlist.
             if (!message.guild) return;
             let mode = 'silent';
+            let passiveChannels = [];
             try {
+                // One read serves both: the mode and the allowlist live on the
+                // same guild row, so this stays a single (cached) lookup on the
+                // hottest path in the bot.
                 const guildData = await database.getGuildValue(message.guild.id);
                 if (guildData?.passiveMode) mode = guildData.passiveMode;
+                if (Array.isArray(guildData?.passiveChannels)) passiveChannels = guildData.passiveChannels;
             } catch (err) {
                 logger.debug(`[Passive] Failed to read guild config for ${message.guild.id}: ${err.message}`);
                 return;
             }
+            // Mode first: 'silent' turns the scan off everywhere, so an empty
+            // allowlist can never resurrect it.
             if (mode === 'silent') return;
+            if (!isChannelAllowed(passiveChannels, message.channel)) return;
 
             await handleMessageForPassiveDetection(message, mode, database);
         } catch (err) {

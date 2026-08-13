@@ -421,7 +421,7 @@ class DatabaseHandler {
         // which wipes the ENTIRE Redis instance (every key from any co-tenant).
         // Uses SCAN (cursor-based, non-blocking) rather than KEYS. The bot's
         // keyspace: user:/guild: records, ratelimit: counters, aichat: memory.
-        const prefixes = ['user:', 'guild:', 'ratelimit:', 'aichat:', 'dailyverse:'];
+        const prefixes = ['user:', 'guild:', 'ratelimit:', 'aichat:', 'dailyverse:', 'passive:'];
         let deleted = 0;
         try {
             for (const prefix of prefixes) {
@@ -512,6 +512,46 @@ class DatabaseHandler {
             return raw ? JSON.parse(raw) : null;
         } catch (err) {
             logger.error(`[ChatSources] Read failed for ${messageId}: ${err.message}`);
+            return null;
+        }
+    }
+
+    // --- Passive-detection pagination state (Redis only) ---------------------
+    // The reference list behind a paginated passive post, keyed by the MESSAGE
+    // ID of the post itself — the same trick the Sources button uses, and for
+    // the same reason: a customId caps at 100 characters and could never hold
+    // twenty scripture references.
+    //
+    // Only the IMMUTABLE part lives here (the refs and the translation they
+    // were rendered in). The current page is encoded in each button's customId
+    // instead, so paging never writes to Redis and two people clicking at once
+    // cannot race each other into a wrong page.
+    //
+    // TTL-bounded and Redis-only by design: this is a view of scripture the
+    // reader can rebuild by posting the reference again, not a durable record.
+    passivePageKey(messageId) {
+        return `passive:page:${messageId}`;
+    }
+
+    async setPassivePage(messageId, payload, ttlSeconds = 604800) {
+        try {
+            await this.redis.set(this.passivePageKey(messageId), JSON.stringify(payload), 'EX', ttlSeconds);
+            return true;
+        } catch (err) {
+            // Never throw into the post path — losing pagination is much less
+            // bad than failing to post the verse at all. The buttons will
+            // report the browser as expired, which is accurate.
+            logger.error(`[PassivePage] Write failed for ${messageId}: ${err.message}`);
+            return false;
+        }
+    }
+
+    async getPassivePage(messageId) {
+        try {
+            const raw = await this.redis.get(this.passivePageKey(messageId));
+            return raw ? JSON.parse(raw) : null;
+        } catch (err) {
+            logger.error(`[PassivePage] Read failed for ${messageId}: ${err.message}`);
             return null;
         }
     }
