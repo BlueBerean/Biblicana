@@ -15,7 +15,7 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 - **State**: ioredis 5.x (local Redis on the same host as the bot) + pg 8.x (Neon serverless Postgres)
 - **Bible data**: SQLite — all gitignored.
   - On `main`: `bible.db` (~131 MB, verse text + interlinear), `strongs.db` (~2.7 MB, Hebrew/Greek lexicon). Both present on prod.
-  - Six additional local SQLite DBs (~560 MB total): `extrabiblical_data.sqlite` (100 MB, 334 authors — 285 patristic plus 49 medieval/modern, see the era-labelling note below — 61k entries), `clean_commentary.db` (428 MB, 6 modern commentators incl. Gill/Clarke/Henry/JFB/Keil/Tyndale, 88k verse + 4.5k chapter-intro entries), `person_places.db` (6.3 MB, biblical figures/places w/ coordinates), `dictionary.sqlite` (5 MB, Easton's + Smith's, 8.4k entries), `cross-references.sqlite` (11 MB, Treasury of Scripture Knowledge, 340k refs), `categories.sqlite` (11 MB, 7.4k topical categories, 406k refs). **All present on prod** since the 2026-06-30 v1.5.0 migration.
+  - Seven additional local SQLite DBs (~566 MB total): `lxx.sqlite` (6.3 MB, Brenton's English Septuagint 1851, 28,690 verses keyed by MASORETIC coordinates — see `src/buildLxx.js` for why the alignment is non-trivial), `extrabiblical_data.sqlite` (100 MB, 334 authors — 285 patristic plus 49 medieval/modern, see the era-labelling note below — 61k entries), `clean_commentary.db` (428 MB, 6 modern commentators incl. Gill/Clarke/Henry/JFB/Keil/Tyndale, 88k verse + 4.5k chapter-intro entries), `person_places.db` (6.3 MB, biblical figures/places w/ coordinates), `dictionary.sqlite` (5 MB, Easton's + Smith's, 8.4k entries), `cross-references.sqlite` (11 MB, Treasury of Scripture Knowledge, 340k refs), `categories.sqlite` (11 MB, 7.4k topical categories, 406k refs). **All present on prod** since the 2026-06-30 v1.5.0 migration.
 - **AI model**: `gpt-5.6-luna` (since v1.5.1). GPT-5 family, so the API surface differs from 4o: `max_completion_tokens` not `max_tokens`, `temperature` accepts only the default, and `max_completion_tokens` INCLUDES hidden reasoning tokens — `reasoning_effort: 'none'` is pinned everywhere for that reason. Chat Completions takes flat `reasoning_effort`; the Responses API nests it as `reasoning.effort`.
 - **Package manager**: prod uses `npm`; local dev uses `pnpm@10`. Note `pnpm-lock.yaml` IS tracked in git, while prod's `package-lock.json` is **untracked and stale (v1.4.0)** — so `git pull` never touches it, and `npm ci` should be skipped unless dependencies actually changed.
 - **Process manager (prod)**: PM2 v5 (`pm2 list`, `pm2 logs index`, `pm2 restart index`)
@@ -27,7 +27,7 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 src/
   index.js                # Bot entry; wires up Discord client, loads commands/events/buttons
   config.js               # (refactor) Centralized Postgres config object
-  commands/               # Slash commands — one file per command (33 on refactor: 32 global
+  commands/               # Slash commands — one file per command (34 on refactor: 33 global
                           #   + /testwelcome, which carries `devOnly: true` and is excluded
                           #   from the global registry by deploy.js)
   components/buttons/     # Button interaction handlers
@@ -55,6 +55,8 @@ data/                     # All files gitignored
   bible.db, strongs.db    # Core Bible + lexicon SQLite DBs (present on both main and refactor)
   prophecies.json, VOTD.json  # (refactor) Static datasets
   # refactor-only:
+  lxx.sqlite                  # Brenton's English Septuagint (1851), keyed by
+                              #   MASORETIC coords; built by src/buildLxx.js
   extrabiblical_data.sqlite   # Church Fathers commentary
   clean_commentary.db         # 6 modern commentators
   person_places.db            # Biblical figures + locations
@@ -178,7 +180,7 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 
 ## Branches
 
-- **`refactor` — what prod actually runs**, and has since the v1.5.0 migration on 2026-06-30. This is the working branch: deploys are a `git pull` on the droplet from `refactor`. ESM, 11 real deps, 0 critical Dependabot alerts on its own tree. `/dictionary`, `/crossref`, `/topicalindex` and `/commentary` are local SQLite rather than RapidAPI; `/fathers`, `/persons`, `/places` and `/profile` were added. 33 command files, 32 registered globally (`/testwelcome` is `devOnly`).
+- **`refactor` — what prod actually runs**, and has since the v1.5.0 migration on 2026-06-30. This is the working branch: deploys are a `git pull` on the droplet from `refactor`. ESM, 11 real deps, 0 critical Dependabot alerts on its own tree. `/dictionary`, `/crossref`, `/topicalindex` and `/commentary` are local SQLite rather than RapidAPI; `/fathers`, `/persons`, `/places` and `/profile` were added. 34 command files, 33 registered globally (`/testwelcome` is `devOnly`). `/lxx` is the newest and, unlike a component, needed a `deployg`.
 - **`main` — stale, NOT deployed.** CommonJS, 190+ deps, 100+ open Dependabot vulnerabilities. Left behind by the refactor and increasingly divergent. **Do not push here**, and do not treat it as production — several docs (including older revisions of this file) wrongly said it was.
 
 ### Release history
@@ -188,7 +190,8 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 - `ef678ad` — `/crossref`, `/topicalindex`, `/commentary` moved local; chapter-level commentary
 - **v1.5.0 (2026-06-30)** — first `refactor` deploy to the droplet. Data files uploaded; `main` not deployed since.
 - **v1.5.1 (2026-08-03)** — reliability + cost batch: ack-before-I/O across 16 handlers, `pg.Pool` bounds (and a missing `pool.on('error')` listener that could crash the process), Redis negative caching, a single-query daily-verse tick with its guild list cached to stop the 5-minute tick waking Neon, GPT-5.6-Luna with prompt caching, Tavily replaced by OpenAI `web_search` on a domain allowlist, a Sources button on AI answers, era labelling in `/fathers`, and passage-slice anchoring so a passage-grouped commentator answers the verse actually asked about. `followups.md` (gitignored, local-only) has the item-by-item record.
-- **post-v1.5.1, deployed 2026-08-11** (`package.json` still reads 1.5.1) — AI chat role gating in `/config ai`: a **blocked-roles** denylist (`228791d`, so a server can hand out a `No AI` role) and a **required-roles** allowlist (`b7c44c2`, so AI chat can be kept to a study group or supporter tier), with blocked overruling required and Manage Server bypassing both. See "AI chat access gates" above. Both are select-menu components, so they needed no `deployg`.
+- **post-v1.5.1, deployed 2026-08-11** (shipped ahead of the version bump; folded into v1.6.0 below) — AI chat role gating in `/config ai`: a **blocked-roles** denylist (`228791d`, so a server can hand out a `No AI` role) and a **required-roles** allowlist (`b7c44c2`, so AI chat can be kept to a study group or supporter tier), with blocked overruling required and Manage Server bypassing both. See "AI chat access gates" above. Both are select-menu components, so they needed no `deployg`.
+- **v1.6.0 (2026-08-14)** — the Septuagint, AI role gating, and a verse pager. `/lxx` plus a `lookup_lxx` tool over **Brenton's English Septuagint** (`data/lxx.sqlite`, 28,690 verses, seventh SQLite, built by `src/buildLxx.js`); AI-chat **required-roles** and **blocked-roles** gating in `/config ai`; a **paginated passive layout** with owner-locked paging and a jump menu, plus a passive **channel allowlist**; AI answers expand their own citations into a verse card. Accuracy: the **Isaiah/1 Samuel parser collision** (`Isa` read as Roman `I` + `Sa`), continuation lists sharing one book name, replies truncating mid-word at the output ceiling, chapter-only references rendering no text. Announcement copy in `BIBLICANA_ANNOUNCEMENTS_v1.6.0.md`.
 
 ## References
 
