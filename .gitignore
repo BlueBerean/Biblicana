@@ -24,3 +24,6 @@ FOLLOWUPS.md
 .agents/
 .claude/skills/
 skills-lock.json
+
+# Release announcement drafts — copy for top.gg, not part of the codebase
+docs/announcements/
