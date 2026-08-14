@@ -36,6 +36,11 @@ const commentaryPromise = (async () => {
     return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
 })();
 
+const lxxPromise = (async () => {
+    const filePath = path.join(__dirname, '../..', 'data', 'lxx.sqlite');
+    return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
+})();
+
 export const COMMENTATORS = [
     { id: 'john-gill',              label: "John Gill" },
     { id: 'matthew-henry',          label: "Matthew Henry" },
@@ -571,6 +576,91 @@ class CommentaryWrapper {
     }
 }
 
+/**
+ * Brenton's English Septuagint (1851, public domain), built by src/buildLxx.js.
+ *
+ * Stored against MASORETIC coordinates, so callers pass the same
+ * (bookId, chapter, verse) every other wrapper takes and never think about the
+ * Septuagint's own numbering. Psalm 51:10 returns what the LXX prints at its
+ * Psalm 50:12, and `lxx_ref` carries that address back for display — readers
+ * studying the LXX want to see it, and hiding it would make the card look wrong
+ * to anyone who knows.
+ *
+ * Two things callers must handle rather than ignore:
+ *   - `approx` marks chapters where the Greek is arranged differently enough
+ *     that the build could not corroborate a verse-for-verse line-up (the
+ *     tabernacle account in Exodus 36-39, parts of Job and 3 Kingdoms).
+ *   - A MISSING row is a real answer, not an error. The Greek genuinely lacks
+ *     some Hebrew verses — Jeremiah 46:1 has no counterpart because the LXX
+ *     has no such heading.
+ */
+class LxxWrapper {
+    constructor() { this.db = lxxPromise; }
+
+    // By Masoretic coordinates, the way every other lookup in the bot works.
+    async getVerses(bookId, chapter, startVerse, endVerse) {
+        const db = await this.db;
+        return db.all(
+            `SELECT chapter, verse, lxx_ref, approx, text
+             FROM lxx
+             WHERE book_id = ? AND chapter = ? AND verse BETWEEN ? AND ?
+             ORDER BY verse`,
+            [bookId, chapter, startVerse, endVerse]
+        );
+    }
+
+    async getChapter(bookId, chapter) {
+        const db = await this.db;
+        return db.all(
+            `SELECT chapter, verse, lxx_ref, approx, text
+             FROM lxx
+             WHERE book_id = ? AND chapter = ?
+             ORDER BY verse`,
+            [bookId, chapter]
+        );
+    }
+
+    /**
+     * Resolve a book name that has no Masoretic counterpart — Sirach, Tobit,
+     * the Maccabees. Kept OUT of bookNames.js on purpose: those aliases feed
+     * passive scripture detection, and teaching it to recognise "Tobit 4:15"
+     * would have the bot react to references it cannot show from bible.db.
+     */
+    async resolveDeuteroBook(name) {
+        const db = await this.db;
+        const key = String(name ?? '').trim().toLowerCase();
+        if (!key) return null;
+        const row = await db.get(
+            `SELECT b.code, b.name FROM lxx_alias a JOIN lxx_books b ON b.code = a.code WHERE a.alias = ?`,
+            [key]
+        );
+        if (row) return row;
+        // Awaited before the coalesce: `db.get(...) ?? null` would test the
+        // PROMISE for nullishness, which it never is, and hand back undefined.
+        const byName = await db.get(`SELECT code, name FROM lxx_books WHERE name = ? COLLATE NOCASE`, [name]);
+        return byName ?? null;
+    }
+
+    // By the Septuagint's own address, for deuterocanonical books and for
+    // anyone who asks in LXX numbering directly.
+    async getByCode(code, chapter, startVerse, endVerse) {
+        const db = await this.db;
+        return db.all(
+            `SELECT lxx_chapter AS chapter, lxx_verse AS verse, lxx_ref, approx, text
+             FROM lxx
+             WHERE lxx_book = ? AND lxx_chapter = ? AND lxx_verse BETWEEN ? AND ?
+             ORDER BY lxx_verse`,
+            [code, chapter, startVerse, endVerse]
+        );
+    }
+
+    async listDeuteroBooks() {
+        const db = await this.db;
+        return db.all(`SELECT code, name FROM lxx_books WHERE canon = 'deutero' ORDER BY rowid`);
+    }
+}
+
+export const lxxWrapper = new LxxWrapper();
 export const fathersWrapper = new FathersWrapper();
 export const personsWrapper = new PersonsWrapper();
 export const placesWrapper = new PlacesWrapper();

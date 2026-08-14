@@ -11,7 +11,7 @@ import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './
 import {
     commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
     personsWrapper, placesWrapper, dictionaryWrapper, displayName, classifyFather,
-    extractVerseSlice,
+    extractVerseSlice, lxxWrapper,
 } from './studyHelper.js';
 import { searchAllowedWeb, buildWebSourceMap } from './webSearch.js';
 import { readAiMemoryScope } from './aiConfig.js';
@@ -35,7 +35,7 @@ const MODEL = 'gpt-5.6-luna';
 //
 // Bump the suffix whenever the static prefix changes, so a stale cache can
 // never be matched against a prompt that no longer exists.
-const PROMPT_CACHE_KEY = 'biblicana-aichat-v2';   // v2: added the no-code rule to SYSTEM_PROMPT
+const PROMPT_CACHE_KEY = 'biblicana-aichat-v3';   // v3: Septuagint tool + the rule against quoting the LXX unaided
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 // Sized to Discord's single plain-message ceiling, NOT picked freely. At the
 // ~3.5 chars/token this model averages in English prose, 550 tokens is ~1925
@@ -192,7 +192,7 @@ For trolling / off-topic: gentle redirect, sometimes light humor. "What's your f
 COMMANDS YOU KNOW — suggest when genuinely helpful
 ════════════════════════════════════════════════════════════════════
 
-/bible, /interlinear, /commentary, /fathers, /crossref, /parallel, /randomverse, /find, /web, /topicalindex, /dictionary, /propheciesofjesus, /persons, /places, /profile, /define, /setversion, /config passive, /config ai, /forget, /support
+/bible, /interlinear, /lxx, /commentary, /fathers, /crossref, /parallel, /randomverse, /find, /web, /topicalindex, /dictionary, /propheciesofjesus, /persons, /places, /profile, /define, /setversion, /config passive, /config ai, /forget, /support
 
 You receive: the user's display name (use it naturally); conversation history; and — when they reference a verse — grounding material from actual Church Fathers and classical commentary. Use that grounding to deepen your answer rather than paraphrasing generically.
 
@@ -599,6 +599,20 @@ const AI_TOOLS = [
     {
         type: 'function',
         function: {
+            name: 'lookup_lxx',
+            description: 'Get how the SEPTUAGINT (the Greek Old Testament, LXX) renders an Old Testament passage, in Brenton\'s English. Use whenever the Septuagint or LXX comes up, when a New Testament quotation of the Old differs from the Hebrew, or for a Septuagint-only book (Sirach, Tobit, Wisdom, 1-4 Maccabees, Baruch, Judith, Psalm 151). This is the ONLY source of Septuagint text you have — never quote the LXX from memory.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    reference: { type: 'string', description: 'An Old Testament reference in the usual English numbering, e.g. "Isaiah 7:14", "Psalm 51:10", or a Septuagint-only book like "Sirach 2:1".' },
+                },
+                required: ['reference'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'lookup_strongs',
             description: 'Look up a Strong\'s lexicon entry directly by number — the lemma, transliteration, definition, and derivation. Use when the user gives a Strong\'s number ("what does G26 mean") or after lookup_original surfaces one worth defining.',
             parameters: {
@@ -708,6 +722,7 @@ const TOOLS_GUIDANCE = `You can look things up before answering:
 - lookup_commentary(reference, commentator?): classic commentary on a verse. Use when asked for a commentary or interpretation.
 - lookup_father(reference, father?): what the early Church Fathers said about a verse (e.g. Augustine, Chrysostom). Use for "what did the early church / the fathers / a specific Father say about X".
 - lookup_original(reference, word?): the Greek/Hebrew of a verse with Strong's numbers. Use for word studies ("what's the Greek for love in 1 John 4:8", "break down John 1:1"). Always ground original-language claims here — never guess a lemma or Strong's number.
+- lookup_lxx(reference): how the SEPTUAGINT renders an Old Testament passage, in Brenton's English. This is your ONLY source of Septuagint text. Call it whenever the LXX or Septuagint comes up, whenever a New Testament quotation differs from the Hebrew you have, and for Septuagint-only books (Sirach, Tobit, Wisdom, Baruch, Judith, 1-4 Maccabees, Psalm 151). NEVER quote or paraphrase the Septuagint without calling it first, and never offer to show the LXX for a New Testament verse - the Septuagint is the Greek Old Testament only.
 - lookup_strongs(strongs): a Strong's lexicon entry by number (e.g. G26). Use when given a Strong's number, or to define one surfaced by lookup_original.
 - lookup_crossrefs(reference): related verses (Treasury of Scripture Knowledge). Use for "what connects to / relates to this verse".
 - lookup_scripture(reference): exact BSB wording. Use sparingly.
@@ -725,6 +740,7 @@ Match your tool use to what the user actually asked for:
 
 - They named a SPECIFIC verse ("commentary on John 3:16", "what does Clarke say about Romans 8:28", "what did Augustine say about John 3:16"): skip lookup_topic and go straight to lookup_commentary or lookup_father (or lookup_scripture if they only want the wording).
 
+- They ask about the SEPTUAGINT / LXX, or how the Greek Old Testament reads, or why a New Testament quotation differs from the Old Testament wording: call lookup_lxx. Cite the Septuagint's own reference as the tool returns it (the LXX numbers many Psalms one behind the Hebrew), and say plainly when there is no Septuagint reading rather than supplying one.
 - They want a WORD STUDY / the original language ("what's the Greek/Hebrew for X", "break down the original of Y", "what does G#### mean"): call lookup_original (and lookup_strongs to define a word by its number) and NOTHING else — a word-study request does not need commentary or cross-references.
 
 - They want RELATED verses ("what connects to / relates to X", "cross-references for X"): call lookup_crossrefs only. Don't fetch cross-references for requests that didn't ask about relatedness.
@@ -915,6 +931,58 @@ async function toolLookupScripture({ reference }) {
 // row.data is a JSON array of {text (English gloss), word (Greek/Hebrew), number
 // (Strong's like "g3056")}. Grounds word studies in real data — the answer type
 // generic LLMs hallucinate most (wrong lemmas / Strong's numbers).
+// Septuagint text for an Old Testament reference, keyed by the ENGLISH
+// numbering a user would type — the mapping onto the LXX's own numbering was
+// resolved when data/lxx.sqlite was built, so nothing here has to know that
+// Psalm 51 is Psalm 50 in the Greek. The LXX reference comes back in the
+// answer so the model can cite it accurately.
+//
+// This tool exists because the model was OFFERING the Septuagint ("want to see
+// how the LXX renders this?") with nothing behind it, which meant any follow-up
+// was quoted from memory.
+async function toolLookupLxx({ reference }) {
+    if (!reference || typeof reference !== 'string') {
+        return 'Error: provide a "reference" like "Isaiah 7:14".';
+    }
+
+    // Septuagint-only books have no Masoretic address, so they never parse as a
+    // normal reference. Try them by name first.
+    const nameMatch = /^\s*([1-4]?\s*[A-Za-z][A-Za-z\s]*?)\s+(\d+)(?::(\d+))?(?:\s*[-–—]\s*(\d+))?\s*$/.exec(reference);
+    if (nameMatch) {
+        const deutero = await lxxWrapper.resolveDeuteroBook(nameMatch[1]).catch(() => null);
+        if (deutero) {
+            const ch = Number(nameMatch[2]);
+            const from = nameMatch[3] ? Number(nameMatch[3]) : 1;
+            const to = nameMatch[4] ? Number(nameMatch[4]) : from;
+            const rows = await lxxWrapper.getByCode(deutero.code, ch, from, Math.min(to, from + 9)).catch(() => []);
+            if (rows.length === 0) return `No Septuagint text found for ${deutero.name} ${ch}:${from}.`;
+            return `${deutero.name} ${ch}:${from}${to > from ? `-${to}` : ''} (Septuagint, Brenton's English): `
+                + rows.map(r => `[${r.verse}] ${r.text}`).join(' ')
+                + ` — NOTE: ${deutero.name} is in the Septuagint but not in the Protestant Old Testament; say so if it matters to the question.`;
+        }
+    }
+
+    const r = parseSingleVerseRef(reference);
+    if (typeof r === 'string') return r;
+    if (r.bookId > 39) {
+        return `${r.bookName} is in the New Testament. The Septuagint is the Greek translation of the OLD Testament, so there is no LXX reading for it. Use lookup_original for the Greek of a New Testament verse.`;
+    }
+
+    const to = Math.min(r.endVerse ?? r.startVerse, r.startVerse + 9);
+    const rows = await lxxWrapper.getVerses(r.bookId, r.chapter, r.startVerse, to).catch(() => []);
+    const ref = `${r.bookName} ${r.chapter}:${r.startVerse}${to > r.startVerse ? `-${to}` : ''}`;
+    if (rows.length === 0) {
+        return `No Septuagint text for ${ref}. The Greek does not always have a verse where the Hebrew does — some headings and oracles have no counterpart. Do NOT quote the Septuagint from memory here; say it isn't available.`;
+    }
+
+    const lxxRef = rows[0].lxx_ref;
+    const body = rows.map(r2 => (rows.length > 1 ? `[${r2.verse}] ${r2.text}` : r2.text)).join(' ');
+    const caveat = rows.some(r2 => r2.approx)
+        ? ' — CAUTION: the Septuagint arranges this chapter differently from the Hebrew, so the verse numbers may not line up exactly; cite the Greek reference rather than the Hebrew one.'
+        : '';
+    return `${ref} in the Septuagint (${lxxRef}, Brenton's English 1851): ${body}${caveat}`;
+}
+
 async function toolLookupOriginal({ reference, word }) {
     const r = parseSingleVerseRef(reference);
     if (typeof r === 'string') return r;
@@ -1159,6 +1227,7 @@ async function executeTool(name, argsJson, webSourceCollector = []) {
             case 'lookup_commentary': return await toolLookupCommentary(args);
             case 'lookup_father': return await toolLookupFather(args);
             case 'lookup_scripture': return await toolLookupScripture(args);
+            case 'lookup_lxx': return await toolLookupLxx(args);
             case 'lookup_original': return await toolLookupOriginal(args);
             case 'lookup_strongs': return await toolLookupStrongs(args);
             case 'lookup_crossrefs': return await toolLookupCrossrefs(args);

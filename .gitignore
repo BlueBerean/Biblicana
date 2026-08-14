@@ -12,6 +12,7 @@ data/person_places.db
 data/cross-references.sqlite
 data/categories.sqlite
 data/clean_commentary.db
+data/lxx.sqlite
 data/.DS_Store
 FOLLOWUPS.md
 
