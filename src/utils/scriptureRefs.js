@@ -58,6 +58,40 @@ const MAX_CONTINUATION_CHAPTER = 150;
 const MAX_CONTINUATION_VERSE = 176;
 
 /**
+ * Resolve the book from a match's optional numeric/Roman prefix and book word.
+ *
+ * The prefix group is greedy, so a book whose NAME begins with I gets split:
+ * "Isa 53:3" matches as prefix "I" + word "sa", and "I Sa" is a real
+ * abbreviation for 1 Samuel — so Isaiah silently became 1 Samuel, and
+ * "Isaiah 53" ("I" + "saiah") resolved to nothing at all and was dropped.
+ *
+ * The fix is to ask whether the prefix was written AGAINST the book word or
+ * apart from it:
+ *
+ *   "Isa"    contiguous -> try "Isa" first   -> Isaiah
+ *   "I Sa"   separated  -> only "I Sa"       -> 1 Samuel
+ *   "1John"  contiguous -> try "1John" first -> 1 John
+ *   "1 John" separated  -> only "1 John"     -> 1 John
+ *
+ * Only the contiguous case gets the joined reading, because joining across a
+ * space the author actually typed would be inventing a name they didn't write.
+ * The spaced reading stays as the fallback, so compact forms whose joined
+ * spelling isn't a known alias ("IJohn") still resolve.
+ */
+function resolveBook(raw, prefix, bookWord) {
+    if (!prefix) return getBookId(bookWord, { silent: true });
+
+    // raw always begins with the prefix; what follows it is either the book
+    // word (contiguous) or the whitespace that separated them.
+    const contiguous = /^[A-Za-z]/.test(raw.slice(prefix.length));
+    if (contiguous) {
+        const joined = getBookId(`${prefix}${bookWord}`, { silent: true });
+        if (joined) return joined;
+    }
+    return getBookId(`${prefix} ${bookWord}`, { silent: true });
+}
+
+/**
  * Parse Bible references out of a block of text.
  * @param {string} text
  * @returns {Array<{bookId:number, bookName:string, chapter:number, startVerse:number|null, endVerse:number|null, raw:string}>}
@@ -81,8 +115,7 @@ export function parseScriptureRefs(text) {
     while ((match = SCRIPTURE_REGEX.exec(text)) !== null) {
         const [raw, prefix, bookWord, chapterStr, startStr, endStr] = match;
 
-        const candidate = prefix ? `${prefix} ${bookWord}` : bookWord;
-        const bookId = getBookId(candidate, { silent: true });
+        const bookId = resolveBook(raw, prefix, bookWord);
         if (!bookId) {
             SCRIPTURE_REGEX.lastIndex = match.index + 1;
             continue;

@@ -220,3 +220,63 @@ test('a full AI-style citation list parses completely', () => {
 test('continuations are deduped like anchored references', () => {
     assert.deepEqual(coords('Acts 3:15, 3:15, 15'), ['Acts 3:15']);
 });
+
+// --- the Isaiah / 1 Samuel collision ---------------------------------------
+//
+// The optional prefix group is greedy, so a book whose NAME starts with I gets
+// split: "Isa 53:3" matched as prefix "I" + word "sa", and "I Sa" is a real
+// abbreviation for 1 Samuel. Isaiah silently became 1 Samuel, and the full
+// "Isaiah 53" ("I" + "saiah") resolved to nothing and was dropped entirely.
+//
+// Found in prod 2026-08-13: an AI answer about the Suffering Servant cited
+// Isa 53:3-12 and the verse pager rendered "1 Samuel 53:3-12", a chapter that
+// does not exist. Isaiah is one of the most-cited books in the bot.
+//
+// The rule: a prefix written AGAINST the book word gets the joined reading
+// first; a prefix separated by a space only ever gets the spaced reading,
+// because joining across a space the author typed would invent a name.
+
+test('Isa resolves to Isaiah, not 1 Samuel', () => {
+    assert.deepEqual(coords('Isa 53:3-12'), ['Isaiah 53:3-12']);
+});
+
+test('the full spelling Isaiah parses at all', () => {
+    // Previously returned NOTHING: "I" + "saiah" resolved to no book, and the
+    // rewind never recovered the whole word.
+    assert.deepEqual(coords('Isaiah 53:3'), ['Isaiah 53:3']);
+    assert.deepEqual(coords('Isaiah 53'), ['Isaiah 53']);
+});
+
+test('an abbreviated Isaiah with a trailing period still works', () => {
+    assert.deepEqual(coords('Isa. 40:31'), ['Isaiah 40:31']);
+});
+
+test('a SPACED Roman numeral still means the numbered book', () => {
+    // The other side of the fix: "I Sa" separated by a space is 1 Samuel and
+    // must not be joined into "ISa".
+    assert.deepEqual(coords('I Sa 3:1'), ['1 Samuel 3:1']);
+    assert.deepEqual(coords('I John 1:9'), ['1 John 1:9']);
+    assert.deepEqual(coords('II Cor 5:17'), ['2 Corinthians 5:17']);
+});
+
+test('compact numeric prefixes are unaffected', () => {
+    assert.deepEqual(coords('1John 1:9'), ['1 John 1:9']);
+    assert.deepEqual(coords('1 John 1:9'), ['1 John 1:9']);
+    assert.deepEqual(coords('1 Sam 16:7'), ['1 Samuel 16:7']);
+    assert.deepEqual(coords('3 John 4'), ['3 John 4']);
+});
+
+test('the prod answer that surfaced this parses correctly end to end', () => {
+    const answer = 'Isaiah 53 is the clearest parallel: the Servant is rejected and vindicated'
+        + ' (Isa 53:3-12). Jesus fulfills this (Matt 27:12-14; Acts 8:32-35; 1 Pet 2:24-25).'
+        + ' Isaiah also foretells a Galilean ministry (Isa 9:1-2; Matt 4:13-16).';
+    assert.deepEqual(coords(answer), [
+        'Isaiah 53',
+        'Isaiah 53:3-12',
+        'Matthew 27:12-14',
+        'Acts 8:32-35',
+        '1 Peter 2:24-25',
+        'Isaiah 9:1-2',
+        'Matthew 4:13-16',
+    ]);
+});
