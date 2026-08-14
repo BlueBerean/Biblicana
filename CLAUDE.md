@@ -163,6 +163,38 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 5. `pm2 restart index`
 6. `pm2 logs index --lines 30` to verify clean startup
 
+### Release checklist (version bumps only)
+
+An ordinary deploy is the six steps above. A **version bump** adds these, and
+they are ordered because two of them must happen BEFORE the restart.
+
+1. **`package.json` version.** What `pm2 list` reports.
+2. **`EMBEDFOOTERTEXT` in the droplet's `.env`** — the version users actually
+   see, on the footer of every card. It is a SECOND copy of the version string
+   and it does not live in git, so no commit, diff or test can catch it drifting.
+   It shipped stale at v1.6.0 and read `v1.5.1` in prod until someone noticed.
+   `sed -i "/^EMBEDFOOTERTEXT/s/v1\.5\.1/v1.6.0/" .env`, after `cp .env .env.bak-$(date +%Y%m%d-%H%M%S)`.
+   (Deriving it from `package.json` would end this class of bug; deliberately
+   not done, so it stays a checklist item.)
+3. **New data files, BEFORE the restart.** `data/` is gitignored, so `git pull`
+   never brings a new SQLite. `scp` it with NO PIPE — scp can see a pipe fill
+   and truncate silently with a clean exit, and a half-copied SQLite has a
+   valid header, so early reads succeed and later ones fail hours later in
+   prod. Verify with `md5` on both ends, not the exit code.
+4. **`npm run deployg` only if a slash command was added, renamed, or had its
+   options changed.** Components (buttons, select menus) are matched by
+   `customId` at interaction time and need nothing but a restart. Global
+   registration takes up to an hour to propagate; it is a `PUT` over the whole
+   set, so it cannot duplicate.
+5. **Run the tests on the droplet before restarting.** Node 18.13's TAP lexer is
+   stricter than local 18.20, and reports per FILE — check subtest counts
+   (`node --test tests/x.test.js | grep -cE "^\s+ok"`), not the file total, or a
+   file that died mid-parse still shows green.
+6. Restart, then verify with a real query against prod's own data — not just a
+   clean log. A script that imports a module in isolation does NOT load `.env`
+   (only `index.js` does), so anything reading config needs `import
+   "dotenv/config"` or it silently reads defaults.
+
 ## Known pitfalls
 
 - **`package.json` deps are branch-specific.** On `main`: 190+ bloated direct deps (accidentally pinned via `npm install --save`), with `eslint` in prod `dependencies` not `devDependencies`. On `refactor`: slimmed to 11 real direct deps + 1 devDep (see commit `647681e`). Don't touch package.json on `main` without planning the pnpm migration at the same time.
