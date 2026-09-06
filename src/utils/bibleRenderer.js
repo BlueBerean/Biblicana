@@ -71,7 +71,10 @@ export async function fetchBibleVerseData({ bookId, chapter, startVerse, endVers
         body += nextChunk;
     }
     if (!body) return null;
-    if (truncated) body += '\n\n*Truncated — try a smaller range.*';
+    // No "try a smaller range" note any more: that put the work back on the
+    // reader for something the bot can just do. buildBibleComponents turns the
+    // flag into a Read full button instead.
+    if (truncated) body += '…';
 
     const rangeLabel = effectiveEnd !== startVerse
         ? `${bookName} ${chapter}:${startVerse}-${effectiveEnd}`
@@ -85,7 +88,8 @@ export async function fetchBibleVerseData({ bookId, chapter, startVerse, endVers
         endVerse: effectiveEnd,
         body,
         translation,
-        rangeLabel
+        rangeLabel,
+        truncated,
     };
 }
 
@@ -104,9 +108,29 @@ export function buildBibleComponents({ data, includeActionRow = true }) {
         ));
 
     const components = [container];
-    if (includeActionRow && data.startVerse === data.endVerse) {
-        components.push(buildVerseActionRow(data.bookId, data.chapter, data.startVerse));
+
+    // A single verse gets the study chain. A RANGE previously got nothing at
+    // all — so a range long enough to be cut had no controls whatsoever, which
+    // is how "try a smaller range" ended up being the only way forward. This is
+    // the terminus of every Open button in the bot (/find, /topicalindex,
+    // /topic, /propheciesofjesus and the passive cards all land here), so a
+    // dead end here is a dead end everywhere.
+    const row = includeActionRow && data.startVerse === data.endVerse
+        ? buildVerseActionRow(data.bookId, data.chapter, data.startVerse)
+        : new ActionRowBuilder();
+
+    if (data.truncated) {
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`passageread:${data.bookId}:${data.chapter}:${data.startVerse}:${data.endVerse}`)
+                .setLabel('Read full')
+                .setEmoji({ name: '📜' })
+                .setStyle(ButtonStyle.Primary)
+        );
     }
+
+    // An empty row is not a valid component — only push one that has buttons.
+    if (row.components.length > 0) components.push(row);
     return components;
 }
 

@@ -265,15 +265,26 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
     const currentToggleValue = currentEnabled ? 'on' : 'off';
     const currentToggleLabel = AI_OPTIONS.find(o => o.value === currentToggleValue).label;
     const currentScopeLabel = AI_MEMORY_SCOPE_OPTIONS.find(o => o.value === currentMemoryScope)?.label ?? currentMemoryScope;
-    const channelsSummary = currentChannels.length === 0
-        ? 'All channels'
-        : currentChannels.map(id => `<#${id}>`).join(' ');
-    const deniedRolesSummary = currentDeniedRoles.length === 0
-        ? 'Nobody blocked'
-        : currentDeniedRoles.map(id => `<@&${id}>`).join(' ');
-    const requiredRolesSummary = currentRequiredRoles.length === 0
-        ? 'Everyone'
-        : currentRequiredRoles.map(id => `<@&${id}>`).join(' ');
+    // Mention lists are the only UNBOUNDED text on this panel, and Discord
+    // rejects the whole message at 4000 displayable characters. A guild with
+    // ~10 channels and a few roles selected tipped it over, so /config ai
+    // returned "Invalid Form Body" and rendered nothing at all — the panel you
+    // need in order to UNDO the selection was the panel that would not open.
+    //
+    // Each mention costs ~22 chars, so this caps the visible run and counts the
+    // rest. The pickers below still show every selection as a default, so
+    // nothing is hidden from the admin — only the prose summary is bounded.
+    const MENTIONS_SHOWN = 4;
+    const mentionSummary = (ids, wrap, emptyLabel) => {
+        if (ids.length === 0) return emptyLabel;
+        const shown = ids.slice(0, MENTIONS_SHOWN).map(wrap).join(' ');
+        const rest = ids.length - MENTIONS_SHOWN;
+        return rest > 0 ? `${shown} *+${rest} more*` : shown;
+    };
+
+    const channelsSummary = mentionSummary(currentChannels, id => `<#${id}>`, 'All channels');
+    const deniedRolesSummary = mentionSummary(currentDeniedRoles, id => `<@&${id}>`, 'Nobody blocked');
+    const requiredRolesSummary = mentionSummary(currentRequiredRoles, id => `<@&${id}>`, 'Everyone');
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
@@ -352,10 +363,12 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
         // Support + feedback + legal.
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             [
-                '### Bug reports · Questions · Suggestions',
-                `Join the Biblicana support server: ${SUPPORT_INVITE}`,
-                '',
-                `**Data handling**: see our [Privacy Policy](${PRIVACY_URL}) for details on how AI chat messages and memory are processed. [Terms of Service](${TERMS_URL}).`,
+                // Condensed to buy back headroom against Discord's 4000-char
+                // ceiling, which this panel was exceeding outright. Both legal
+                // links are kept deliberately - the disclosure is the link, not
+                // the sentence around it.
+                `**Support:** ${SUPPORT_INVITE}`,
+                `**Data handling:** [Privacy Policy](${PRIVACY_URL}) · [Terms of Service](${TERMS_URL})`,
                 '',
                 footerLine('Only admins with Manage Server can change these settings.'),
             ].join('\n')

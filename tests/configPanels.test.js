@@ -97,3 +97,82 @@ test('the config command sources every setting for every panel it renders', asyn
         }
     }
 });
+
+// --- Discord's 4000-character ceiling --------------------------------------
+//
+// A Components V2 message is rejected outright at 4000 displayable characters,
+// and these panels render every selected channel and role as a MENTION inside
+// their own prose. That made the text grow with configuration: /config ai sat
+// at 3748 empty and passed 4000 once a guild picked ~10 channels and a few
+// roles, so the command returned "Invalid Form Body" and rendered nothing.
+//
+// The cruel part is which panel breaks: the one you need in order to UNDO the
+// selection is the one that will not open. It failed in production on
+// 2026-09-06 before anyone noticed the panel could outgrow the limit.
+//
+// Mention lists are now capped, but the static prose still spends most of the
+// budget, so this pins the WORST case rather than the empty one — an empty
+// panel passing tells you nothing about a configured server.
+
+import { buildAiConfigView } from '../src/utils/aiConfig.js';
+import { buildConfigView } from '../src/utils/passiveConfig.js';
+
+const DISCORD_V2_TEXT_LIMIT = 4000;
+
+// Snowflake-shaped so mentions cost realistic characters.
+const ids = n => Array.from({ length: n }, (_, i) => String(100000000000000000n + BigInt(i)));
+
+const displayableChars = (components) => {
+    let total = 0;
+    const walk = (c) => {
+        if (c.type === 10 && typeof c.content === 'string') total += c.content.length;
+        if (Array.isArray(c.components)) c.components.forEach(walk);
+    };
+    components.map(c => c.toJSON()).forEach(walk);
+    return total;
+};
+
+test('the ai panel fits Discord limit at maximum configuration', () => {
+    // 25 is the ChannelSelect / RoleSelect cap, so this is the true worst case.
+    const worst = buildAiConfigView({
+        currentEnabled: true,
+        currentScope: 'channel',
+        currentChannels: ids(25),
+        currentDeniedRoles: ids(25),
+        currentRequiredRoles: ids(25),
+    });
+    const size = displayableChars(worst);
+    assert.ok(
+        size < DISCORD_V2_TEXT_LIMIT,
+        `/config ai renders ${size} chars fully configured; Discord rejects the message at ${DISCORD_V2_TEXT_LIMIT}`
+    );
+});
+
+test('the passive panel fits Discord limit at maximum configuration', () => {
+    const worst = buildConfigView({
+        currentPassiveMode: 'autopost',
+        currentChannels: ids(25),
+        currentPaginate: true,
+        currentPagerPrivate: true,
+        currentDetail: 'full',
+    });
+    const size = displayableChars(worst);
+    assert.ok(
+        size < DISCORD_V2_TEXT_LIMIT,
+        `/config passive renders ${size} chars fully configured; Discord rejects the message at ${DISCORD_V2_TEXT_LIMIT}`
+    );
+});
+
+test('mention lists cannot grow without bound', () => {
+    // The actual defect: text that scales with configuration. Adding fifteen
+    // more channels must not add fifteen more mentions to the prose.
+    const small = displayableChars(buildAiConfigView({
+        currentEnabled: true, currentScope: 'channel',
+        currentChannels: ids(10), currentDeniedRoles: [], currentRequiredRoles: [],
+    }));
+    const large = displayableChars(buildAiConfigView({
+        currentEnabled: true, currentScope: 'channel',
+        currentChannels: ids(25), currentDeniedRoles: [], currentRequiredRoles: [],
+    }));
+    assert.ok(large - small < 40, `panel grew ${large - small} chars for 15 more channels; the summary is unbounded`);
+});
