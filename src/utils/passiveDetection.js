@@ -295,17 +295,23 @@ async function verseTextDetailed(ref, translation, limit = AUTOPOST_BUDGET_FULL)
  *
  * Returns [{ text, firstVerse, lastVerse }], or [] when nothing resolves.
  */
-export async function buildPassagePages(ref, translation, budget = PASSAGE_PAGE_BUDGET) {
+export async function buildPassagePages(ref, translation, budget = PASSAGE_PAGE_BUDGET, fetchVerses = null) {
     try {
         const isChapterOnly = ref.startVerse == null;
         const from = isChapterOnly ? 1 : ref.startVerse;
         const to = isChapterOnly ? CHAPTER_VERSE_CEILING : (ref.endVerse ?? ref.startVerse);
 
-        const rows = await bibleWrapper.getVerses(ref.bookId, ref.chapter, from, to);
-        const verses = rows
-            .map(r => ({ number: r.verse, text: r[translation] || r.BSB || r.KJV }))
-            .filter(v => Boolean(v.text));
-        if (verses.length === 0) return [];
+        // `fetchVerses` lets a different corpus reuse the paging without a
+        // second copy of it. /lxx reads Brenton's Septuagint, which has its own
+        // wrapper and no translation columns; duplicating this loop for it is
+        // how the bot ended up with four verse renderers that each had to be
+        // fixed separately. Contract: (ref, from, to) -> [{ number, text }].
+        const verses = fetchVerses
+            ? await fetchVerses(ref, from, to)
+            : (await bibleWrapper.getVerses(ref.bookId, ref.chapter, from, to))
+                .map(r => ({ number: r.verse, text: r[translation] || r.BSB || r.KJV }))
+                .filter(v => Boolean(v.text));
+        if (!verses || verses.length === 0) return [];
 
         // One verse on its own needs no inline number — the heading already
         // names it. This matches verseTextFor so the reader and the card read
@@ -348,7 +354,7 @@ export async function buildPassagePages(ref, translation, budget = PASSAGE_PAGE_
  * only person who can see it is the one paging it, so there is nobody to
  * contend with and no need for the owner/private split the channel pager needs.
  */
-export function buildPassageReaderComponents(ref, translation, pages, pageIndex) {
+export function buildPassageReaderComponents(ref, translation, pages, pageIndex, { customIdBase = null, heading = null } = {}) {
     const total = pages.length;
     const idx = Math.min(Math.max(pageIndex, 0), Math.max(0, total - 1));
     const page = pages[idx];
@@ -356,10 +362,11 @@ export function buildPassageReaderComponents(ref, translation, pages, pageIndex)
     const span = page.firstVerse === page.lastVerse
         ? `${ref.bookName} ${ref.chapter}:${page.firstVerse}`
         : `${ref.bookName} ${ref.chapter}:${page.firstVerse}-${page.lastVerse}`;
+    const title = heading ? `${span} · ${heading}` : `${span} · ${translation}`;
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
-        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📜 ${span} · ${translation}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📜 ${title}`))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(page.text))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
             footerLine(total > 1 ? `Page ${idx + 1} of ${total} · only you can see this` : 'Only you can see this')
@@ -368,7 +375,7 @@ export function buildPassageReaderComponents(ref, translation, pages, pageIndex)
     const components = [container];
 
     if (total > 1) {
-        const base = passageCustomId(ref);
+        const base = customIdBase ?? passageCustomId(ref);
         components.push(new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(`${base}:${idx - 1}`)
@@ -377,7 +384,11 @@ export function buildPassageReaderComponents(ref, translation, pages, pageIndex)
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(idx <= 0),
             new ButtonBuilder()
-                .setCustomId('passageread:noop')
+                // Derived from the base, not hardcoded: a reader over a
+                // different corpus must not route its own control back to the
+                // Bible handler. Disabled, so it should never be clicked - but
+                // an old client or a replayed interaction still could.
+                .setCustomId(`${base.split(':')[0]}:noop`)
                 .setLabel(`${idx + 1} / ${total}`)
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(true),

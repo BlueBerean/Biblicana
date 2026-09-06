@@ -2,6 +2,9 @@ import {
     SlashCommandBuilder,
     ContainerBuilder,
     TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
     MessageFlags,
     ApplicationIntegrationType,
     InteractionContextType,
@@ -19,6 +22,27 @@ import 'dotenv/config';
 const MAX_LXX_CHARS = 1800;
 const MAX_HEBREW_CHARS = 900;
 const MAX_VERSES = 20;
+
+// The card is a summary; the reader behind Read full is where a long passage
+// actually gets read. MAX_VERSES bounds only what the CARD fetches - 765
+// chapters exceed 20 verses, so on its own that cap meant /lxx Psalms 119
+// could never show more than a fifth of the psalm and offered no way onward.
+//
+// Chapter-only and range references carry 0 for the verses they do not name,
+// which tells the reader to page the whole thing rather than the card's slice.
+function lxxReadCustomId(addr, chapter, startVerse, endVerse) {
+    return `lxxread:${addr}:${chapter}:${startVerse ?? 0}:${endVerse ?? 0}`;
+}
+
+function readFullRow(addr, chapter, startVerse, endVerse) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(lxxReadCustomId(addr, chapter, startVerse, endVerse))
+            .setLabel('Read full')
+            .setEmoji({ name: '📜' })
+            .setStyle(ButtonStyle.Primary)
+    );
+}
 
 /**
  * /lxx — how the Septuagint renders a passage, in Brenton's English (1851).
@@ -106,6 +130,11 @@ export default {
             const from = startVerse ?? 1;
             const to = Math.min(endVerseInput ?? (startVerse ? startVerse : 6), from + MAX_VERSES - 1);
 
+            // Whether MAX_VERSES clipped the request, decided BEFORE the
+            // clamp so the button can offer what the card could not show.
+            const requestedTo = endVerseInput ?? (startVerse ? startVerse : null);
+            const capped = requestedTo === null || requestedTo > to;
+
             const rows = await lxxWrapper.getVerses(bookId, chapter, from, to);
             if (rows.length === 0) {
                 return this.fail(interaction,
@@ -161,7 +190,14 @@ export default {
                 footerLine('Brenton\'s Septuagint (1851, public domain)')
             ));
 
-            return interaction.editReply({ flags: MessageFlags.IsComponentsV2, components: [container] });
+            // Offer the reader when the card is not showing the whole thing -
+            // either the text was cut or MAX_VERSES clipped the range.
+            const components = [container];
+            if (capped || body.length > MAX_LXX_CHARS) {
+                components.push(readFullRow(bookId, chapter, startVerse, endVerseInput));
+            }
+
+            return interaction.editReply({ flags: MessageFlags.IsComponentsV2, components });
         } catch (err) {
             logger.error(`[LXX Command] Failed for "${bookInput} ${chapterInput}": ${err.message}`);
             return this.fail(interaction, 'Something went wrong reading the Septuagint. Try again in a moment.');
@@ -171,6 +207,8 @@ export default {
     async renderDeutero(interaction, book, chapter, startVerse, endVerse) {
         const from = startVerse ?? 1;
         const to = Math.min(endVerse ?? (startVerse ? startVerse : 6), from + MAX_VERSES - 1);
+        const requestedTo = endVerse ?? (startVerse ? startVerse : null);
+        const capped = requestedTo === null || requestedTo > to;
         const rows = await lxxWrapper.getByCode(book.code, chapter, from, to);
 
         if (rows.length === 0) {
@@ -197,7 +235,12 @@ export default {
                 footerLine('Brenton\'s Septuagint (1851, public domain)')
             ));
 
-        return interaction.editReply({ flags: MessageFlags.IsComponentsV2, components: [container] });
+        const components = [container];
+        if (capped || body.length > MAX_LXX_CHARS) {
+            components.push(readFullRow(book.code, chapter, startVerse, endVerse));
+        }
+
+        return interaction.editReply({ flags: MessageFlags.IsComponentsV2, components });
     },
 
     fail(interaction, message) {

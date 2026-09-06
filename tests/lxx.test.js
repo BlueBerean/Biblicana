@@ -163,3 +163,75 @@ test('the deuterocanonical book list is complete', async () => {
         assert.ok(names.includes(expected), `missing ${expected}`);
     }
 });
+
+// --- reading a whole LXX passage -------------------------------------------
+//
+// /lxx had two ceilings and no way past either: 1800 chars of Greek text, and
+// a hard MAX_VERSES of 20. 765 chapters exceed 20 verses, so "/lxx Psalms 119"
+// could never show more than a fifth of the psalm and offered nothing to click.
+//
+// The reader is the SHARED one from passiveDetection, given a fetcher for this
+// corpus. That sharing is the point: the bot previously grew four separate
+// verse renderers that each had to be fixed on its own.
+
+import { buildPassagePages, buildPassageReaderComponents } from '../src/utils/passiveDetection.js';
+
+const lxxFetcher = (bookId, code) => async (r, from, to) => {
+    const rows = bookId !== null
+        ? await lxxWrapper.getVerses(bookId, r.chapter, from, to)
+        : await lxxWrapper.getByCode(code, r.chapter, from, to);
+    return rows.map(x => ({ number: x.verse, text: x.text })).filter(v => Boolean(v.text));
+};
+
+test('a long psalm pages past the twenty-verse card cap', async () => {
+    const ref = { bookId: PSALMS, bookName: 'Psalms', chapter: 119, startVerse: null, endVerse: null };
+    const pages = await buildPassagePages(ref, 'LXX', undefined, lxxFetcher(PSALMS, null));
+    assert.ok(pages.length > 1, 'Psalm 119 should need several pages');
+    assert.ok(
+        pages[pages.length - 1].lastVerse > 20,
+        `the reader must go past the card cap, reached ${pages[pages.length - 1].lastVerse}`
+    );
+});
+
+test('paging LXX loses no verses and keeps them in order', async () => {
+    const ref = { bookId: PSALMS, bookName: 'Psalms', chapter: 119, startVerse: null, endVerse: null };
+    const pages = await buildPassagePages(ref, 'LXX', undefined, lxxFetcher(PSALMS, null));
+    for (let i = 1; i < pages.length; i++) {
+        assert.equal(
+            pages[i].firstVerse, pages[i - 1].lastVerse + 1,
+            `page ${i + 1} should resume exactly where page ${i} stopped`
+        );
+    }
+});
+
+test('a Septuagint-only book pages by its own code', async () => {
+    // Deuterocanonical books have no Masoretic address at all, so the reader
+    // has to reach them through getByCode rather than a bookId.
+    const ref = { bookId: null, bookName: 'Tobit', chapter: 1, startVerse: null, endVerse: null };
+    const pages = await buildPassagePages(ref, 'LXX', undefined, lxxFetcher(null, 'TOB'));
+    assert.ok(pages.length > 0, 'Tobit 1 should page');
+    assert.equal(pages[0].firstVerse, 1);
+});
+
+test('the LXX reader addresses itself, not the Bible reader', async () => {
+    // Both readers share one builder, so the customId base is what keeps a
+    // Septuagint page from paging into the BSB.
+    const ref = { bookId: PSALMS, bookName: 'Psalms', chapter: 119, startVerse: null, endVerse: null };
+    const pages = await buildPassagePages(ref, 'LXX', undefined, lxxFetcher(PSALMS, null));
+    const comps = buildPassageReaderComponents(ref, 'LXX', pages, 0, {
+        customIdBase: 'lxxread:19:119:0:0',
+        heading: 'Brenton',
+    });
+    const ids = comps.map(c => c.toJSON())
+        .filter(c => c.type === 1)
+        .flatMap(r => r.components.map(b => b.custom_id));
+    assert.ok(ids.some(id => id?.startsWith('lxxread:')), 'controls must address the LXX reader');
+    assert.ok(!ids.some(id => id?.startsWith('passageread:')), 'and never the Bible reader');
+});
+
+test('a passage that fits needs no pages beyond the first', async () => {
+    const ref = { bookId: ISAIAH, bookName: 'Isaiah', chapter: 53, startVerse: null, endVerse: null };
+    const pages = await buildPassagePages(ref, 'LXX', undefined, lxxFetcher(ISAIAH, null));
+    assert.equal(pages.length, 1);
+    assert.match(pages[0].text, /virgin|servant|sorrows|iniquit/i);
+});
