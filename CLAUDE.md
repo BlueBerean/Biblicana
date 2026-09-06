@@ -100,6 +100,8 @@ This pattern is load-bearing for grep-based log analysis on prod (e.g., `pm2 log
 
 All env var names are UPPERCASE, **no underscores**. Examples: `DISCORDTOKEN`, `CLIENTID`, `GUILDID`, `PGHOST`, `OPENAIKEY`. The one exception (`TAVILY_API_KEY`) disappeared with Tavily in v1.5.1, so the convention is now uniform. When adding new vars, match it unless the var follows an external convention.
 
+`TOPGGTOKEN` is **optional** and prod-only: it posts the guild count to top.gg, which does NOT read that number from Discord — a bot that never posts shows no server count at all, which is why Biblicana's listing was blank while it sat in 500+ servers. Absent token is a normal state (the test bot has no listing), so `startTopggPoster` returns null and logs once at debug rather than warning every 30 minutes. Token comes from `top.gg/bot/<BOT_ID>/webhooks`, and top.gg wants it **bare** in the `Authorization` header — a `Bearer` prefix is rejected, and the only symptom is a listing that silently never updates.
+
 ### Slash command deployment
 
 Never run `src/deploy.js` with the `--global` flag for development. The `deploy` npm script registers commands to a single guild (instant); `deployg` registers globally (up to an hour propagation across all ~570 servers). The test bot has its own `CLIENTID` and is deployed to a test guild only.

@@ -6,6 +6,7 @@ import { Client, Collection, Events, GatewayIntentBits, Partials } from 'discord
 import { postgresConfig } from './config.js';
 import DatabaseHandler from './database/redisPGHandler.js';
 import logger from './utils/logger.js';
+import { startTopggPoster } from './utils/topggStats.js';
 import setupAxiosInterceptors from './utils/axiosInterceptors.js';
 import { startDailyVerseScheduler } from './utils/dailyVerseScheduler.js';
 
@@ -163,6 +164,9 @@ async function startBot() {
         if (dailyVerseHandle) {
             try { clearInterval(dailyVerseHandle); } catch { /* noop */ }
         }
+        if (topggHandle) {
+            try { clearInterval(topggHandle); } catch { /* noop */ }
+        }
         try {
             client.destroy();
         } catch (err) {
@@ -200,8 +204,12 @@ async function startBot() {
     // and miss posts due right at startup. Events.ClientReady fires once
     // after Discord sends the READY packet with the guild list.
     let dailyVerseHandle = null;
+    let topggHandle = null;
     client.once(Events.ClientReady, () => {
         dailyVerseHandle = startDailyVerseScheduler(client, database);
+        // Same hook for the same reason: the guild count is read from the
+        // cache, which is only populated once READY has delivered the list.
+        topggHandle = startTopggPoster(client);
     });
 
     // Gateway lifecycle. Previously NOTHING logged these, which made one class
