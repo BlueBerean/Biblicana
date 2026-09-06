@@ -249,3 +249,79 @@ test('getDailyVerseGuilds strips the guild: key prefix', async () => {
     assert.equal(result[0].dailyVerse.hour, 13);
     assert.equal(h.selectCount(), 1, 'one query for all enabled guilds, not one per guild');
 });
+
+// --- waking a suspended Neon endpoint --------------------------------------
+//
+// Neon autosuspends after ~5 minutes idle and the first query afterwards has to
+// wake it, which can outlast connectionTimeoutMillis. initialize() already
+// retries with backoff, but only at BOOT — a runtime query got one attempt.
+//
+// For a WRITE that is silent data loss dressed as a polite message: the admin
+// is told "could not save" and their setting is simply not what they set it to.
+// Seen once against the dev branch on 2026-09-06; 7 times in months of prod
+// logs, so this is cheap insurance rather than a hot path.
+//
+// These tests really do wait out the retry delay, so there are deliberately
+// few of them.
+
+function makeFlakyHandler({ failures = 1, error } = {}) {
+    const attempts = [];
+    let remaining = failures;
+    const handler = Object.create(DatabaseHandler.prototype);
+    handler.expiry = 21600;
+    handler.cacheStats = { hits: 0, misses: 0, negHits: 0 };
+    handler.redis = {
+        get: async () => null,
+        set: async () => 'OK',
+        del: async () => 1,
+    };
+    handler.pg = {
+        query: async (sql) => {
+            attempts.push(String(sql).trim());
+            if (remaining > 0) {
+                remaining--;
+                throw error ?? Object.assign(new Error('Connection terminated due to connection timeout'), {});
+            }
+            return /^SELECT/i.test(String(sql).trim())
+                ? { rows: [], rowCount: 0 }
+                : { rows: [], rowCount: 1 };
+        },
+    };
+    return { handler, attempts };
+}
+
+test('a write lost to a cold endpoint is retried and succeeds', async () => {
+    const h = makeFlakyHandler({ failures: 1 });
+    const ok = await h.handler.setValue('guild:123', { id: 'guild:123', passiveDetail: 'compact' });
+    assert.equal(ok, true, 'the retry should carry the write through');
+    assert.equal(h.attempts.length, 2, 'exactly one retry, not a loop');
+});
+
+test('a real error is NOT retried', async () => {
+    // A constraint violation fails identically the second time, so retrying it
+    // only adds latency to a guaranteed failure.
+    const err = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+    const h = makeFlakyHandler({ failures: 1, error: err });
+    await assert.rejects(
+        () => h.handler.setValue('guild:123', { id: 'guild:123' }),
+        /duplicate key/
+    );
+    assert.equal(h.attempts.length, 1, 'no retry for a statement-level error');
+});
+
+test('the retry gives up rather than looping', async () => {
+    // An endpoint that is genuinely down must surface, not retry forever.
+    const h = makeFlakyHandler({ failures: 5 });
+    await assert.rejects(() => h.handler.setValue('guild:123', { id: 'guild:123' }));
+    assert.equal(h.attempts.length, 2, 'one original attempt plus one retry, then stop');
+});
+
+test('a connection-class SQLSTATE is treated as transient', async () => {
+    // 08006 never carries the word "timeout", so message matching alone would
+    // miss it - the class check is what catches this one.
+    const err = Object.assign(new Error('connection_failure'), { code: '08006' });
+    const h = makeFlakyHandler({ failures: 1, error: err });
+    const value = await h.handler.getValue('guild:456');
+    assert.equal(value, null, 'the read should complete after the retry');
+    assert.equal(h.attempts.length, 2);
+});

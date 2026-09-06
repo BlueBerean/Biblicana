@@ -204,6 +204,29 @@ async function startBot() {
         dailyVerseHandle = startDailyVerseScheduler(client, database);
     });
 
+    // Gateway lifecycle. Previously NOTHING logged these, which made one class
+    // of failure undiagnosable: interactions arrive over the WebSocket, so if
+    // the session goes stale Discord drops the one in flight and the user sees
+    // "This interaction failed" or "did not respond" - while the bot logs
+    // nothing at all, because nothing ever reached it. discord.js then resumes
+    // silently, which is why the SECOND click always works.
+    //
+    // A resume here immediately before a lost interaction is the evidence that
+    // distinguishes a dropped connection from a genuine handler bug. Cheap to
+    // log: these fire a handful of times a day at most.
+    client.on(Events.ShardDisconnect, (event, id) => {
+        logger.warn(`[Gateway] Shard ${id} disconnected (code ${event?.code}); interactions in flight are lost`);
+    });
+    client.on(Events.ShardReconnecting, (id) => {
+        logger.warn(`[Gateway] Shard ${id} reconnecting`);
+    });
+    client.on(Events.ShardResume, (id, replayed) => {
+        logger.warn(`[Gateway] Shard ${id} resumed, ${replayed} event(s) replayed`);
+    });
+    client.on(Events.ShardError, (error, id) => {
+        logger.error(`[Gateway] Shard ${id} error: ${error.message}`);
+    });
+
     try {
         await client.login(process.env.DISCORDTOKEN);
         logger.info('[Bot] Client logged in successfully.');

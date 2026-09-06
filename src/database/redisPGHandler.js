@@ -52,6 +52,33 @@ function tableForKey(key) {
  * @param {Object} [redisConfig] - Redis connection config (optional)
  * @param {Number} [redisExpiry] - Redis key expiry seconds (optional)
  */
+
+// A Neon endpoint autosuspends after ~5 minutes idle, and the first query
+// afterwards has to wake it. That wake can outlast `connectionTimeoutMillis`,
+// which surfaces as "Connection terminated due to connection timeout" on a
+// query that would have succeeded a second later.
+//
+// initialize() already retries with backoff, but that only covers BOOT. A
+// single runtime query landing on a cold endpoint got one attempt, and for a
+// WRITE that means the user's setting is silently lost while they are told
+// "could not save" - the guild config is simply not what they just set it to.
+//
+// Retried ONCE, and only for connection-level failures. A constraint violation
+// or a syntax error fails identically on a second attempt, so retrying those
+// would just add a second of latency to a guaranteed failure.
+const WAKE_RETRY_MS = 1200;
+
+// SQLSTATE class 08 is "connection exception". The message patterns cover the
+// node-postgres client errors that never reach the server and so carry no
+// SQLSTATE at all.
+const TRANSIENT_MESSAGE = /connection terminated|connection timeout|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up/i;
+
+function isTransientDbError(err) {
+    if (!err) return false;
+    if (typeof err.code === 'string' && err.code.startsWith('08')) return true;
+    return TRANSIENT_MESSAGE.test(err.message ?? '');
+}
+
 class DatabaseHandler {
     constructor(postgresConfig, redisConfig = null, redisExpiry = 21600) {
         this.pg = new pg.Pool(postgresConfig);
@@ -326,6 +353,23 @@ class DatabaseHandler {
         return originalValue;
     }
 
+    /**
+     * Run a query, retrying once if the CONNECTION failed rather than the
+     * statement. Every caller below is idempotent - a SELECT by id, an upsert
+     * that writes the same row, a delete by id - so a second attempt can only
+     * produce the same result, never a duplicate.
+     */
+    async queryWithWakeRetry(sql, params, label) {
+        try {
+            return await this.pg.query(sql, params);
+        } catch (err) {
+            if (!isTransientDbError(err)) throw err;
+            logger.warn(`[Database] Transient failure on ${label}; retrying once in ${WAKE_RETRY_MS}ms: ${err.message}`);
+            await new Promise(resolve => setTimeout(resolve, WAKE_RETRY_MS));
+            return this.pg.query(sql, params);
+        }
+    }
+
     async getValue(key) {
         const cachedValue = await this.redis.get(key);
 
@@ -353,9 +397,10 @@ class DatabaseHandler {
         this.cacheStats.misses++;
 
         const table = tableForKey(key);
-        const { rows } = await this.pg.query(
+        const { rows } = await this.queryWithWakeRetry(
             `SELECT * FROM ${table} WHERE id = $1`,
-            [key]
+            [key],
+            `read ${key}`
         );
 
         if (rows.length > 0) {
@@ -381,10 +426,11 @@ class DatabaseHandler {
 
     async setValue(key, value) {
         const table = tableForKey(key);
-        const res = await this.pg.query(
+        const res = await this.queryWithWakeRetry(
             `INSERT INTO ${table} (id, data) VALUES ($1, $2)
              ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
-            [key, JSON.stringify(value)]
+            [key, JSON.stringify(value)],
+            `write ${key}`
         );
 
         // Update the cache ONLY after the durable write succeeds. Writing Redis
@@ -403,9 +449,10 @@ class DatabaseHandler {
 
     async deleteValue(key) {
         const table = tableForKey(key);
-        const res = await this.pg.query(
+        const res = await this.queryWithWakeRetry(
             `DELETE FROM ${table} WHERE id = $1`,
-            [key]
+            [key],
+            `delete ${key}`
         );
 
         if (res.rowCount > 0) {
