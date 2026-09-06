@@ -11,6 +11,7 @@ import {
 } from 'discord.js';
 import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
@@ -97,7 +98,7 @@ export default {
             return interaction.reply({ content: 'Please provide a valid book name.', flags: MessageFlags.Ephemeral });
         }
 
-        const chapter = parseInt(chapterInput);
+        let chapter = parseInt(chapterInput);
         if (isNaN(chapter) || chapter < 1) {
             return interaction.reply({ content: 'Please provide a valid chapter number (1 or greater).', flags: MessageFlags.Ephemeral });
         }
@@ -110,6 +111,11 @@ export default {
                 flags: MessageFlags.Ephemeral
             });
         }
+
+        // A one-chapter book has only chapter 1, whatever number was typed.
+        // The verse half of the shorthand is deliberately dropped: this command
+        // works a chapter at a time.
+        ({ chapter } = resolveSingleChapterRef(bookId, chapter));
 
         await interaction.deferReply();
 

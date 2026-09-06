@@ -12,6 +12,7 @@ import {
 } from 'discord.js';
 import { fathersWrapper, pickMarqueeFather, fatherEraBadge } from '../utils/studyHelper.js';
 import { getBookId, numbersToBook, toCommentaryVariants } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow, isExpiredInteractionError } from '../utils/paginationHelper.js';
 import splitString from '../utils/splitString.js';
@@ -165,15 +166,16 @@ export default {
 
         // Passage-lookup mode requires book + chapter + verse.
         const rawBookInput = interaction.options.getString('book');
-        const chapter = interaction.options.getInteger('chapter');
-        const verse = interaction.options.getInteger('verse');
+        let chapter = interaction.options.getInteger('chapter');
+        let verse = interaction.options.getInteger('verse');
         const fatherFilter = interaction.options.getString('father')?.trim() || null;
 
-        if (!rawBookInput || chapter === null || verse === null) {
-            return interaction.reply({
-                content: `Please provide **book**, **chapter**, and **verse** — or use \`list:True\` to see all available fathers.`,
-                flags: MessageFlags.Ephemeral
-            });
+        const needPassage = `Please provide **book**, **chapter**, and **verse** — or use \`list:True\` to see all available fathers.`;
+        // Verse is checked AFTER the book resolves, further down: for a
+        // one-chapter book "chapter:5" is itself the verse, so demanding one up
+        // front would reject a citation that is perfectly well formed.
+        if (!rawBookInput || chapter === null) {
+            return interaction.reply({ content: needPassage, flags: MessageFlags.Ephemeral });
         }
 
         const rawBook = swearWordFilter(rawBookInput.trim());
@@ -184,6 +186,13 @@ export default {
                 content: `❌ Unknown book: "${rawBook}". Try "John", "Genesis", "1 Corinthians", etc.`,
                 flags: MessageFlags.Ephemeral
             });
+        }
+
+        // "book:Jude chapter:5" means Jude 1:5 - Jude has only one chapter.
+        ({ chapter, startVerse: verse } = resolveSingleChapterRef(bookId, chapter, verse));
+
+        if (verse === null) {
+            return interaction.reply({ content: needPassage, flags: MessageFlags.Ephemeral });
         }
 
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });

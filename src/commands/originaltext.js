@@ -12,6 +12,7 @@ import {
 } from 'discord.js';
 import { bibleWrapper, coerceTranslation } from '../utils/bibleHelper.js';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
@@ -186,10 +187,10 @@ export default {
     async execute(interaction, database) {
         const rawBookInput = interaction.options.getString('book').trim();
         const chapterInput = interaction.options.getString('chapter');
-        const verseInput = interaction.options.getNumber('verse');
+        let verseInput = interaction.options.getNumber('verse');
         const rawBook = swearWordFilter(rawBookInput);
 
-        const chapter = parseInt(chapterInput);
+        let chapter = parseInt(chapterInput);
         if (isNaN(chapter) || chapter < 1) {
             return interaction.reply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
         }
@@ -199,6 +200,9 @@ export default {
         if (!bookId || !bookName) {
             return interaction.reply({ content: `Invalid book: "${rawBook}".`, flags: MessageFlags.Ephemeral });
         }
+
+        // "book:Jude chapter:5" means Jude 1:5 - Jude has only one chapter.
+        ({ chapter, startVerse: verseInput } = resolveSingleChapterRef(bookId, chapter, verseInput));
 
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 

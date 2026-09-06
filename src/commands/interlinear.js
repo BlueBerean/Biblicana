@@ -6,6 +6,7 @@ import {
 } from 'discord.js';
 import { coerceTranslation } from '../utils/bibleHelper.js';
 import { numbersToBook, getBookId } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import {
     fetchInterlinearData,
     computeInterlinearPagination,
@@ -58,10 +59,10 @@ export default {
     async execute(interaction, database) {
         const rawBookInput = interaction.options.getString('book').trim();
         const chapterInput = interaction.options.getString('chapter');
-        const verseInput = interaction.options.getNumber('verse');
+        let verseInput = interaction.options.getNumber('verse');
         const rawBook = swearWordFilter(rawBookInput);
 
-        const chapter = parseInt(chapterInput);
+        let chapter = parseInt(chapterInput);
         if (isNaN(chapter) || chapter < 1) {
             return interaction.reply({ content: 'Invalid chapter number provided.', flags: MessageFlags.Ephemeral });
         }
@@ -75,6 +76,9 @@ export default {
                 flags: MessageFlags.Ephemeral
             });
         }
+
+        // "book:Jude chapter:5" means Jude 1:5 - Jude has only one chapter.
+        ({ chapter, startVerse: verseInput } = resolveSingleChapterRef(bookId, chapter, verseInput));
 
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 

@@ -7,6 +7,7 @@ import {
 } from 'discord.js';
 import { coerceTranslation } from '../utils/bibleHelper.js';
 import { getBookId } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { fetchRandomVerseData, buildRandomVerseComponents } from '../utils/randomVerseRenderer.js';
 import logger from '../utils/logger.js';
 import swearWordFilter from '../utils/filter.js';
@@ -55,13 +56,18 @@ export default {
             }
         }
 
-        const filterChapter = chapterInput && filterBookId ? chapterInput : null;
+        let filterChapter = chapterInput && filterBookId ? chapterInput : null;
         if (chapterInput && !filterBookId) {
             return interaction.reply({
                 content: 'Chapter filter requires a book to be specified.',
                 flags: MessageFlags.Ephemeral
             });
         }
+
+        // A one-chapter book has only chapter 1, whatever number was typed.
+        // The verse half of the shorthand is deliberately dropped: this command
+        // works a chapter at a time.
+        ({ chapter: filterChapter } = resolveSingleChapterRef(filterBookId, filterChapter));
 
         await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 });
 

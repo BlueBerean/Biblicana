@@ -57,6 +57,88 @@ const CONTINUATION_REGEX = /\s*[,;]\s*(\d+)(?:\s*:\s*(\d+))?(?:\s*[-–—]\s*(\
 const MAX_CONTINUATION_CHAPTER = 150;
 const MAX_CONTINUATION_VERSE = 176;
 
+// Books with exactly one chapter. Their references are conventionally written
+// WITHOUT it — "Jude 5" is how Jude 1:5 is normally cited, and the chapter-ful
+// form is the rarer of the two.
+//
+// Read literally, "Jude 5" is chapter 5 of a book that has one chapter, so the
+// lookup returns nothing. That failed silently everywhere this parser is used:
+// passive detection posted no card at all, and the AI's reference tools
+// answered "that's a chapter, not a verse — try Jude 5:1", advice that cannot
+// work because there is no chapter 5 to put a verse in.
+//
+// The remap is driven by impossibility rather than preference: in a one-chapter
+// book any number ABOVE 1 cannot be a chapter, so it must be a verse. "Jude 1"
+// is deliberately left as a chapter reference — both readings are defensible
+// there, and the chapter IS the whole book, which is the more useful of the
+// two. "Jude 1:1" still names the verse explicitly.
+//
+// The verse counts bound it for the same reason continuations are bounded:
+// without a ceiling, "I've read Philemon 30 times" becomes a citation. Both the
+// membership of this list and the counts are derived from bible.db in
+// tests/singleChapterBooks.test.js — including the completeness check that no
+// one-chapter book is missing — so they come from the data, not from memory.
+export const SINGLE_CHAPTER_BOOKS = new Map([
+    [31, 21],   // Obadiah
+    [57, 25],   // Philemon
+    [63, 13],   // 2 John
+    [64, 14],   // 3 John
+    [65, 25],   // Jude
+]);
+
+// The "-7" of "Jude 5-7": a verse range written without a colon, which the main
+// regex only accepts after one. Consulted ONLY for single-chapter books, where
+// the number before the dash has already been established as a verse — for every
+// other book "John 3-5" is a chapter range and stays unsupported. Sticky, so it
+// can only match immediately after the reference that anchors it.
+const BARE_RANGE_REGEX = /\s*[-–—]\s*(\d+)/y;
+
+/**
+ * Normalize a slash command's book/chapter/verse options for a one-chapter book.
+ *
+ * The free-text parser cannot help here: slash commands never build a reference
+ * string, they read `chapter` and `verse` as separate typed options and go
+ * straight to the database. So "/bible book:Jude chapter:5" asked for chapter 5
+ * of a book with one chapter and got nothing back, exactly as "Jude 5" did in a
+ * message.
+ *
+ * Two corrections, because Discord asked the user an explicit question and the
+ * answer can be wrong in two different ways:
+ *
+ *   1. The chapter of a one-chapter book is ALWAYS 1, whatever was typed. This
+ *      alone fixes "chapter:5 verse:2" -> Jude 1:2.
+ *   2. A chapter above 1 with NO verse is the ordinary citation shorthand, so
+ *      that number is the verse: "chapter:5" -> Jude 1:5.
+ *
+ * A chapter past the book's last verse ("chapter:40" for 25-verse Jude) can
+ * only be a mistake, so it falls through to rule 1 and shows the chapter — the
+ * book the user actually named — rather than nothing.
+ *
+ * Returns the values unchanged for every multi-chapter book, and preserves the
+ * caller's original `chapter` value (string or number) when nothing is remapped,
+ * so command call sites keep whatever type they already passed downstream.
+ *
+ * @param {number} bookId
+ * @param {string|number} chapter
+ * @param {number|null} startVerse
+ * @param {number|null} endVerse
+ * @returns {{chapter: string|number, startVerse: number|null, endVerse: number|null, remapped: boolean}}
+ */
+export function resolveSingleChapterRef(bookId, chapter, startVerse = null, endVerse = null) {
+    const verseCount = SINGLE_CHAPTER_BOOKS.get(bookId);
+    const typed = Number.parseInt(String(chapter ?? '').trim(), 10);
+
+    // Not a one-chapter book, or a chapter that needs no correction.
+    if (verseCount === undefined || !Number.isFinite(typed) || typed <= 1) {
+        return { chapter, startVerse, endVerse, remapped: false };
+    }
+
+    if (startVerse == null && typed <= verseCount) {
+        return { chapter: 1, startVerse: typed, endVerse: endVerse ?? typed, remapped: true };
+    }
+    return { chapter: 1, startVerse, endVerse, remapped: true };
+}
+
 /**
  * Resolve the book from a match's optional numeric/Roman prefix and book word.
  *
@@ -149,21 +231,56 @@ export function parseScriptureRefs(text) {
             continue;
         }
 
+        // "Jude 5" means verse 5 of the book's only chapter. Applies only when
+        // no colon was written — "Jude 1:5" already says what it means.
+        // See SINGLE_CHAPTER_BOOKS.
+        let effectiveChapter = chapter;
+        let rawText = raw;
+        const verseCount = SINGLE_CHAPTER_BOOKS.get(bookId);
+        if (verseCount !== undefined && startStr === undefined && chapter > 1) {
+            if (chapter > verseCount) {
+                // Neither a chapter nor a verse this book has, so it isn't a
+                // reference at all — "I've read Philemon 30 times".
+                SCRIPTURE_REGEX.lastIndex = match.index + 1;
+                continue;
+            }
+            effectiveChapter = 1;
+            startVerse = chapter;
+            endVerse = chapter;
+
+            // Now that the number is known to be a verse, a bare "-7" after it
+            // is a verse range. Left unread it would silently narrow
+            // "Jude 5-7" to a single verse, which is a worse answer than the
+            // nothing this whole fix replaces.
+            BARE_RANGE_REGEX.lastIndex = SCRIPTURE_REGEX.lastIndex;
+            const rangeMatch = BARE_RANGE_REGEX.exec(text);
+            if (rangeMatch) {
+                const rangeEnd = parseInt(rangeMatch[1], 10);
+                if (Number.isFinite(rangeEnd) && rangeEnd >= startVerse && rangeEnd <= verseCount) {
+                    endVerse = rangeEnd;
+                    rawText = raw + rangeMatch[0];
+                    SCRIPTURE_REGEX.lastIndex = BARE_RANGE_REGEX.lastIndex;
+                }
+            }
+        }
+
         const bookName = toCanonical(bookId);
         results.push({
             bookId,
             bookName,
-            chapter,
+            chapter: effectiveChapter,
             startVerse,
             endVerse,
-            raw: raw.trim(),
+            raw: rawText.trim(),
         });
 
         // Consume any continuation list hanging off this reference. Advances
         // the main scanner past whatever it takes, so "4:33" in
         // "Acts 3:15, 4:33" is never re-examined as a standalone fragment.
         SCRIPTURE_REGEX.lastIndex = consumeContinuations(
-            text, SCRIPTURE_REGEX.lastIndex, { bookId, bookName, chapter, hasVerse: startVerse !== null }, results
+            text, SCRIPTURE_REGEX.lastIndex,
+            { bookId, bookName, chapter: effectiveChapter, hasVerse: startVerse !== null },
+            results
         );
     }
 
@@ -181,6 +298,7 @@ export function parseScriptureRefs(text) {
  */
 function consumeContinuations(text, startIndex, context, results) {
     const { bookId, bookName } = context;
+    const singleChapterVerses = SINGLE_CHAPTER_BOOKS.get(bookId);
     let chapter = context.chapter;
     let hasVerse = context.hasVerse;
     let cursor = startIndex;
@@ -216,16 +334,27 @@ function consumeContinuations(text, startIndex, context, results) {
             nextChapter = chapter;
             nextStart = parseInt(firstStr, 10);
             nextEnd = rangeStr !== undefined ? parseInt(rangeStr, 10) : nextStart;
+        } else if (singleChapterVerses !== undefined) {
+            // "Obadiah 1, 3" — the book has no chapter 3, so the bare number is
+            // a verse in the only chapter there is.
+            nextChapter = 1;
+            nextStart = parseInt(firstStr, 10);
+            nextEnd = rangeStr !== undefined ? parseInt(rangeStr, 10) : nextStart;
         } else {
             // "3" following a chapter-only "John 1" — another chapter.
             nextChapter = parseInt(firstStr, 10);
             if (rangeStr !== undefined) break;   // "John 1, 3-5" is a chapter range; not supported
         }
 
-        if (!Number.isFinite(nextChapter) || nextChapter < 1 || nextChapter > MAX_CONTINUATION_CHAPTER) break;
+        // A one-chapter book bounds itself far more tightly than the generic
+        // ceilings can: it has no second chapter, and its last verse is known.
+        const chapterCeiling = singleChapterVerses !== undefined ? 1 : MAX_CONTINUATION_CHAPTER;
+        const verseCeiling = singleChapterVerses ?? MAX_CONTINUATION_VERSE;
+
+        if (!Number.isFinite(nextChapter) || nextChapter < 1 || nextChapter > chapterCeiling) break;
         if (nextStart !== null) {
-            if (!Number.isFinite(nextStart) || nextStart < 1 || nextStart > MAX_CONTINUATION_VERSE) break;
-            if (!Number.isFinite(nextEnd) || nextEnd < nextStart || nextEnd > MAX_CONTINUATION_VERSE) break;
+            if (!Number.isFinite(nextStart) || nextStart < 1 || nextStart > verseCeiling) break;
+            if (!Number.isFinite(nextEnd) || nextEnd < nextStart || nextEnd > verseCeiling) break;
         }
 
         results.push({

@@ -13,6 +13,7 @@ import {
 import logger from '../utils/logger.js';
 import splitString from '../utils/splitString.js';
 import { getBookId, numbersToBook, toOSIS3Codes } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { commentaryWrapper, COMMENTATORS } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { isExpiredInteractionError } from '../utils/paginationHelper.js';
@@ -174,10 +175,10 @@ export default {
         // Sync validation before defer.
         const rawBook = interaction.options.getString('book');
         const chapterInput = interaction.options.getString('chapter');
-        const verseInput = interaction.options.getNumber('verse');
+        let verseInput = interaction.options.getNumber('verse');
         const explicitCommentator = interaction.options.getString('commentator');
 
-        const chapter = parseInt(chapterInput);
+        let chapter = parseInt(chapterInput);
         if (isNaN(chapter) || chapter < 1) {
             return interaction.reply({
                 content: 'Please provide a valid chapter number (must be 1 or greater).',
@@ -200,6 +201,9 @@ export default {
                 flags: MessageFlags.Ephemeral
             });
         }
+
+        // "book:Jude chapter:5" means Jude 1:5 - Jude has only one chapter.
+        ({ chapter, startVerse: verseInput } = resolveSingleChapterRef(bookId, chapter, verseInput));
 
         const bookCodes = toOSIS3Codes(bookId);
         if (bookCodes.length === 0) {

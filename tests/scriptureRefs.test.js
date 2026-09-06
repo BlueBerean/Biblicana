@@ -4,7 +4,7 @@ import log from 'loglevel';
 
 log.setLevel('error');
 
-import { parseScriptureRefs } from '../src/utils/scriptureRefs.js';
+import { parseScriptureRefs, resolveSingleChapterRef } from '../src/utils/scriptureRefs.js';
 
 function one(text) {
     const refs = parseScriptureRefs(text);
@@ -263,7 +263,11 @@ test('compact numeric prefixes are unaffected', () => {
     assert.deepEqual(coords('1John 1:9'), ['1 John 1:9']);
     assert.deepEqual(coords('1 John 1:9'), ['1 John 1:9']);
     assert.deepEqual(coords('1 Sam 16:7'), ['1 Samuel 16:7']);
-    assert.deepEqual(coords('3 John 4'), ['3 John 4']);
+    // This case is about the PREFIX resolving to book 64, which "3 John 1:4"
+    // still shows. The chapter it used to expect was incidental, and wrong:
+    // 3 John has one chapter, and "3 John 4" is how its verse 4 is cited.
+    // See the single-chapter section below.
+    assert.deepEqual(coords('3 John 4'), ['3 John 1:4']);
 });
 
 test('the prod answer that surfaced this parses correctly end to end', () => {
@@ -279,4 +283,147 @@ test('the prod answer that surfaced this parses correctly end to end', () => {
         'Isaiah 9:1-2',
         'Matthew 4:13-16',
     ]);
+});
+
+// --- single-chapter books --------------------------------------------------
+//
+// "Jude 5" is how Jude 1:5 is actually cited. Read literally it asks for
+// chapter 5 of a one-chapter book, which resolved to nothing at all: passive
+// detection posted no card, and the AI's reference tools replied "that's a
+// chapter, not a verse - try Jude 5:1", which cannot work either.
+
+test('a bare number in a one-chapter book is a verse, not a chapter', () => {
+    const r = one('Jude 5');
+    assert.equal(r.bookId, 65);
+    assert.equal(r.bookName, 'Jude');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+    assert.equal(r.endVerse, 5);
+});
+
+test('every single-chapter book gets the same treatment', () => {
+    assert.deepEqual(
+        coords('Obadiah 3, Philemon 6, 2 John 4, 3 John 2, Jude 5'),
+        ['Obadiah 1:3', 'Philemon 1:6', '2 John 1:4', '3 John 1:2', 'Jude 1:5']
+    );
+});
+
+test('an explicit chapter:verse in a one-chapter book is left alone', () => {
+    const r = one('Jude 1:5');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+});
+
+test('a bare 1 stays a chapter reference', () => {
+    // Ambiguous by nature, and the chapter IS the whole book - the more useful
+    // of the two readings. "Jude 1:1" still names the verse.
+    const r = one('Jude 1');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, null);
+});
+
+test('a bare range in a one-chapter book is a verse range', () => {
+    // Without this, "Jude 5-7" would silently narrow to a single verse.
+    const r = one('Jude 5-7');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+    assert.equal(r.endVerse, 7);
+    assert.equal(r.raw, 'Jude 5-7');
+});
+
+test('a number past the end of a one-chapter book is not a reference', () => {
+    // Jude has 25 verses, so "Jude 40" is neither a chapter nor a verse.
+    // Without the bound, "I have read Philemon 30 times" becomes a citation.
+    assert.deepEqual(parseScriptureRefs('Jude 40'), []);
+    assert.deepEqual(parseScriptureRefs('I have read Philemon 30 times'), []);
+});
+
+test('a continuation list carries verses in a one-chapter book', () => {
+    assert.deepEqual(coords('Jude 5, 7'), ['Jude 1:5', 'Jude 1:7']);
+});
+
+test('a chapter-anchored continuation still reads as verses', () => {
+    // "Obadiah 1, 3" cannot mean chapter 3 - the book has no chapter 3.
+    assert.deepEqual(coords('Obadiah 1, 3'), ['Obadiah 1', 'Obadiah 1:3']);
+});
+
+test('multi-chapter books are unaffected by the remap', () => {
+    assert.deepEqual(
+        coords('Habakkuk 3 and Titus 2 and John 3:16'),
+        ['Habakkuk 3', 'Titus 2', 'John 3:16']
+    );
+});
+
+test('a one-chapter book still ends a continuation at a new book', () => {
+    assert.deepEqual(coords('Jude 5; 1 Cor 15:1'), ['Jude 1:5', '1 Corinthians 15:1']);
+});
+
+// --- slash command options -------------------------------------------------
+//
+// Slash commands never build a reference string - they read `chapter` and
+// `verse` as separate typed options and query directly - so parseScriptureRefs
+// cannot help them. "/bible book:Jude chapter:5" was broken the same way
+// "Jude 5" was, in ten commands.
+
+const JUDE = 65, JOHN = 43;
+
+test('a slash chapter above 1 with no verse is the verse', () => {
+    const r = resolveSingleChapterRef(JUDE, 5);
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+    assert.equal(r.endVerse, 5);
+    assert.equal(r.remapped, true);
+});
+
+test('a slash chapter arrives as a string from getString and still remaps', () => {
+    // bible, commentary, interlinear, parallel, crossref, originaltext, audio
+    // and lxx all read chapter with getString, not getNumber.
+    const r = resolveSingleChapterRef(JUDE, '5');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+});
+
+test('an impossible chapter is corrected even when a verse was given', () => {
+    // "chapter:5 verse:2" cannot mean chapter 5 - the book has one chapter -
+    // so the verse the user typed is kept and the chapter is corrected.
+    const r = resolveSingleChapterRef(JUDE, 5, 2);
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 2);
+    assert.equal(r.remapped, true);
+});
+
+test('a verse range survives the chapter correction', () => {
+    const r = resolveSingleChapterRef(JUDE, 5, 5, 7);
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+    assert.equal(r.endVerse, 7);
+});
+
+test('a chapter past the last verse falls back to the chapter itself', () => {
+    // Jude has 25 verses, so "chapter:40" is a mistake either way. Showing the
+    // book the user named beats showing nothing.
+    const r = resolveSingleChapterRef(JUDE, 40);
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, null);
+});
+
+test('chapter 1 needs no correction', () => {
+    const r = resolveSingleChapterRef(JUDE, 1, 5);
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 5);
+    assert.equal(r.remapped, false);
+});
+
+test('multi-chapter books pass through untouched', () => {
+    const r = resolveSingleChapterRef(JOHN, 3, 16);
+    assert.equal(r.chapter, 3);
+    assert.equal(r.startVerse, 16);
+    assert.equal(r.remapped, false);
+});
+
+test('a missing book or chapter is left alone', () => {
+    // randomverse calls this with no book filter at all.
+    const r = resolveSingleChapterRef(null, null);
+    assert.equal(r.chapter, null);
+    assert.equal(r.remapped, false);
 });

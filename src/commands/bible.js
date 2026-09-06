@@ -7,6 +7,7 @@ import {
 } from 'discord.js';
 import { coerceTranslation } from '../utils/bibleHelper.js';
 import { getBookId } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { fetchBibleVerseData, buildBibleComponents } from '../utils/bibleRenderer.js';
 import logger from '../utils/logger.js';
 
@@ -52,9 +53,12 @@ export default {
             });
         }
 
-        const chapter = interaction.options.getString('chapter');
-        const startVerse = interaction.options.getNumber('startverse');
-        const endVerse = interaction.options.getNumber('endverse') || startVerse;
+        let chapter = interaction.options.getString('chapter');
+        let startVerse = interaction.options.getNumber('startverse');
+        let endVerse = interaction.options.getNumber('endverse') || startVerse;
+
+        // "book:Jude chapter:5" means Jude 1:5 — Jude has only one chapter.
+        ({ chapter, startVerse, endVerse } = resolveSingleChapterRef(bookId, chapter, startVerse, endVerse));
 
         if (startVerse > endVerse) {
             return interaction.reply({

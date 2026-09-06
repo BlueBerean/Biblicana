@@ -8,6 +8,7 @@ import {
 } from 'discord.js';
 import { bibleWrapper, coerceTranslation } from '../utils/bibleHelper.js';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
+import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { lxxWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import logger from '../utils/logger.js';
@@ -62,10 +63,10 @@ export default {
 
         const bookInput = interaction.options.getString('book');
         const chapterInput = interaction.options.getString('chapter');
-        const startVerse = interaction.options.getNumber('verse');
-        const endVerseInput = interaction.options.getNumber('endverse');
+        let startVerse = interaction.options.getNumber('verse');
+        let endVerseInput = interaction.options.getNumber('endverse');
 
-        const chapter = Number.parseInt(String(chapterInput).trim(), 10);
+        let chapter = Number.parseInt(String(chapterInput).trim(), 10);
         if (!Number.isInteger(chapter) || chapter < 1) {
             return this.fail(interaction, `**${chapterInput}** isn't a chapter number I can use.`);
         }
@@ -96,6 +97,11 @@ export default {
                     `**${bookName}** is in the New Testament. The Septuagint is the Greek translation of the *Old* Testament, so there's no LXX reading for it.\n\n`
                     + '-# For the Greek of a New Testament verse, use `/originaltext` or `/interlinear`.');
             }
+
+            // "book:Obadiah chapter:15" means Obadiah 1:15 - Obadiah has one
+            // chapter. Applied here rather than above so the Septuagint-only
+            // books, which have their own numbering, are left untouched.
+            ({ chapter, startVerse, endVerse: endVerseInput } = resolveSingleChapterRef(bookId, chapter, startVerse, endVerseInput));
 
             const from = startVerse ?? 1;
             const to = Math.min(endVerseInput ?? (startVerse ? startVerse : 6), from + MAX_VERSES - 1);
