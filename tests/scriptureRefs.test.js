@@ -427,3 +427,42 @@ test('a missing book or chapter is left alone', () => {
     assert.equal(r.chapter, null);
     assert.equal(r.remapped, false);
 });
+
+test('a range makes a bare 1 a verse in a one-chapter book', () => {
+    // REGRESSION: "Obadiah 1-3" showed the WHOLE BOOK. The bare 1 kept its
+    // chapter reading, which meant the "-3" was never looked at - so a request
+    // for three verses returned twenty-one. A range cannot be a chapter range
+    // in a book with one chapter.
+    const r = one('Obadiah 1-3');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, 1);
+    assert.equal(r.endVerse, 3);
+});
+
+test('every single-chapter book reads a leading-1 range as verses', () => {
+    assert.deepEqual(
+        coords('Obadiah 1-3, Philemon 1-6, 2 John 1-4, 3 John 1-2, Jude 1-3'),
+        ['Obadiah 1:1-3', 'Philemon 1:1-6', '2 John 1:1-4', '3 John 1:1-2', 'Jude 1:1-3']
+    );
+});
+
+test('a bare 1 with NO range is still the whole chapter', () => {
+    // The carve-out this fix had to preserve: "Jude 1" is genuinely ambiguous
+    // and the chapter is the whole book, which is the more useful reading.
+    const r = one('Jude 1');
+    assert.equal(r.chapter, 1);
+    assert.equal(r.startVerse, null);
+});
+
+test('a range past the last verse is not a verse range', () => {
+    // Obadiah has 21 verses, so "1-30" is not a citation shape at all; it falls
+    // back to the chapter rather than inventing verses the book lacks.
+    const r = one('Obadiah 1-30');
+    assert.equal(r.startVerse, null);
+});
+
+test('multi-chapter books still treat a dash as an unsupported chapter range', () => {
+    const r = one('John 3-5');
+    assert.equal(r.chapter, 3);
+    assert.equal(r.startVerse, null, 'John 3-5 must not become John 3:3-5');
+});

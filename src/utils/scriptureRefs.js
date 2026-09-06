@@ -69,9 +69,15 @@ const MAX_CONTINUATION_VERSE = 176;
 //
 // The remap is driven by impossibility rather than preference: in a one-chapter
 // book any number ABOVE 1 cannot be a chapter, so it must be a verse. "Jude 1"
-// is deliberately left as a chapter reference — both readings are defensible
-// there, and the chapter IS the whole book, which is the more useful of the
-// two. "Jude 1:1" still names the verse explicitly.
+// alone is deliberately left as a chapter reference — both readings are
+// defensible there, and the chapter IS the whole book, which is the more useful
+// of the two. "Jude 1:1" still names the verse explicitly.
+//
+// A RANGE overrides even that: "Obadiah 1-3" cannot be a chapter range, since
+// the book has no chapters 2 or 3, so a bare 1 in front of a dash is a verse.
+// Getting this wrong showed the entire book to someone who asked for three
+// verses, because the bare 1 kept its chapter reading and the "-3" was then
+// never read at all.
 //
 // The verse counts bound it for the same reason continuations are bounded:
 // without a ceiling, "I've read Philemon 30 times" becomes a citation. Both the
@@ -237,27 +243,33 @@ export function parseScriptureRefs(text) {
         let effectiveChapter = chapter;
         let rawText = raw;
         const verseCount = SINGLE_CHAPTER_BOOKS.get(bookId);
-        if (verseCount !== undefined && startStr === undefined && chapter > 1) {
-            if (chapter > verseCount) {
-                // Neither a chapter nor a verse this book has, so it isn't a
-                // reference at all — "I've read Philemon 30 times".
-                SCRIPTURE_REGEX.lastIndex = match.index + 1;
-                continue;
-            }
-            effectiveChapter = 1;
-            startVerse = chapter;
-            endVerse = chapter;
-
-            // Now that the number is known to be a verse, a bare "-7" after it
-            // is a verse range. Left unread it would silently narrow
-            // "Jude 5-7" to a single verse, which is a worse answer than the
-            // nothing this whole fix replaces.
+        if (verseCount !== undefined && startStr === undefined) {
+            // Look for a bare range BEFORE deciding what the number is, because
+            // the range is what settles the one genuinely ambiguous case.
             BARE_RANGE_REGEX.lastIndex = SCRIPTURE_REGEX.lastIndex;
             const rangeMatch = BARE_RANGE_REGEX.exec(text);
-            if (rangeMatch) {
-                const rangeEnd = parseInt(rangeMatch[1], 10);
-                if (Number.isFinite(rangeEnd) && rangeEnd >= startVerse && rangeEnd <= verseCount) {
-                    endVerse = rangeEnd;
+            const rangeEnd = rangeMatch ? parseInt(rangeMatch[1], 10) : NaN;
+            const hasRange = Number.isFinite(rangeEnd) && rangeEnd >= chapter && rangeEnd <= verseCount;
+
+            // A bare 1 stays a CHAPTER on its own — "Jude 1" is the whole book,
+            // and both readings are defensible. But a range removes that
+            // ambiguity: "Obadiah 1-3" cannot be a chapter range, because the
+            // book has no chapters 2 or 3, so it has to be verses. Missing this
+            // showed the whole book when someone asked for three verses.
+            if (hasRange || chapter > 1) {
+                if (chapter > verseCount) {
+                    // Neither a chapter nor a verse this book has, so it isn't a
+                    // reference at all — "I've read Philemon 30 times".
+                    SCRIPTURE_REGEX.lastIndex = match.index + 1;
+                    continue;
+                }
+                effectiveChapter = 1;
+                startVerse = chapter;
+                endVerse = hasRange ? rangeEnd : chapter;
+
+                // Consume the range so the scanner cannot re-read "3" as a
+                // reference of its own.
+                if (hasRange) {
                     rawText = raw + rangeMatch[0];
                     SCRIPTURE_REGEX.lastIndex = BARE_RANGE_REGEX.lastIndex;
                 }
