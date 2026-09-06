@@ -6,6 +6,8 @@ import {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    StringSelectMenuBuilder,
+    StringSelectMenuOptionBuilder,
     MessageFlags,
 } from 'discord.js';
 import { parseScriptureRefs } from '../utils/scriptureRefs.js';
@@ -13,6 +15,7 @@ import { bibleWrapper } from '../utils/bibleHelper.js';
 import { toCommentaryVariants, toOSIS3Codes } from '../utils/bookNames.js';
 import { fathersWrapper, crossRefWrapper, commentaryWrapper, pickMarqueeFather } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
+import { autopostLimitFor, passageCustomId } from '../utils/passiveDetection.js';
 import logger from '../utils/logger.js';
 
 const MARKER_EMOJI = '📖';
@@ -43,7 +46,24 @@ function alreadyResponded(messageId) {
     return true;
 }
 
-const VERSE_DISPLAY_TRUNCATE = 450;
+// This card owns its whole message - it is a reply to the reacted message and
+// shares space with nothing - so it gets the same budget a lone autopost card
+// gets, from the same helper. It used to carry its own copy of the old flat
+// 450, which is why the reaction path stayed cramped after the cards were
+// widened.
+//
+// Deliberately always the FULL budget rather than the guild's Compact setting:
+// clicking the book emoji is an explicit request to see the passage, and
+// Compact exists to stop UNSOLICITED posts dominating a busy channel.
+const VERSE_DISPLAY_TRUNCATE = autopostLimitFor(1, 'full');
+
+// Matches CHAPTER_VERSE_CEILING in passiveDetection: Psalm 119 has 176 verses,
+// and the query is a BETWEEN, so overshooting simply returns fewer rows.
+const CHAPTER_VERSE_CEILING = 200;
+
+// Discord's StringSelectMenu hard cap. The same number the channel pager uses,
+// and for the same reason: above it the menu could no longer list everything.
+const MAX_REFS_IN_PICKER = 25;
 
 function refLabel(ref) {
     if (ref.startVerse == null) return `${ref.bookName} ${ref.chapter}`;
@@ -58,9 +78,29 @@ function refLabel(ref) {
 // because its query joins father_meta). Returns a shape friendly to the
 // renderer — null / 0 fields mean "skip that stat line segment".
 async function fetchExpansionData(ref, translation) {
+    // A chapter-only reference ("Psalm 23") used to return NOTHING here, so
+    // reacting to it produced a card with a heading, five buttons and no
+    // scripture at all. That is a worse answer than the opening of the chapter
+    // the reader actually asked about, and it is what people see when they
+    // react to another Bible bot's post, whose heading is usually a chapter.
+    //
+    // The STATS stay off for a chapter: commentator counts and cross-references
+    // are per-verse lookups, so anchoring them to verse 1 would advertise
+    // numbers that describe one verse while the card names a whole chapter.
     if (ref.startVerse == null) {
-        // Chapter-only refs: no verse text, no stats. Minimal expansion.
-        return { verseText: '', commentatorCount: 0, fathersCount: 0, topFather: null, xrefCount: 0 };
+        const rows = await bibleWrapper
+            .getVerses(ref.bookId, ref.chapter, 1, CHAPTER_VERSE_CEILING)
+            .catch(() => []);
+        const verses = rows
+            .map(r => ({ number: r.verse, text: r[translation] || r.BSB || r.KJV }))
+            .filter(v => Boolean(v.text));
+        const full = verses.map(v => `**${v.number}** ${v.text}`).join(' ');
+        const truncated = full.length > VERSE_DISPLAY_TRUNCATE;
+        return {
+            verseText: truncated ? full.slice(0, VERSE_DISPLAY_TRUNCATE - 1) + '…' : full,
+            truncated,
+            commentatorCount: 0, fathersCount: 0, topFather: null, xrefCount: 0,
+        };
     }
 
     const [verseRows, fathers, xrefs, commentatorCount] = await Promise.all([
@@ -78,12 +118,14 @@ async function fetchExpansionData(ref, translation) {
         .map(r => r[translation] || r.BSB || r.KJV)
         .filter(Boolean)
         .join(' ');
-    if (verseText.length > VERSE_DISPLAY_TRUNCATE) {
+    const truncated = verseText.length > VERSE_DISPLAY_TRUNCATE;
+    if (truncated) {
         verseText = verseText.slice(0, VERSE_DISPLAY_TRUNCATE - 1) + '…';
     }
 
     return {
         verseText,
+        truncated,
         commentatorCount,
         fathersCount: fathers.length,
         // Marquee-first pick over alphabetical default. If a big-name Father
@@ -94,7 +136,15 @@ async function fetchExpansionData(ref, translation) {
     };
 }
 
-async function buildExpansionReply(ref, translation) {
+// Address of one reference, carried in a select OPTION VALUE rather than the
+// customId. A customId is capped at 100 chars and could never hold 25
+// references, which is why the channel pager keeps its list in Redis; a select
+// gives each option its own 100-char value, so this stays stateless.
+export function reactionRefValue(ref) {
+    return `${ref.bookId}:${ref.chapter}:${ref.startVerse ?? 0}:${ref.endVerse ?? 0}`;
+}
+
+export async function buildExpansionReply(ref, translation, siblings = []) {
     const anchorVerse = ref.startVerse ?? 1;
     const data = await fetchExpansionData(ref, translation);
 
@@ -152,7 +202,43 @@ async function buildExpansionReply(ref, translation) {
             .setCustomId(`openverse:fathers:${ref.bookId}:${ref.chapter}:${anchorVerse}`)
             .setLabel('Fathers').setEmoji({ name: '📜' }).setStyle(ButtonStyle.Secondary),
     );
-    return { flags: MessageFlags.IsComponentsV2, components: [container, actionRow] };
+    // Read full needs its OWN row: the row above is already at Discord's
+    // five-button ceiling, which is why this could not simply be appended the
+    // way it was on the autopost cards.
+    const components = [container, actionRow];
+
+    // A reacted message often quotes SEVERAL passages - another Bible bot
+    // posting two embeds at once is the common shape. Only the first was ever
+    // shown and the rest were dropped without a word, so a reader could see a
+    // verse quoted above and have no idea the card had skipped it.
+    //
+    // Selecting opens a PRIVATE card rather than moving this one. Anyone can
+    // add a reaction, so there is no owner to hand the public post to, and the
+    // owner/shared arbitration the channel pager needs does not map here.
+    if (siblings.length > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId('reactionref')
+                .setPlaceholder(`Jump to a reference (${siblings.length} in that message)`)
+                .addOptions(siblings.slice(0, MAX_REFS_IN_PICKER).map(r =>
+                    new StringSelectMenuOptionBuilder()
+                        .setValue(reactionRefValue(r))
+                        .setLabel(refLabel(r))
+                        .setDefault(reactionRefValue(r) === reactionRefValue(ref))
+                ))
+        ));
+    }
+    if (data.truncated) {
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(passageCustomId(ref))
+                .setLabel('Read full')
+                .setEmoji({ name: '📜' })
+                .setStyle(ButtonStyle.Primary)
+        ));
+    }
+
+    return { flags: MessageFlags.IsComponentsV2, components };
 }
 
 // Recursively pull `.content` strings from V2 Components (TextDisplay nodes
@@ -255,7 +341,7 @@ export default {
                 if (pref?.translation) translation = pref.translation;
             } catch { /* default */ }
 
-            const reply = await buildExpansionReply(ref, translation);
+            const reply = await buildExpansionReply(ref, translation, refs);
             await message.reply({
                 ...reply,
                 allowedMentions: { repliedUser: false },
