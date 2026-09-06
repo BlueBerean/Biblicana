@@ -4,6 +4,7 @@ import {
     readPassiveMode,
     readPassiveChannels,
     readPassivePagerPrivate,
+    readPassiveDetail,
     buildConfigView,
     PASSIVE_STYLE_OPTIONS,
 } from '../../utils/passiveConfig.js';
@@ -54,14 +55,15 @@ export default {
         const pickedLabel = PASSIVE_STYLE_OPTIONS.find(o => o.value === picked)?.label ?? picked;
 
         try {
-            const [currentPassiveMode, currentChannels, currentPagerPrivate] = await Promise.all([
+            const [currentPassiveMode, currentChannels, currentPagerPrivate, currentDetail] = await Promise.all([
                 readPassiveMode(database, interaction.guildId),
                 readPassiveChannels(database, interaction.guildId),
                 readPassivePagerPrivate(database, interaction.guildId),
+                readPassiveDetail(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildConfigView({ currentPassiveMode, currentChannels, currentPaginate: paginate, currentPagerPrivate }),
+                components: buildConfigView({ currentPassiveMode, currentChannels, currentPaginate: paginate, currentPagerPrivate, currentDetail }),
             });
 
             // This setting only does anything in autopost. Saying so up front

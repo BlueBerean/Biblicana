@@ -58,6 +58,16 @@ const guildModel = joi.object({
     // an unset field would read as false and silently flip the default. See
     // readPassivePagerPrivate.
     passivePagerPrivate: joi.boolean().default(true),
+    // How much of a passage an auto-post card shows before it stops. A STRING
+    // rather than a boolean specifically to sidestep the trap documented above:
+    // the sensible default is the permissive one, and a boolean defaulting TRUE
+    // reads as false when unset. Only the exact value 'compact' opts out, so an
+    // absent field needs no coercion to mean 'full'.
+    //
+    // Neither value can mean "never cut" — Discord caps a V2 component tree at
+    // 4000 characters and half of all chapters exceed even 3000 — which is why
+    // a truncated card carries a Read full button instead.
+    passiveDetail: joi.string().valid('full', 'compact').default('full'),
     // AI chat: admin opt-in per guild. Visible @mention responses are a
     // significant behavior change, so default is OFF — admins must enable.
     // (DM AI chat is currently disabled — see FOLLOWUPS.md "DM AI chat".)

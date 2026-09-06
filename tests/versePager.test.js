@@ -17,6 +17,10 @@ import {
     computePageGroups,
     buildPaginatedComponents,
     buildPrivatePageComponents,
+    buildPassagePages,
+    buildPassageReaderComponents,
+    autopostLimitFor,
+    passageCustomId,
     PAGER_MODE_SHARED,
     PAGER_MODE_OWNER,
     PAGER_MODE_PRIVATE,
@@ -195,4 +199,131 @@ test('the public last page also says what to do about the omissions', async () =
     assert.match(json, /2 more not shown/, 'footer count on every page');
     assert.match(json, /2 more references/, 'actionable note on the last page');
     assert.match(json, /\/bible/);
+});
+
+// --- autopost budget -------------------------------------------------------
+//
+// The budget was a flat 450 per card, sized for three cards sharing a message
+// and then charged to every post regardless. 70% of real posts carry exactly
+// one reference, so most of the time a single card was rationed to a third of
+// the space it could have used.
+
+test('one reference on a card gets far more room than three sharing one', () => {
+    const alone = autopostLimitFor(1);
+    const crowded = autopostLimitFor(3);
+    assert.ok(alone > crowded, 'a lone card should get more than a crowded one');
+    assert.ok(alone > 2000, `a lone card should clear the old flat 450 by a wide margin, got ${alone}`);
+    assert.ok(crowded >= 300, 'three cards should still each get a readable amount');
+});
+
+test('compact is smaller than full at the same reference count', () => {
+    assert.ok(autopostLimitFor(1, 'compact') < autopostLimitFor(1, 'full'));
+    assert.ok(autopostLimitFor(3, 'compact') < autopostLimitFor(3, 'full'));
+});
+
+test('an unknown detail value falls back to full rather than the smaller budget', () => {
+    // An unset guild field must not silently pick the tighter of the two.
+    assert.equal(autopostLimitFor(1, undefined), autopostLimitFor(1, 'full'));
+    assert.equal(autopostLimitFor(1, 'nonsense'), autopostLimitFor(1, 'full'));
+});
+
+test('a zero or missing reference count never divides by zero', () => {
+    assert.ok(Number.isFinite(autopostLimitFor(0)));
+    assert.ok(autopostLimitFor(0) > 0);
+});
+
+// --- the full-passage reader ----------------------------------------------
+//
+// The gap this fills: computePageGroups groups whole REFERENCES onto pages and
+// never splits one, so a single long reference was one page and still cut.
+// Half of all chapters exceed even the 3000-char page budget.
+
+test('a long chapter splits across several pages', async () => {
+    const pages = await buildPassagePages(ref(19, 'Psalms', 119, null, null), 'BSB');
+    assert.ok(pages.length > 1, `Psalm 119 should need more than one page, got ${pages.length}`);
+});
+
+test('paging a passage loses no verses and keeps them in order', async () => {
+    // The failure this guards is silent: a chunker that drops the verse which
+    // straddles a page boundary still returns plausible pages.
+    const pages = await buildPassagePages(ref(45, 'Romans', 8, null, null), 'BSB');
+    assert.ok(pages.length > 0);
+    assert.equal(pages[0].firstVerse, 1, 'should start at verse 1');
+    for (let i = 1; i < pages.length; i++) {
+        assert.equal(
+            pages[i].firstVerse, pages[i - 1].lastVerse + 1,
+            `page ${i + 1} should resume exactly where page ${i} stopped`
+        );
+    }
+});
+
+test('a page never ends mid-verse', async () => {
+    const pages = await buildPassagePages(ref(19, 'Psalms', 119, null, null), 'BSB');
+    for (const page of pages) {
+        assert.ok(!page.text.endsWith('…'), 'pages break on verse boundaries, never on an ellipsis');
+    }
+});
+
+test('a single short verse is one page', async () => {
+    const pages = await buildPassagePages(ref(43, 'John', 11, 35, 35), 'BSB');
+    assert.equal(pages.length, 1);
+    assert.match(pages[0].text, /wept/i);
+});
+
+test('a reference with no verses returns no pages rather than an empty one', async () => {
+    const pages = await buildPassagePages(ref(43, 'John', 999, 1, 1), 'BSB');
+    assert.deepEqual(pages, []);
+});
+
+test('the reader shows page controls only when there is more than one page', async () => {
+    const one = await buildPassagePages(ref(43, 'John', 11, 35, 35), 'BSB');
+    const single = rows(buildPassageReaderComponents(ref(43, 'John', 11, 35, 35), 'BSB', one, 0));
+    assert.equal(single.length, 1, 'a one-page passage needs no arrows');
+
+    const many = await buildPassagePages(ref(19, 'Psalms', 119, null, null), 'BSB');
+    const paged = rows(buildPassageReaderComponents(ref(19, 'Psalms', 119, null, null), 'BSB', many, 0));
+    assert.equal(paged.length, 2, 'a multi-page passage gets one control row');
+});
+
+test('reader arrows disable at the edges and address the adjacent page', async () => {
+    const r = ref(19, 'Psalms', 119, null, null);
+    const pages = await buildPassagePages(r, 'BSB');
+    const base = passageCustomId(r);
+
+    const first = rows(buildPassageReaderComponents(r, 'BSB', pages, 0))[1];
+    assert.equal(first.components[0].disabled, true, 'Back is disabled on page 1');
+    assert.equal(first.components[2].custom_id, `${base}:1`);
+
+    const last = rows(buildPassageReaderComponents(r, 'BSB', pages, pages.length - 1))[1];
+    assert.equal(last.components[2].disabled, true, 'Next is disabled on the last page');
+});
+
+test('an out-of-range reader page clamps instead of throwing', async () => {
+    const r = ref(45, 'Romans', 8, null, null);
+    const pages = await buildPassagePages(r, 'BSB');
+    assert.doesNotThrow(() => buildPassageReaderComponents(r, 'BSB', pages, 99));
+    assert.doesNotThrow(() => buildPassageReaderComponents(r, 'BSB', pages, -5));
+});
+
+test('a chapter-only reference encodes as zeroes so the reader pages the chapter', () => {
+    assert.equal(passageCustomId(ref(45, 'Romans', 8, null, null)), 'passageread:45:8:0:0');
+    assert.equal(passageCustomId(ref(43, 'John', 3, 16, 21)), 'passageread:43:3:16:21');
+});
+
+// --- the escape hatch ------------------------------------------------------
+
+test('a truncated card offers a way to read the rest', async () => {
+    // The whole complaint: the other four buttons navigate AWAY to different
+    // views, so a cut passage had no route to its own remainder.
+    const long = [ref(19, 'Psalms', 119, null, null)];
+    const c = rows(await buildPaginatedComponents(long, 'BSB', 0, { mode: PAGER_MODE_SHARED }));
+    const row = c.find(x => x.type === 1 && customIds(x).some(id => id.startsWith('passageread:')));
+    assert.ok(row, 'a truncated card must carry a Read full button');
+});
+
+test('a card showing everything does NOT promise more', async () => {
+    const short = [ref(43, 'John', 11, 35, 35)];
+    const c = rows(await buildPaginatedComponents(short, 'BSB', 0, { mode: PAGER_MODE_SHARED }));
+    const row = c.find(x => x.type === 1 && customIds(x).some(id => id.startsWith('passageread:')));
+    assert.equal(row, undefined, '"Jesus wept." is complete, so there is nothing to read on to');
 });

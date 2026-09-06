@@ -46,12 +46,13 @@ const PANELS = [
         name: 'config passive',
         filePattern: /^configPassive.*\.js$/,
         builder: 'buildConfigView',
-        minHandlers: 4,
+        minHandlers: 5,
         settings: [
             ['passive mode', /readPassiveMode|savePassiveMode/],
             ['channels', /readPassiveChannels|savePassiveChannels/],
             ['autopost layout', /readPassivePaginate|savePassivePaginate/],
             ['pager privacy', /readPassivePagerPrivate|savePassivePagerPrivate/],
+            ['verse detail', /readPassiveDetail|savePassiveDetail/],
         ],
     },
 ];

@@ -4,6 +4,7 @@ import {
     readPassiveMode,
     readPassiveChannels,
     readPassivePaginate,
+    readPassiveDetail,
     buildConfigView,
     PASSIVE_PAGER_OPTIONS,
 } from '../../utils/passiveConfig.js';
@@ -54,10 +55,11 @@ export default {
         const pickedLabel = PASSIVE_PAGER_OPTIONS.find(o => o.value === picked)?.label ?? picked;
 
         try {
-            const [currentPassiveMode, currentChannels, currentPaginate] = await Promise.all([
+            const [currentPassiveMode, currentChannels, currentPaginate, currentDetail] = await Promise.all([
                 readPassiveMode(database, interaction.guildId),
                 readPassiveChannels(database, interaction.guildId),
                 readPassivePaginate(database, interaction.guildId),
+                readPassiveDetail(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
@@ -66,6 +68,7 @@ export default {
                     currentChannels,
                     currentPaginate,
                     currentPagerPrivate: isPrivate,
+                    currentDetail,
                 }),
             });
 

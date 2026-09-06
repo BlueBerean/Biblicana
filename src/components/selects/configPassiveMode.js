@@ -1,7 +1,7 @@
 import { PermissionFlagsBits, MessageFlags } from 'discord.js';
 import { PASSIVE_MODES } from '../../database/schemas/guild.js';
 import { PASSIVE_MODE_OPTIONS } from '../../utils/welcomeCard.js';
-import { savePassiveMode, readPassiveChannels, readPassivePaginate, readPassivePagerPrivate, buildConfigView } from '../../utils/passiveConfig.js';
+import { savePassiveMode, readPassiveChannels, readPassivePaginate, readPassivePagerPrivate, readPassiveDetail, buildConfigView } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
 
 // Select-menu handler for the compact /config passive panel. customId:
@@ -54,14 +54,15 @@ export default {
             // so a setting this handler doesn't source renders as unset even
             // though the database still holds it — which reads to an admin as
             // their channel restriction having just been cleared.
-            const [currentChannels, currentPaginate, currentPagerPrivate] = await Promise.all([
+            const [currentChannels, currentPaginate, currentPagerPrivate, currentDetail] = await Promise.all([
                 readPassiveChannels(database, interaction.guildId),
                 readPassivePaginate(database, interaction.guildId),
                 readPassivePagerPrivate(database, interaction.guildId),
+                readPassiveDetail(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildConfigView({ currentPassiveMode: picked, currentChannels, currentPaginate, currentPagerPrivate }),
+                components: buildConfigView({ currentPassiveMode: picked, currentChannels, currentPaginate, currentPagerPrivate, currentDetail }),
             });
             await interaction.followUp({
                 content: `✅ Passive detection set to **${pickedLabel}**.`,

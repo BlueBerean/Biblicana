@@ -115,6 +115,57 @@ export const PASSIVE_PAGER_OPTIONS = [
     },
 ];
 
+// How much of a passage an auto-post card shows before it stops.
+//
+// Named for what an admin can actually observe, not for a character budget.
+// "Truncation on/off" was the obvious framing and is the wrong one: Discord
+// caps a V2 component tree at 4000 characters and half of all chapters exceed
+// even 3000, so nothing here can ever mean "never cut" — a setting promising
+// that would be lying. Both levels cut eventually; the Read full button is what
+// makes that acceptable.
+export const PASSIVE_DETAIL_OPTIONS = [
+    {
+        value: 'full',
+        label: 'Full (default)',
+        description: 'Long passages fill the card. Read full opens the rest.',
+    },
+    {
+        value: 'compact',
+        label: 'Compact',
+        description: 'Shorter excerpts, less scroll in a busy channel.',
+    },
+];
+
+export async function savePassiveDetail(database, guildId, detail) {
+    try {
+        const value = detail === 'compact' ? 'compact' : 'full';
+        const existing = await database.getGuildValue(guildId) ?? {};
+        const merged = { ...existing, id: guildId, passiveDetail: value };
+        await database.setGuildValue(guildId, merged);
+        return true;
+    } catch (err) {
+        logger.error(`[PassiveConfig] Detail save failed for guild=${guildId}: ${err.message}`);
+        return false;
+    }
+}
+
+/**
+ * Read the verse-detail setting. Stored as a STRING rather than a boolean on
+ * purpose: a boolean defaulting to TRUE has bitten this file twice, because
+ * joi's `.default(true)` never reaches Postgres and `Boolean(undefined)` is
+ * false, silently inverting the documented default. Only the exact string
+ * 'compact' opts out, so an unset field reads as 'full' with no coercion.
+ */
+export async function readPassiveDetail(database, guildId) {
+    try {
+        const g = await database.getGuildValue(guildId);
+        if (g?.passiveDetail === 'compact') return 'compact';
+    } catch (err) {
+        logger.debug(`[PassiveConfig] Detail read failed for guild=${guildId}: ${err.message}`);
+    }
+    return 'full';
+}
+
 export async function savePassivePagerPrivate(database, guildId, isPrivate) {
     try {
         const existing = await database.getGuildValue(guildId) ?? {};
@@ -177,6 +228,7 @@ export function buildConfigView({
     currentChannels = [],
     currentPaginate = false,
     currentPagerPrivate = true,
+    currentDetail = 'full',
 }) {
     const currentLabel = PASSIVE_MODE_OPTIONS.find(o => o.value === currentPassiveMode)?.label ?? currentPassiveMode;
     const channelsSummary = currentChannels.length === 0
@@ -186,6 +238,8 @@ export function buildConfigView({
     const styleLabel = PASSIVE_STYLE_OPTIONS.find(o => o.value === currentStyleValue).label;
     const currentPagerValue = currentPagerPrivate ? 'private' : 'shared';
     const pagerLabel = PASSIVE_PAGER_OPTIONS.find(o => o.value === currentPagerValue).label;
+    const detailValue = currentDetail === 'compact' ? 'compact' : 'full';
+    const detailLabel = PASSIVE_DETAIL_OPTIONS.find(o => o.value === detailValue).label;
 
     const container = new ContainerBuilder()
         .setAccentColor(accentColor())
@@ -195,6 +249,7 @@ export function buildConfigView({
                 `**Current mode:** ${currentLabel}`,
                 `**Channels:** ${channelsSummary}`,
                 `**Auto-post layout:** ${styleLabel}`,
+                `**Verse detail:** ${detailLabel}`,
                 ...(currentPaginate ? [`**Paging:** ${pagerLabel}`] : []),
                 '',
                 'When a user types a scripture reference in chat, what should Biblicana do?',
@@ -227,6 +282,18 @@ export function buildConfigView({
                 '**Owner paging (default)** — whoever posted the references (or asked the AI) drives the public post. Anyone else who taps a control gets **their own private copy**, showing up to 3 references at a time, that only they can see. Nobody pulls the post out from under anyone.',
                 '',
                 '**Shared paging** — anyone can move the post itself, for the whole channel. Good for a group reading together; the trade-off is that whoever clicks last decides what everyone sees.',
+            ].join('\n')
+        ))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            [
+                '### How much of a passage shows',
+                'A single verse always fits — no verse in the Bible is long enough to be cut. This is about **ranges and whole chapters**, where the median chapter is far longer than any card.',
+                '',
+                '**Full (default)** — a passage uses as much of the card as it can, sized by how many references share the message.',
+                '',
+                '**Compact** — shorter excerpts, for a busy channel where long quotes push conversation off screen.',
+                '',
+                '*Either way, when a passage is cut the card gains a **Read full** button that opens the whole thing privately, page by page. Neither setting can show a long chapter in one card — Discord limits the size of a message.*',
             ].join('\n')
         ))
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(
@@ -288,5 +355,18 @@ export function buildConfigView({
             ))
     );
 
-    return [container, selectRow, channelsRow, styleRow, pagerRow];
+    const detailRow = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId('config:passive:detail')
+            .setPlaceholder('How much of a passage shows')
+            .addOptions(PASSIVE_DETAIL_OPTIONS.map(opt =>
+                new StringSelectMenuOptionBuilder()
+                    .setValue(opt.value)
+                    .setLabel(opt.label)
+                    .setDescription(opt.description)
+                    .setDefault(opt.value === detailValue)
+            ))
+    );
+
+    return [container, selectRow, channelsRow, styleRow, pagerRow, detailRow];
 }

@@ -29,9 +29,36 @@ const MAX_REFS_PER_MESSAGE = 3;
 // users notice the delay.
 const BIBLEBOT_WAIT_MS = 3000;
 
-// Max chars of verse text to display in an autopost reply per ref. Tight
-// because up to three cards share one message.
-const VERSE_DISPLAY_TRUNCATE = 450;
+// Verse-text budget for ONE autopost message, shared across the cards in it.
+//
+// This replaced a flat 450 chars PER CARD, which was sized for the worst case —
+// three cards in one message — and then charged to every post regardless. In
+// production 70% of posts carry exactly one reference, so most of the time a
+// single card was rationed to a third of the space while ~3500 characters of
+// Discord's 4000-char V2 component tree went unused.
+//
+// It matters more than it sounds. No verse in the BSB reaches 450 characters
+// (the longest is 400), so single verses were never the problem — but 1182 of
+// the Bible's 1189 chapters exceed it, and the median chapter is 3032, so
+// someone typing "Romans 8" saw about 15% of it and an ellipsis. An average
+// five-verse range is ~612 and was cut too.
+//
+// Split across the cards actually present, floored so three references still
+// each get a readable amount rather than a sentence.
+const AUTOPOST_BUDGET_FULL = 2400;
+const AUTOPOST_BUDGET_COMPACT = 1050;
+const AUTOPOST_MIN_PER_REF = 300;
+
+// Per-page budget in the full-passage reader. It owns an ephemeral message
+// outright — no other cards, no jump menu — so it can spend more than a
+// shared page.
+const PASSAGE_PAGE_BUDGET = 3200;
+
+/** Chars of verse text one autopost card may use, given how many share the message. */
+export function autopostLimitFor(refCount, detail = 'full') {
+    const total = detail === 'compact' ? AUTOPOST_BUDGET_COMPACT : AUTOPOST_BUDGET_FULL;
+    return Math.max(AUTOPOST_MIN_PER_REF, Math.floor(total / Math.max(1, refCount)));
+}
 
 // The paginated layout shows ONE reference per message, so it gets a far larger
 // budget. Bounded well under Discord's 4000-char ceiling for a V2 component
@@ -78,14 +105,20 @@ function refLabel(ref) {
     return `${ref.bookName} ${ref.chapter}:${ref.startVerse}`;
 }
 
+// Address of a passage for the full-text reader. Chapter-only references carry
+// 0 for both verses, which is what tells the reader to page the whole chapter.
+export function passageCustomId(ref) {
+    return `passageread:${ref.bookId}:${ref.chapter}:${ref.startVerse ?? 0}:${ref.endVerse ?? 0}`;
+}
+
 // Build the action row a verse response gets — mirrors the /bible command's
 // openverse chain so clicking through passive detection feels identical to
 // clicking through a slash command response.
-function buildOpenverseRow(ref) {
+function buildOpenverseRow(ref, { truncated = false } = {}) {
     // Chapter-only refs use verse=1 as a best-guess anchor. Most chapter
     // intros are chapter-level commentary anyway.
     const anchorVerse = ref.startVerse ?? 1;
-    return new ActionRowBuilder().addComponents(
+    const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`openverse:interlinear:${ref.bookId}:${ref.chapter}:${anchorVerse}`)
             .setLabel('Interlinear')
@@ -107,17 +140,36 @@ function buildOpenverseRow(ref) {
             .setEmoji({ name: '📑' })
             .setStyle(ButtonStyle.Secondary),
     );
+
+    // Only when something was actually cut. A row that always carried it would
+    // promise more text on cards that are already showing all of it. Primary
+    // style because on a truncated card this is the button the reader wants —
+    // the other four lead away from the passage, not further into it.
+    // Five is Discord's per-row maximum, so this row is now full.
+    if (truncated) {
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId(passageCustomId(ref))
+                .setLabel('Read full')
+                .setEmoji({ name: '📜' })
+                .setStyle(ButtonStyle.Primary)
+        );
+    }
+
+    return row;
 }
 
 // Compose the V2 component tree for an autopost reply: one container + one
 // action row per ref. Capped at MAX_REFS_PER_MESSAGE so a single message
 // quoting many verses doesn't produce a wall of embeds.
-async function buildAutopostComponents(refs, translation) {
+async function buildAutopostComponents(refs, translation, detail = 'full') {
     const components = [];
     const chosen = refs.slice(0, MAX_REFS_PER_MESSAGE);
+    // Sized by what is actually in THIS message, not by the worst case.
+    const limit = autopostLimitFor(chosen.length, detail);
 
     for (const ref of chosen) {
-        const verseText = await verseTextFor(ref, translation);
+        const { text: verseText, truncated } = await verseTextDetailed(ref, translation, limit);
         const header = `## 📖 ${refLabel(ref)}${verseText ? ` · ${translation}` : ''}`;
         const body = verseText || '*(couldn\'t load the text for this reference — tap a button for study tools)*';
 
@@ -126,10 +178,10 @@ async function buildAutopostComponents(refs, translation) {
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(header))
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
             .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-                footerLine('Tap a button for study tools')
+                footerLine(truncated ? 'Tap Read full for the whole passage' : 'Tap a button for study tools')
             ))
         );
-        components.push(buildOpenverseRow(ref));
+        components.push(buildOpenverseRow(ref, { truncated }));
     }
 
     if (refs.length > MAX_REFS_PER_MESSAGE) {
@@ -184,7 +236,21 @@ const MAX_TOP_LEVEL_COMPONENTS = 10;
  * far more, which matters for the ranges pagination exists to show (1 Cor
  * 15:1-58 at the card budget was three sentences and an ellipsis).
  */
-async function verseTextFor(ref, translation, limit = VERSE_DISPLAY_TRUNCATE) {
+async function verseTextFor(ref, translation, limit = AUTOPOST_BUDGET_FULL) {
+    const { text } = await verseTextDetailed(ref, translation, limit);
+    return text;
+}
+
+/**
+ * As `verseTextFor`, but also reports whether anything was cut.
+ *
+ * The flag is what lets a card offer a way through instead of ending at an
+ * ellipsis. Before this, a truncated card's only buttons were Interlinear,
+ * Commentary, Cross-refs and Parallel — every one of which navigates AWAY to a
+ * different view, so there was no route to the rest of the passage at all. A
+ * server admin removed Biblicana's permissions over exactly that.
+ */
+async function verseTextDetailed(ref, translation, limit = AUTOPOST_BUDGET_FULL) {
     try {
         // A chapter-level reference ("John 1", "John 1:-") has no start verse.
         // Fetch the WHOLE chapter and let the truncation budget decide how much
@@ -204,11 +270,127 @@ async function verseTextFor(ref, translation, limit = VERSE_DISPLAY_TRUNCATE) {
             ? verses.map(v => `**${v.number}** ${v.text}`).join(' ')
             : verses.map(v => v.text).join(' ');
 
-        return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+        if (text.length > limit) {
+            return { text: text.slice(0, limit - 1) + '…', truncated: true };
+        }
+        return { text, truncated: false };
     } catch (err) {
         logger.warn(`[Passive] Failed to fetch verse text for ${refLabel(ref)}: ${err.message}`);
-        return '';
+        return { text: '', truncated: false };
     }
+}
+
+/**
+ * Split ONE reference into pages, breaking on verse boundaries.
+ *
+ * This is the thing the existing pager cannot do. `computePageGroups` groups
+ * whole REFERENCES onto pages and never splits one, so "Romans 8" is a single
+ * reference, a single page, and still truncated — paging across references
+ * doesn't help when the message only had one. Half of all chapters exceed even
+ * the generous 3000-char page budget, so a reader has to be able to move
+ * THROUGH a passage, not just between passages.
+ *
+ * Breaks on verse boundaries because a page ending mid-sentence and resuming on
+ * the next is harder to read than a slightly short page.
+ *
+ * Returns [{ text, firstVerse, lastVerse }], or [] when nothing resolves.
+ */
+export async function buildPassagePages(ref, translation, budget = PASSAGE_PAGE_BUDGET) {
+    try {
+        const isChapterOnly = ref.startVerse == null;
+        const from = isChapterOnly ? 1 : ref.startVerse;
+        const to = isChapterOnly ? CHAPTER_VERSE_CEILING : (ref.endVerse ?? ref.startVerse);
+
+        const rows = await bibleWrapper.getVerses(ref.bookId, ref.chapter, from, to);
+        const verses = rows
+            .map(r => ({ number: r.verse, text: r[translation] || r.BSB || r.KJV }))
+            .filter(v => Boolean(v.text));
+        if (verses.length === 0) return [];
+
+        // One verse on its own needs no inline number — the heading already
+        // names it. This matches verseTextFor so the reader and the card read
+        // identically for the same passage.
+        const numbered = verses.length > 1;
+        const pages = [];
+        let current = [];
+        let used = 0;
+
+        for (const v of verses) {
+            const piece = numbered ? `**${v.number}** ${v.text}` : v.text;
+            if (current.length > 0 && used + piece.length + 1 > budget) {
+                pages.push(current);
+                current = [];
+                used = 0;
+            }
+            // A verse longer than the whole budget still gets its own page
+            // rather than vanishing; no verse comes close, but dropping one
+            // silently would be the worse failure.
+            current.push({ number: v.number, piece });
+            used += piece.length + 1;
+        }
+        if (current.length > 0) pages.push(current);
+
+        return pages.map(p => ({
+            text: p.map(v => v.piece).join(' '),
+            firstVerse: p[0].number,
+            lastVerse: p[p.length - 1].number,
+        }));
+    } catch (err) {
+        logger.warn(`[Passive] Failed to page passage ${refLabel(ref)}: ${err.message}`);
+        return [];
+    }
+}
+
+/**
+ * Render one page of the full-passage reader.
+ *
+ * Always ephemeral in practice, which is why it carries no ownership rules: the
+ * only person who can see it is the one paging it, so there is nobody to
+ * contend with and no need for the owner/private split the channel pager needs.
+ */
+export function buildPassageReaderComponents(ref, translation, pages, pageIndex) {
+    const total = pages.length;
+    const idx = Math.min(Math.max(pageIndex, 0), Math.max(0, total - 1));
+    const page = pages[idx];
+
+    const span = page.firstVerse === page.lastVerse
+        ? `${ref.bookName} ${ref.chapter}:${page.firstVerse}`
+        : `${ref.bookName} ${ref.chapter}:${page.firstVerse}-${page.lastVerse}`;
+
+    const container = new ContainerBuilder()
+        .setAccentColor(accentColor())
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 📜 ${span} · ${translation}`))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(page.text))
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(
+            footerLine(total > 1 ? `Page ${idx + 1} of ${total} · only you can see this` : 'Only you can see this')
+        ));
+
+    const components = [container];
+
+    if (total > 1) {
+        const base = passageCustomId(ref);
+        components.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`${base}:${idx - 1}`)
+                .setLabel('Back')
+                .setEmoji({ name: '◀' })
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(idx <= 0),
+            new ButtonBuilder()
+                .setCustomId('passageread:noop')
+                .setLabel(`${idx + 1} / ${total}`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true),
+            new ButtonBuilder()
+                .setCustomId(`${base}:${idx + 1}`)
+                .setLabel('Next')
+                .setEmoji({ name: '▶' })
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(idx >= total - 1),
+        ));
+    }
+
+    return components;
 }
 
 // Pager modes, encoded as the third customId segment. The mode is baked in at
@@ -369,7 +551,7 @@ export async function buildPaginatedComponents(refs, translation, index, { mode 
     const safeIndex = Math.min(Math.max(index, 0), total - 1);
     const ref = refs[safeIndex];
 
-    const verseText = await verseTextFor(ref, translation, PAGE_DISPLAY_TRUNCATE);
+    const { text: verseText, truncated } = await verseTextDetailed(ref, translation, PAGE_DISPLAY_TRUNCATE);
     const header = `## 📖 ${refLabel(ref)}${verseText ? ` · ${translation}` : ''}`;
     const body = verseText || '*(couldn\'t load the text for this reference — tap a button for study tools)*';
 
@@ -398,10 +580,10 @@ export async function buildPaginatedComponents(refs, translation, index, { mode 
 
     // A single reference has nowhere to jump to, so it gets no menu — a
     // one-option picker is a control that advertises a choice it doesn't have.
-    if (total <= 1) return [container, buildOpenverseRow(ref)];
+    if (total <= 1) return [container, buildOpenverseRow(ref, { truncated })];
 
     const ctx = mode === PAGER_MODE_OWNER ? ownerId : null;
-    return [container, buildRefSelectRow(refs, safeIndex, { mode, ctx }), buildOpenverseRow(ref)];
+    return [container, buildRefSelectRow(refs, safeIndex, { mode, ctx }), buildOpenverseRow(ref, { truncated })];
 }
 
 /**
@@ -432,7 +614,7 @@ export async function buildPrivatePageComponents(refs, translation, groups, inde
     const components = [];
     for (const refIndex of shown) {
         const ref = refs[refIndex];
-        const verseText = await verseTextFor(ref, translation, PRIVATE_PAGE_BUDGET);
+        const { text: verseText, truncated } = await verseTextDetailed(ref, translation, PRIVATE_PAGE_BUDGET);
         const header = `## 📖 ${refLabel(ref)}${verseText ? ` · ${translation}` : ''}`;
         const body = verseText || '*(couldn\'t load the text for this reference — tap a button for study tools)*';
 
@@ -444,7 +626,7 @@ export async function buildPrivatePageComponents(refs, translation, groups, inde
                 footerLine(`Reference ${refIndex + 1} of ${total}`)
             ))
         );
-        components.push(buildOpenverseRow(ref));
+        components.push(buildOpenverseRow(ref, { truncated }));
     }
 
     const lastGroup = groupNo >= groups.length - 1;
@@ -654,9 +836,11 @@ async function dispatchAutopost(message, refs, database) {
     // down from messageCreate: autopost is the only mode that renders anything,
     // so this costs a cached read on the one path that can use it.
     let paginate = false;
+    let detail = 'full';
     try {
         const guildData = await database.getGuildValue(message.guild.id);
         paginate = Boolean(guildData?.passivePaginate);
+        if (guildData?.passiveDetail === 'compact') detail = 'compact';
     } catch (err) {
         // Fall back to the default layout rather than dropping the post.
         logger.debug(`[Passive] Could not read layout for ${message.guild.id}: ${err.message}`);
@@ -664,7 +848,7 @@ async function dispatchAutopost(message, refs, database) {
 
     if (!paginate) {
         const translation = await userTranslation(database, message.author.id);
-        const components = await buildAutopostComponents(refs, translation);
+        const components = await buildAutopostComponents(refs, translation, detail);
         await message.reply({
             flags: MessageFlags.IsComponentsV2,
             components,

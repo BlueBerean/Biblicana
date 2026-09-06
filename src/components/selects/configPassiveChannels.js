@@ -4,6 +4,7 @@ import {
     readPassiveMode,
     readPassivePaginate,
     readPassivePagerPrivate,
+    readPassiveDetail,
     buildConfigView,
 } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
@@ -57,14 +58,15 @@ export default {
             // reset. The panel is rebuilt whole on every change, so a setting
             // this handler doesn't source renders as unset even though the
             // database still holds it.
-            const [currentPassiveMode, currentPaginate, currentPagerPrivate] = await Promise.all([
+            const [currentPassiveMode, currentPaginate, currentPagerPrivate, currentDetail] = await Promise.all([
                 readPassiveMode(database, interaction.guildId),
                 readPassivePaginate(database, interaction.guildId),
                 readPassivePagerPrivate(database, interaction.guildId),
+                readPassiveDetail(database, interaction.guildId),
             ]);
             await interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
-                components: buildConfigView({ currentPassiveMode, currentChannels: channelIds, currentPaginate, currentPagerPrivate }),
+                components: buildConfigView({ currentPassiveMode, currentChannels: channelIds, currentPaginate, currentPagerPrivate, currentDetail }),
             });
 
             // Name the mode interaction explicitly: an admin who picks channels
