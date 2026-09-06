@@ -10,6 +10,10 @@ function swearWordFilter(text) {
 // injecting **bold**, [link](url), spoilers, etc. into the response.
 export function escapeMarkdown(text) {
     if (text === null || text === undefined) return '';
+    // `\[` is redundant inside a character class, but it is kept for symmetry
+    // with `\]`, which IS required there. Dropping one and not the other reads
+    // like an oversight and invites someone to "fix" the escape that matters.
+    // eslint-disable-next-line no-useless-escape
     return String(text).replace(/([\\*_`~|>#\[\]()])/g, '\\$1');
 }
 

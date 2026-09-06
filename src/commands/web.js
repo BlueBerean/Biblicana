@@ -20,7 +20,6 @@ import { stripModelMarkup } from '../utils/filter.js';
 import 'dotenv/config';
 
 const INTENT_MODEL = 'gpt-5.6-luna';
-const SUMMARY_MODEL = 'gpt-5.6-luna';
 // Was 10, which was safe when max_tokens counted only visible output. On the
 // GPT-5 family the budget also covers hidden reasoning tokens, so a tiny value
 // risks an empty completion. reasoning_effort:'none' should keep reasoning at

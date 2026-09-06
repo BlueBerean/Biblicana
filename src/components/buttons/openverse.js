@@ -520,7 +520,7 @@ const FATHERS_PREVIEW_LIMIT = 2500;
 const FATHERS_DROPDOWN_CAP = 25;              // Discord select-menu hard cap
 const FATHERS_COLLECTOR_TIMEOUT_MS = 1_800_000; // 30 min — matches /commentary
 
-async function handleFathers({ interaction, bookId, chapter, verse, bookName }) {
+async function handleFathers({ interaction, chapter, verse, bookName }) {
     const bookVariants = toCommentaryVariants(bookName);
     const rows = await fathersWrapper.getByPassage(bookVariants, chapter, verse);
     if (!rows || rows.length === 0) {

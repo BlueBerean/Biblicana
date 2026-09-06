@@ -239,12 +239,10 @@ async function main() {
 
     // --- map every row to Masoretic coordinates where one exists -----------
     const out = [];
-    const psalmOffsets = new Map();
 
     for (const r of rows) {
         const deut = DEUTERO[r.code];
         const canonical = USFM_TO_CANONICAL[r.code];
-        const bookId = canonical ? canonicalToId.get(canonical) : null;
         const displayBook = deut ? deut.name : canonical;
         const canon = deut ? 'deutero' : 'protestant';
         out.push({
@@ -262,7 +260,7 @@ async function main() {
     // knowledge only: chapter rearrangements and the large shifts that join or
     // split psalms. Small per-chapter offsets are NOT guessed here — they are
     // derived below from the text itself.
-    function baseTarget(code, mtCh, v, nVerses) {
+    function baseTarget(code, mtCh, v) {
         if (code === 'PSA') {
             const irr = PSALM_IRREGULAR[mtCh];
             if (irr?.split) {
@@ -293,7 +291,7 @@ async function main() {
     function scoreOffset(code, bookId, mtCh, nVerses, delta) {
         let n = 0, sum = 0;
         for (let v = 1; v <= nVerses; v++) {
-            const base = baseTarget(code, mtCh, v, nVerses);
+            const base = baseTarget(code, mtCh, v);
             if (!base) continue;
             const row = byLxx.get(`${code} ${base.chapter}:${base.verse + delta}`);
             const mt = mtText.get(`${bookId} ${mtCh}:${v}`);
@@ -344,7 +342,7 @@ async function main() {
             const nVerses = mtMax.get(`${bookId} ${mtCh}`);
             const delta = chosenOffset.get(`${code} ${mtCh}`) ?? 0;
             for (let v = 1; v <= nVerses; v++) {
-                const base = baseTarget(code, mtCh, v, nVerses);
+                const base = baseTarget(code, mtCh, v);
                 if (!base) { unmatched++; continue; }
                 const row = byLxx.get(`${code} ${base.chapter}:${base.verse + delta}`);
                 if (!row) { unmatched++; continue; }

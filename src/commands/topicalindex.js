@@ -16,7 +16,6 @@ import { categoriesWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import swearWordFilter from '../utils/filter.js';
-import splitString from '../utils/splitString.js';
 import 'dotenv/config';
 
 const VERSES_PER_PAGE = 8;
@@ -68,7 +67,7 @@ function buildShowAllPage({ topics, moreCount, pageIdx, totalPages, disableNav =
     return components;
 }
 
-function buildTopicSearchPage({ topic, rawTopic, pageEntries, pageIdx, totalPages, totalVerseCount, translation, disableNav = false }) {
+function buildTopicSearchPage({ rawTopic, pageEntries, pageIdx, totalPages, totalVerseCount, translation, disableNav = false }) {
     const pageInfo = totalPages > 1 ? ` · Page ${pageIdx + 1}/${totalPages}` : '';
 
     const container = new ContainerBuilder()

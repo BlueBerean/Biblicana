@@ -4,7 +4,6 @@ import {
     saveDailyVerseConfig,
     readDailyVerseConfig,
 } from '../../utils/dailyVerseConfig.js';
-import { readAiEnabled } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
 
 const DEFAULT_HOUR_UTC = 13;  // 8am CDT / 9am EDT / 6am PDT — morning in US

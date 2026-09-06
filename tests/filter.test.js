@@ -19,9 +19,9 @@ import { stripModelMarkup, trimToLastCompleteSentence } from '../src/utils/filte
 
 // U+E003 stands in for the invisible delimiter. The implementation matches the
 // whole private-use RANGE, not one codepoint, so the exact value is arbitrary.
-const D = '';
+const D = '\ue003';
 
-const hasInvisible = s => /[-​-‏﻿]/.test(s);
+const hasInvisible = s => /[\ue000-\uf8ff\u200b-\u200f\ufeff]/.test(s);
 
 test('recovers the readable name from a delimited entity token', () => {
     const input = `higher tribunal than him" (${D}entity${D}["book","The Great Divorce","cs lewis 1945"]${D}).`;
@@ -52,12 +52,12 @@ test('drops an unrecognised token shape instead of leaking boxes', () => {
 
 test('strips stray invisible characters on their own', () => {
     assert.equal(stripModelMarkup(`plain${D} text`), 'plain text');
-    assert.equal(stripModelMarkup('zero​width'), 'zerowidth');
+    assert.equal(stripModelMarkup('zero\u200bwidth'), 'zerowidth');
 });
 
 test('matches the whole private-use range, not one delimiter', () => {
     // A future model revision could pick a different invisible marker.
-    for (const cp of ['', '', '']) {
+    for (const cp of ['\ue000', '\ue003', '\uf8ff']) {
         const out = stripModelMarkup(`${cp}entity${cp}["book","Narnia","x"]${cp}`);
         assert.equal(out, 'Narnia', `failed for U+${cp.codePointAt(0).toString(16)}`);
     }
