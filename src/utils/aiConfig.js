@@ -308,7 +308,7 @@ export function buildAiConfigView({ currentEnabled = false, currentMemoryScope =
                 '• You **@mention** Biblicana in a server channel',
                 '• You **reply** to any of Biblicana\'s AI chat messages (no mention needed)',
                 '',
-                'Every response is grounded in Biblicana\'s own commentary database — **334 Early Church Fathers** and **six classical commentators** (Gill, Henry, Clarke, Jamieson-Fausset-Brown, Keil & Delitzsch, Tyndale). Reference a specific verse like `John 3:16` and the response will synthesize what Augustine, Adam Clarke, and others actually wrote — not GPT-4o-mini\'s generic training data.',
+                'Every response is grounded in Biblicana\'s own commentary database — **334 Early Church Fathers** and **six classical commentators** (Gill, Henry, Clarke, Jamieson-Fausset-Brown, Keil & Delitzsch, Tyndale). Reference a specific verse like `John 3:16` and the response will synthesize what Augustine, Adam Clarke, and others actually wrote — not a language model\'s generic training data.',
                 '',
                 '*Replies to Biblicana\'s structured outputs (welcome card, verse cards, commentary panels, etc.) are ignored — AI chat only engages on replies to its own conversational messages.*',
             ].join('\n')

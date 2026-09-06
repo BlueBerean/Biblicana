@@ -59,7 +59,11 @@ const RATE_LIMIT = { limit: 20, windowSeconds: 3600 };   // 20 AI chats / hour /
 const MEMORY_TURNS = 10;
 const MEMORY_TTL_SECONDS = 3600;
 
-// ── CONTEXT-WINDOW BUDGET (GPT-4o-mini has a 128K-token ceiling) ──────────
+// ── CONTEXT-WINDOW BUDGET ─────────────────────────────────────────────────
+//
+// Originally sized against a 128K-token ceiling (gpt-4o-mini, the model at the
+// time). The figures below are OUR caps, not the model's, so they hold across a
+// model swap - but re-check the ceiling itself before raising any of them.
 //
 // Per-call worst case at current caps:
 //   System prompt       ≈  4.5K chars / ~1.1K tokens   (static)
