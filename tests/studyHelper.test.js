@@ -18,7 +18,7 @@ import log from 'loglevel';
 log.setLevel('error');
 
 import {
-    classifyFather, fatherEraBadge, normalizeFatherName, extractVerseSlice,
+    classifyFather, fatherEraBadge, normalizeFatherName, extractVerseSlice, personsWrapper,
 } from '../src/utils/studyHelper.js';
 
 // --- normalizeFatherName ---------------------------------------------------
@@ -186,4 +186,66 @@ test('badge and classification never disagree', () => {
         const badge = fatherEraBadge(year);
         assert.equal(patristic, badge === null, `disagreement for year=${JSON.stringify(year)}`);
     }
+});
+
+// --- finding a person by a fuller name -------------------------------------
+//
+// The dataset keys people as "Peter_Mat.4.18" - canonical name then first
+// mention - and the search matched a PREFIX of that whole string. So "Peter"
+// worked while "Simon Peter" returned nothing, and the tool reported "no entry
+// in the dataset" for one of the best-attested figures in Scripture. The model
+// had behaved sensibly by supplying the fuller name; the more precise it was,
+// the more certainly it failed.
+
+test('an exact canonical name is reported as exact', async () => {
+    const { results, matchType } = await personsWrapper.search('Peter');
+    assert.equal(matchType, 'exact');
+    assert.ok(results.length > 0);
+    assert.match(results[0].unique_name, /^Peter_/);
+});
+
+test('a fuller name still finds the person, as a candidate', async () => {
+    const { results, matchType } = await personsWrapper.search('Simon Peter');
+    assert.equal(matchType, 'fuzzy', 'must not report "none" for a real figure');
+    assert.ok(
+        results.some(r => /^Peter_/.test(r.unique_name)),
+        'Peter should be among the candidates'
+    );
+});
+
+test('punctuation and honorifics do not defeat the search', async () => {
+    for (const query of ['Peter (Simon Peter)', 'the Apostle Peter', 'Saint Peter']) {
+        const { results, matchType } = await personsWrapper.search(query);
+        assert.notEqual(matchType, 'none', `"${query}" should still reach Peter`);
+        assert.ok(
+            results.some(r => /^Peter_/.test(r.unique_name)),
+            `"${query}" should return Peter`
+        );
+    }
+});
+
+test('LIKE wildcards in the pattern are escaped', async () => {
+    // REGRESSION: SQLite LIKE treats _ as a single-character wildcard, and this
+    // dataset uses literal underscores. Unescaped, "the_%" matched THEophilus
+    // and THEudas - so "the Apostle Peter" answered with Theophilus.
+    const { results } = await personsWrapper.search('the Apostle Peter');
+    const names = results.map(r => r.unique_name);
+    assert.ok(!names.some(n => /^Theophilus/.test(n)), 'must not match Theophilus');
+    assert.ok(!names.some(n => /^Theudas/.test(n)), 'must not match Theudas');
+});
+
+test('a name the dataset genuinely lacks reports none', async () => {
+    // The honest negative has to survive: widening the search must not turn
+    // every miss into a pile of unrelated candidates.
+    const { results, matchType } = await personsWrapper.search('Xyzzy');
+    assert.equal(matchType, 'none');
+    assert.equal(results.length, 0);
+});
+
+test('a single unmatched word does not fan out', async () => {
+    // One word has nothing to split on, so there is no second tier to try -
+    // returning the whole table because a name was misspelled would be worse
+    // than saying so.
+    const { matchType } = await personsWrapper.search('Qwertyuiop');
+    assert.equal(matchType, 'none');
 });

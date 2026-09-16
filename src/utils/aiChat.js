@@ -845,6 +845,29 @@ function parseSingleVerseRef(reference) {
     return r;
 }
 
+/**
+ * Did a tool actually find something?
+ *
+ * The Sources panel used to list every tool CALL, so a lookup that found
+ * nothing still rendered as provenance. Someone asked "who is Peter", the
+ * search missed, the answer correctly said the dataset had no entry - and the
+ * panel underneath claimed "Biblical figure: Peter (Simon Peter)" as a source.
+ * Provenance that contradicts the answer is worse than no provenance, since
+ * being checkable is the entire point of that panel.
+ *
+ * Every tool signals a miss the same way: a string beginning "Error" or "No ".
+ * That is a CONVENTION across ~30 return statements rather than a type, so
+ * tests/aiChatSources.test.js scans this file and fails if a new tool invents
+ * a different shape - otherwise the break would be silent and cosmetic, which
+ * is exactly how the original bug survived.
+ *
+ * "No" is matched as a whole word, so a successful lookup for Noah or Nod is
+ * not mistaken for a miss.
+ */
+export function toolFoundSomething(result) {
+    return !/^\s*(Error\b|No\b)/i.test(String(result ?? ''));
+}
+
 async function toolLookupTopic({ topic }) {
     if (!topic || typeof topic !== 'string') return 'Error: provide a "topic" string like "pride".';
     const refs = await categoriesWrapper.getRefsForTopic(topic, TOPIC_FETCH_CAP);
@@ -1129,7 +1152,8 @@ async function toolLookupPerson({ name }) {
     const query = String(name ?? '').trim();
     if (!query) return 'Error: a name is required.';
 
-    const rows = await personsWrapper.search(query).catch(() => []);
+    const { results: rows, matchType } = await personsWrapper.search(query)
+        .catch(() => ({ results: [], matchType: 'none' }));
     if (!rows?.length) return `No biblical figure named "${query}" in the dataset. Say so rather than answering from memory.`;
 
     // Names are NOT unique in this dataset — it disambiguates by first-mention
@@ -1149,7 +1173,16 @@ async function toolLookupPerson({ name }) {
     const extra = rows.length > ENTITY_RESULTS
         ? ` NOTE: ${rows.length} people share this name; ${ENTITY_RESULTS} shown. If the user meant a different one, say so.`
         : '';
-    return `Biblical figure "${query}" — ${entries.join(' | ')}.${extra} Reference any verses inline so Biblicana expands them.`;
+
+    // A fuzzy hit is CANDIDATES, not an answer. The dataset keys people by
+    // canonical name, so "Simon Peter" reaches Peter and the seven Simons by
+    // word — asserting the first row is the person asked about would be exactly
+    // the confident-wrong failure the lookup rules exist to prevent.
+    const caveat = matchType === 'fuzzy'
+        ? ` NOTE: no entry is named exactly "${query}"; these are near matches found word-by-word. Pick the one the user meant and use ITS name, or ask which they meant. Do not claim the dataset has no entry.`
+        : '';
+
+    return `Biblical figure "${query}" — ${entries.join(' | ')}.${extra}${caveat} Reference any verses inline so Biblicana expands them.`;
 }
 
 async function toolLookupPlace({ name }) {
@@ -1378,7 +1411,12 @@ async function callOpenAI(messages) {
                 // provenance line, never the answer itself.
                 let parsedArgs = {};
                 try { parsedArgs = JSON.parse(rawArgs || '{}'); } catch { /* provenance only */ }
-                toolCalls.push({ name, args: parsedArgs });
+                // A miss is not a source. See toolFoundSomething.
+                if (toolFoundSomething(result)) {
+                    toolCalls.push({ name, args: parsedArgs });
+                } else {
+                    logger.debug(`[AiChat tool] ${name} found nothing — omitted from Sources`);
+                }
                 convo.push({ role: 'tool', tool_call_id: call.id, content: result });
             }
             continue;

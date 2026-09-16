@@ -302,20 +302,76 @@ export function extractVerseSlice(text, chapter, verse, maxChars = 900) {
     return { text: source.slice(anchor.at, end).trim(), fromVerse: anchor.verse };
 }
 
+const PERSON_COLUMNS = `id, unique_name, uStrong, father, mother, siblings, partners,
+             offspring, tribe, sex, short_description, ext_description`;
+
 class PersonsWrapper {
     constructor() { this.db = personPlacesPromise; }
 
+    /**
+     * Find a biblical figure, widening the search rather than failing.
+     *
+     * The dataset keys people as "Peter_Mat.4.18" — canonical name, then first
+     * mention — and the original match was a PREFIX of that whole string. So
+     * "Peter" worked while "Simon Peter", "the Apostle Peter" and
+     * "Peter (Simon Peter)" all returned nothing, because the query has to
+     * BEGIN the canonical name. The model behaves sensibly and supplies the
+     * fuller, more precise name, and the more precise it was the more certainly
+     * it failed — then the tool reported "no entry in the dataset" for one of
+     * the best-attested figures in Scripture.
+     *
+     * Tier 1 is that same prefix match, kept intact: it is what stops the
+     * trailing reference matching junk, and an exact hit should never be
+     * diluted by near-misses.
+     *
+     * Tier 2 tries each WORD of the query as its own canonical prefix, so
+     * "Simon Peter" reaches both Peter and the seven Simons and the caller can
+     * choose. There is deliberately no stopword list to maintain: "the" and
+     * "Apostle" are not canonical names, so they match nothing and filter
+     * themselves out against the data.
+     *
+     * Returns { results, matchType } following dictionaryWrapper.search —
+     * 'fuzzy' means CANDIDATES, not an answer, and callers must say so rather
+     * than asserting the first row is the person who was asked about.
+     */
     async search(name) {
         const db = await this.db;
-        const underscored = name.replace(/\s+/g, '_');
-        return db.all(
-            `SELECT id, unique_name, uStrong, father, mother, siblings, partners, offspring, tribe, sex, short_description, ext_description
+        // SQLite LIKE treats _ as a SINGLE-CHARACTER WILDCARD, and this dataset
+        // keys people with literal underscores ("Peter_Mat.4.18"). Unescaped,
+        // the pattern "the_%" matches "THEophilus" and "THEudas" — which is
+        // how a search for "the Apostle Peter" returned Theophilus. Escaping
+        // makes every underscore mean the underscore the data actually has.
+        const canonicalPrefix = (q) => {
+            const literal = q.trim().replace(/\s+/g, '_');
+            const escaped = literal.replace(/[\\%_]/g, c => `\\${c}`);
+            return `${escaped}\\_%`;
+        };
+
+        const exact = await db.all(
+            `SELECT ${PERSON_COLUMNS}
              FROM persons
-             WHERE unique_name LIKE ? COLLATE NOCASE
+             WHERE unique_name LIKE ? ESCAPE '\\' COLLATE NOCASE
              ORDER BY unique_name
              LIMIT 25`,
-            [`${underscored}_%`]
+            [canonicalPrefix(name)]
         );
+        if (exact.length > 0) return { results: exact, matchType: 'exact' };
+
+        // Letters only, so "Peter (Simon Peter)" loses its punctuation. Single
+        // letters are dropped — an initial is not a canonical name and would
+        // match a large slice of the table.
+        const words = [...new Set((String(name).match(/[A-Za-z]+/g) ?? []).filter(w => w.length > 1))];
+        if (words.length < 2) return { results: [], matchType: 'none' };
+
+        const fuzzy = await db.all(
+            `SELECT ${PERSON_COLUMNS}
+             FROM persons
+             WHERE ${words.map(() => "unique_name LIKE ? ESCAPE '\\' COLLATE NOCASE").join(' OR ')}
+             ORDER BY unique_name
+             LIMIT 25`,
+            words.map(canonicalPrefix)
+        );
+        return { results: fuzzy, matchType: fuzzy.length > 0 ? 'fuzzy' : 'none' };
     }
 }
 

@@ -144,7 +144,7 @@ export default {
 
         try {
             logger.info(`[Persons Command] Search: "${rawName}"`);
-            const results = await personsWrapper.search(rawName);
+            const { results, matchType } = await personsWrapper.search(rawName);
 
             if (!results || results.length === 0) {
                 return interaction.editReply({
@@ -155,7 +155,7 @@ export default {
                 });
             }
 
-            logger.info(`[Persons Command] Found ${results.length} match(es)`);
+            logger.info(`[Persons Command] Found ${results.length} match(es), matchType=${matchType}`);
 
             const totalPages = results.length;
             const message = await interaction.editReply({
