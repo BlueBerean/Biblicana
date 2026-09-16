@@ -48,7 +48,15 @@ export const ALLOWED_DOMAINS = [
     // Non-Protestant traditions. Present so contested questions can be answered
     // from more than one tradition's own words rather than only from critiques
     // of it — see the cross-denominational note above.
-    'catholic.com',
+    'vatican.va',           // the Holy See itself — encyclicals, the Catechism,
+                            //   conciliar documents, the Nova Vulgata. Distinct
+                            //   from catholic.com below, which explains Catholic
+                            //   teaching without issuing it: this is the
+                            //   magisterium in its own words, which is what the
+                            //   cross-denominational note above is actually for.
+                            //   Subdomains (press.vatican.va, w2.vatican.va) are
+                            //   covered automatically.
+    'catholic.com',         // Catholic Answers — apologetics, not magisterial
     'oca.org',              // Orthodox Church in America
 
     // Individual authors. A separate group on purpose: everything above is an
