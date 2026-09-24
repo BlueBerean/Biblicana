@@ -56,6 +56,16 @@ class BibleWrapper {
         );
     }
 
+    // Every (book, chapter) with its last verse — 1,189 rows. Read ONCE by
+    // versification.js; nothing else should need it.
+    async getVersificationRows() {
+        const db = await this.db;
+        return db.all(
+            `SELECT CAST(bookID AS INTEGER) AS book, chapter, MAX(verse) AS lastVerse
+             FROM english GROUP BY bookID, chapter`
+        );
+    }
+
     async getVerses(book, chapter, startVerse, endVerse) {
         const db = await this.db;
         return db.all(

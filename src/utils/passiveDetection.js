@@ -12,6 +12,7 @@ import {
 import { bibleWrapper } from './bibleHelper.js';
 import { accentColor, footerLine } from './theme.js';
 import { parseScriptureRefs } from './scriptureRefs.js';
+import { getVersification } from './versification.js';
 import logger from './logger.js';
 
 // Known BibleBot application IDs. Source of truth is duplicated with
@@ -687,8 +688,12 @@ export async function buildPrivatePageComponents(refs, translation, groups, inde
  * Returns the sent message, or null if there was nothing to post or no
  * permission to post it. Never throws into a caller's reply path.
  */
-export async function postVersePager(anchorMessage, refs, database, { userId, translation: pinned, pagerPrivate } = {}) {
-    if (!refs?.length) return null;
+export async function postVersePager(anchorMessage, rawRefs, database, { userId, translation: pinned, pagerPrivate } = {}) {
+    // Filtered HERE as well as at passive entry, because AI answer expansion
+    // calls this directly with whatever the model cited - a wrong citation
+    // from the model must not become a card.
+    const refs = rawRefs?.length ? (await getVersification()).filter(rawRefs) : [];
+    if (!refs.length) return null;
 
     const me = anchorMessage.guild?.members?.me;
     if (!me || !canSend(anchorMessage.channel, me)) return null;
@@ -808,7 +813,13 @@ export async function handleMessageForPassiveDetection(message, mode, database) 
     if (message.author.bot) return;                     // Ignore bots including ourselves
     if (isProcessed(message.id)) return;
 
-    const refs = parseScriptureRefs(message.content);
+    const parsed = parseScriptureRefs(message.content);
+    if (parsed.length === 0) return;
+
+    // Drop references that do not exist. Unsolicited, so silently: "our church
+    // is part of Acts 29" is a network's name, not a request for a chapter
+    // Acts does not have, and it used to get a "couldn't load" card.
+    const refs = (await getVersification()).filter(parsed);
     if (refs.length === 0) return;
 
     markProcessed(message.id);

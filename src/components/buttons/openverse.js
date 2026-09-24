@@ -10,6 +10,7 @@ import {
     MessageFlags
 } from 'discord.js';
 import { bibleWrapper } from '../../utils/bibleHelper.js';
+import { getVersification } from '../../utils/versification.js';
 import { numbersToBook, getBookId, toOSIS3Codes, toCommentaryVariants } from '../../utils/bookNames.js';
 import { commentaryWrapper, crossRefWrapper, fathersWrapper, pickMarqueeFather, COMMENTATORS } from '../../utils/studyHelper.js';
 import { renderInterlinearEphemeral } from '../../utils/interlinearRenderer.js';
@@ -720,6 +721,21 @@ export default {
 
         if (!bookName || isNaN(chapter) || isNaN(startVerse) || isNaN(endVerse)) {
             return interaction.reply({ content: 'Invalid verse reference.', flags: MessageFlags.Ephemeral });
+        }
+
+        // A button can outlive the card that made it valid - an old card from
+        // before references were checked, or a replayed customId. The check is
+        // synchronous against a table loaded at startup, so it costs nothing
+        // ahead of the ack. 'chapter' carries a placeholder verse, so only the
+        // chapter is checked for it.
+        const versification = await getVersification();
+        const target = { bookId, bookName, chapter, startVerse: action === 'chapter' ? null : startVerse };
+        if (!versification.exists(target)) {
+            logger.info(`[OpenVerse Button] No such reference ${bookName} ${chapter}:${startVerse} action=${action}`);
+            return interaction.reply({
+                content: versification.describeMissing(target) ?? 'That verse does not exist.',
+                flags: MessageFlags.Ephemeral,
+            });
         }
 
         const translation = await userTranslation(database, interaction.user.id);

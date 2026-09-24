@@ -11,6 +11,7 @@ import {
     MessageFlags,
 } from 'discord.js';
 import { parseScriptureRefs } from '../utils/scriptureRefs.js';
+import { getVersification } from '../utils/versification.js';
 import { bibleWrapper } from '../utils/bibleHelper.js';
 import { toCommentaryVariants, toOSIS3Codes } from '../utils/bookNames.js';
 import { fathersWrapper, crossRefWrapper, commentaryWrapper, pickMarqueeFather } from '../utils/studyHelper.js';
@@ -142,6 +143,18 @@ async function fetchExpansionData(ref, translation) {
 // gives each option its own 100-char value, so this stays stateless.
 export function reactionRefValue(ref) {
     return `${ref.bookId}:${ref.chapter}:${ref.startVerse ?? 0}:${ref.endVerse ?? 0}`;
+}
+
+// Psalm 151 is the one missing chapter people are likely to mean on purpose:
+// it is real, it is in the Septuagint, and it is not in the Hebrew canon.
+// Deliberately does NOT point at /lxx - neither /lxx nor lookup_lxx can reach
+// it yet, since its rows have no Masoretic address to look it up by.
+export function missingReferenceLine(versification, ref) {
+    const why = versification.describeMissing(ref) ?? `I couldn't find ${refLabel(ref)}.`;
+    if (ref.bookId === 19 && ref.chapter === 151) {
+        return `${why} Psalm 151 is found in the Septuagint, not in the Hebrew Psalter.`;
+    }
+    return why;
 }
 
 export async function buildExpansionReply(ref, translation, siblings = []) {
@@ -325,10 +338,27 @@ export default {
             if (!me) return;
             if (!message.channel.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)) return;
 
-            const refs = parseScriptureRefs(extractSearchText(message));
-            if (refs.length === 0) return;
+            const parsed = parseScriptureRefs(extractSearchText(message));
+            if (parsed.length === 0) return;
+
+            const versification = await getVersification();
+            const refs = versification.filter(parsed);
 
             markResponded(message.id);
+
+            // Nothing in the message exists. Unlike autopost this was ASKED
+            // for - someone pressed the reaction - so silence would read as the
+            // bot being broken. One line saying why, and no study buttons: the
+            // card this used to post offered commentary on "Romans 17:1".
+            if (refs.length === 0) {
+                const missing = parsed[0];
+                logger.info(`[PassiveReaction] no such reference ${refLabel(missing)} guild=${message.guild.id} clicker=${user.id}`);
+                await message.reply({
+                    content: missingReferenceLine(versification, missing),
+                    allowedMentions: { repliedUser: false },
+                });
+                return;
+            }
 
             const ref = refs.find(r => r.startVerse != null) ?? refs[0];
             logger.info(`[PassiveReaction] posting ref=${refLabel(ref)} guild=${message.guild.id} clicker=${user.id}`);
