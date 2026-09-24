@@ -57,6 +57,18 @@ const bsbFootnotesPromise = (async () => {
     }
 })();
 
+// Optional for the same reason: Haley's "Alleged Discrepancies" (1874), built by
+// src/buildDifficulties.js. Absent, grounding and lookup_difficulty go without.
+const difficultiesPromise = (async () => {
+    const filePath = path.join(__dirname, '../..', 'data', 'difficulties.sqlite');
+    try {
+        return await open({ filename: filePath, driver: sqlite3.Database, mode: sqlite3.OPEN_READONLY });
+    } catch (err) {
+        logger.warn(`[Difficulties] data/difficulties.sqlite unavailable (${err.message}) - Haley will not be consulted`);
+        return null;
+    }
+})();
+
 export const COMMENTATORS = [
     { id: 'john-gill',              label: "John Gill" },
     { id: 'matthew-henry',          label: "Matthew Henry" },
@@ -755,6 +767,165 @@ class BsbFootnotesWrapper {
 }
 
 export const bsbFootnotesWrapper = new BsbFootnotesWrapper();
+
+export const HALEY_CITATION = 'John W. Haley, An Examination of the Alleged Discrepancies of the Bible (1874)';
+export const TORREY_CITATION = 'R. A. Torrey, Difficulties and Alleged Errors and Contradictions in the Bible (1907)';
+export const difficultyCitation = source => (source === 'torrey' ? TORREY_CITATION : HALEY_CITATION);
+export const difficultyAuthor = source => (source === 'torrey' ? 'Torrey' : 'Haley');
+
+/**
+ * The part of a Haley entry that is about ONE verse. Haley bundles related
+ * cases - the Ahaziah entry runs on through forty regnal-year reconciliations -
+ * so the opening of a long entry is often about something else. References
+ * are stored in the body in modern form ("2 Kings 15:1"), so the passage can
+ * be found by its chapter:verse and cut at sentence boundaries around it.
+ */
+/**
+ * Where the body mentions chapter:verse - including inside a verse LIST.
+ * Torrey writes "Gen. 4:16, 17" and Haley "14:2, 17, 23"; a search for the
+ * literal "4:17" finds neither, and the excerpt then fell back to the opening
+ * of the entry, cutting off the sentence that carried the argument.
+ */
+export function findVerseMention(body, chapter, verse) {
+    const LIST = new RegExp(`\\b${chapter}:\\s*(\\d+(?:\\s*[-–]\\s*\\d+)?(?:\\s*,\\s*\\d+(?:\\s*[-–]\\s*\\d+)?)*)`, 'g');
+    for (const m of body.matchAll(LIST)) {
+        for (const part of m[1].split(',')) {
+            const [a, b] = part.split(/[-–]/).map(x => Number.parseInt(x, 10));
+            if (verse >= a && verse <= (Number.isFinite(b) ? b : a)) return m.index;
+        }
+    }
+    return -1;
+}
+
+export function difficultyExcerpt(body, chapter, verse, limit = 700) {
+    if (!body || body.length <= limit) return body ?? '';
+    const at = verse != null ? findVerseMention(body, chapter, verse) : -1;
+    if (at < 0) return `${body.slice(0, limit - 1).replace(/\s+\S*$/, '')}…`;
+    let from = Math.max(0, at - Math.floor(limit / 3));
+    const sentenceStart = body.lastIndexOf('. ', at);
+    if (sentenceStart >= from - 200 && sentenceStart >= 0) from = sentenceStart + 2;
+    const slice = body.slice(from, from + limit);
+    return `${from > 0 ? '…' : ''}${slice.replace(/\s+\S*$/, '')}…`;
+}
+
+class DifficultiesWrapper {
+    constructor() { this.db = difficultiesPromise; }
+
+    /**
+     * Entries whose references cover this verse. PRIMARY first - an entry
+     * whose title and quoted texts are this verse is ABOUT it; one that cites
+     * it in passing is not - then shorter reference lists, which are more
+     * focused. Pass primaryOnly for automatic grounding, where a passing
+     * mention would be noise on every verse Haley ever cited.
+     */
+    async getForVerse(bookId, chapter, verse, { primaryOnly = false, limit = 2 } = {}) {
+        const db = await this.db;
+        if (!db) return [];
+        return db.all(
+            `SELECT e.id, e.source, e.title, e.section, e.body, e.page, MAX(r.is_primary) AS is_primary,
+                    (SELECT COUNT(*) FROM difficulty_refs x WHERE x.entry_id = e.id) AS ref_count
+             FROM difficulty_refs r JOIN difficulty_entries e ON e.id = r.entry_id
+             WHERE r.book_id = ? AND r.chapter = ?
+               AND (? IS NULL OR r.start_verse IS NULL OR (r.start_verse <= ? AND r.end_verse >= ?))
+               ${primaryOnly ? 'AND r.is_primary = 1' : ''}
+             GROUP BY e.id
+             ORDER BY is_primary DESC, ref_count ASC
+             LIMIT ?`,
+            // A chapter-only reference ("Judges 11") matches the whole chapter.
+            // It used to be checked as verse 1, and Torrey's Jephthah chapter
+            // cites 11:31 and 11:37-39, so "Judges 11" found nothing.
+            [bookId, chapter, verse ?? null, verse ?? null, verse ?? null, limit]
+        );
+    }
+
+    /**
+     * Every chunk of one Torrey chapter, in order. Torrey writes ARGUMENTS, and
+     * the chunking is ours, not his: one chunk of the Cain chapter stops just
+     * before "Cain doubtless had his wife before going to the Land of Nod",
+     * the sentence that carries the point, and the model filled the gap by
+     * inverting Genesis 4. So a Torrey hit is answered with its chapter.
+     */
+    async getChapterParts(source, section) {
+        const db = await this.db;
+        if (!db || !section) return [];
+        return db.all(
+            'SELECT id, source, title, section, body, page FROM difficulty_entries WHERE source = ? AND section = ? ORDER BY id',
+            [source, section]
+        );
+    }
+
+    /**
+     * Keyword search, weighted by how RARE each word is in the book (IDF): in
+     * "how did Judas die", "judas" is in a handful of entries and "die" in
+     * dozens, so a flat count ranked Aaron's death above Judas's. Title hits
+     * count three times. The whole book is ~1 MB, so it is indexed in memory
+     * once, on first use.
+     */
+    async search(query, limit = 3) {
+        const docs = await this.#docs();
+        if (!docs.length) return [];
+        const terms = [...new Set((String(query).toLowerCase().match(/[a-z]{3,}/g) ?? []))]
+            .filter(t => !STOPWORDS.has(t)).slice(0, 8);
+        if (terms.length === 0) return [];
+        const hit = (text, t) => new RegExp(`\\b${t}`).test(text);
+        const idf = Object.fromEntries(terms.map(t => {
+            const df = docs.filter(d => hit(d.lowTitle, t) || hit(d.lowBody, t)).length;
+            return [t, df ? Math.log(1 + docs.length / df) : 0];
+        }));
+        return docs
+            .map(d => ({ ...d, score: terms.reduce((sum, t) => sum + idf[t] * ((hit(d.lowTitle, t) ? 3 : 0) + (hit(d.lowBody, t) ? 1 : 0)), 0) }))
+            .filter(d => d.score > 0)
+            .sort((x, y) => y.score - x.score || x.body.length - y.body.length)
+            .slice(0, limit)
+            .map(d => ({ id: d.id, source: d.source, title: d.title, section: d.section, body: d.body, page: d.page, score: d.score }));
+    }
+
+    async #docs() {
+        if (!this.docsPromise) {
+            this.docsPromise = this.db.then(db => (db
+                ? db.all('SELECT id, source, title, section, body, page FROM difficulty_entries')
+                : []))
+                .then(rows => rows.map(r => ({ ...r, lowTitle: r.title.toLowerCase(), lowBody: r.body.toLowerCase() })))
+                .catch(() => { this.docsPromise = null; return []; });
+        }
+        return this.docsPromise;
+    }
+}
+
+const STOPWORDS = new Set(['the', 'and', 'bible', 'contradiction', 'contradictions', 'contradict', 'does', 'did', 'was', 'who', 'why', 'how', 'what', 'with', 'for', 'say', 'says', 'said', 'about', 'discrepancy', 'discrepancies', 'versus', 'between', 'this', 'that']);
+
+/**
+ * Choose among entries that all treat a verse as primary. A verse can sit in
+ * more than one of Haley's cases - 2 Kings 8:26 is both "Ahaziah's age, 22 or
+ * 42" and "Ahaziah's grandfather, Omri or Ahab" - and nothing about the verse
+ * can decide between them. The question can: pick the entry whose title
+ * shares the most words, and numbers, with what the person actually wrote.
+ * Falls back to the given order when nothing overlaps.
+ */
+export function pickDifficulty(rows, text) {
+    if (!rows?.length) return null;
+    const NUMBER_WORDS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+    const tokens = s => {
+        const low = String(s ?? '').toLowerCase();
+        const set = new Set((low.match(/[a-z]{3,}/g) ?? []).filter(w => !STOPWORDS.has(w)));
+        for (const n of low.match(/\d+/g) ?? []) set.add(n);
+        // "twenty-two" in Haley's titles against "22" in a modern question
+        for (const [, tens, unit] of low.matchAll(/(twenty|thirty|forty|fifty)-(two|three|four|five|six|seven|eight|nine)/g)) {
+            set.add(String(NUMBER_WORDS[tens] + NUMBER_WORDS[unit]));
+        }
+        return set;
+    };
+    const asked = tokens(text);
+    let best = rows[0], bestScore = 0;
+    for (const r of rows) {
+        const t = tokens(r.title);
+        const score = [...t].filter(w => asked.has(w)).length;
+        if (score > bestScore) { best = r; bestScore = score; }
+    }
+    return best;
+}
+
+export const difficultiesWrapper = new DifficultiesWrapper();
 export const fathersWrapper = new FathersWrapper();
 export const personsWrapper = new PersonsWrapper();
 export const placesWrapper = new PlacesWrapper();

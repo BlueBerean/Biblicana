@@ -28,6 +28,7 @@ const TOOL_LABELS = {
     lookup_place: 'Place',
     lookup_dictionary: 'Bible dictionary',
     lookup_profile: 'Encyclopedic article',
+    lookup_difficulty: 'Bible difficulties (Haley / Torrey)',
     // Normally filtered out of "Looked up" in favour of the linked "From the
     // web" section; kept here so a record written before that section existed
     // still renders a readable label rather than a raw tool name.
@@ -55,6 +56,7 @@ function buildSourceLines(payload) {
     const scripture = [];
     const commentary = [];
     const fathers = [];
+    const difficulties = [];
 
     for (const entry of payload.rag ?? []) {
         if (entry.translation) scripture.push(`${entry.reference} — ${entry.translation}`);
@@ -62,6 +64,12 @@ function buildSourceLines(payload) {
         if (entry.father) {
             const work = tidyWorkTitle(entry.father.work);
             fathers.push(`${entry.father.name}${work ? ` — ${work}` : ''} (on ${entry.reference})`);
+        }
+        if (entry.difficulty) {
+            const book = entry.difficulty.source === 'torrey'
+                ? 'Torrey, Difficulties in the Bible (1907)'
+                : 'Haley, Alleged Discrepancies of the Bible (1874)';
+            difficulties.push(`${book}, p. ${entry.difficulty.page ?? '?'} — "${entry.difficulty.title}" (on ${entry.reference})`);
         }
     }
 
@@ -91,6 +99,7 @@ function buildSourceLines(payload) {
     if (scripture.length) sections.push({ heading: 'Scripture', items: scripture });
     if (commentary.length) sections.push({ heading: 'Commentary', items: commentary });
     if (fathers.length) sections.push({ heading: 'Early Church', items: fathers });
+    if (difficulties.length) sections.push({ heading: 'Bible difficulties', items: difficulties });
     if (lookups.length) sections.push({ heading: 'Looked up', items: lookups });
     if (webCited.length) sections.push({ heading: 'From the web', items: webCited });
     // Deliberately a DIFFERENT heading. Without inline citations all we know is

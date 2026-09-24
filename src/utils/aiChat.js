@@ -5,12 +5,13 @@ import {
     ButtonStyle,
 } from 'discord.js';
 import { parseScriptureRefs } from './scriptureRefs.js';
+import { getVersification } from './versification.js';
 import { postVersePager, DEFAULT_TRANSLATION } from './passiveDetection.js';
 import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
 import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
 import {
     commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
-    bsbFootnotesWrapper,
+    bsbFootnotesWrapper, difficultiesWrapper, difficultyExcerpt, pickDifficulty, difficultyCitation, difficultyAuthor,
     personsWrapper, placesWrapper, dictionaryWrapper, displayName, classifyFather,
     extractVerseSlice, lxxWrapper,
 } from './studyHelper.js';
@@ -36,7 +37,7 @@ const MODEL = 'gpt-5.6-luna';
 //
 // Bump the suffix whenever the static prefix changes, so a stale cache can
 // never be matched against a prompt that no longer exists.
-const PROMPT_CACHE_KEY = 'biblicana-aichat-v16';  // v16: BSB footnotes in grounding; never claim a translation failed to mark something; grant a fact inside the rebuttal - v15 invented a missing footnote
+const PROMPT_CACHE_KEY = 'biblicana-aichat-v20';  // v20: cite only a source's OWN verses inside its attribution - v19 credited Torrey with five verses he never cites
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 // Sized to Discord's single plain-message ceiling, NOT picked freely. At the
 // ~3.5 chars/token this model averages in English prose, 550 tokens is ~1925
@@ -206,7 +207,7 @@ You are a Christian bot with a Christian voice. Defend the historic faith confid
 - "Why is Christianity true?" → Give the answer. The historical case for the resurrection (empty tomb, post-mortem appearances, transformed disciples, 1 Cor 15:3-7 creed), the coherence of Trinitarian monotheism, Scripture's internal consistency.
 - Challenges TO Christianity (problem of evil, historical Jesus, contradictions) → Steelman first, then respond with the historic Christian answer. Be honest about mystery (theodicy isn't tidy).
 
-ALLEGED CONTRADICTIONS — call them alleged, answer with the evidence, land plainly. Most have standard answers: different events, different vantage points, rounding, idiom, or a copyist's slip in one line that a parallel passage preserves correctly. Give the MECHANISM, not just the verdict: "a copying error" with nothing under it collapses at the first push; the actual letters, the parallel text and the verse's own internal evidence do not. Use lookup_original when the answer depends on the Hebrew or Greek. Up to ~800 characters is fine here. Where the honest answer is thinner, say so and still land on Scripture's reliability — never invent a tidy resolution, because a made-up answer that gets taken apart does more damage than an admitted difficulty.
+ALLEGED CONTRADICTIONS — call them alleged, answer with the evidence, land plainly. Most have standard answers: different events, different vantage points, rounding, idiom, or a copyist's slip in one line that a parallel passage preserves correctly. Give the MECHANISM, not just the verdict: "a copying error" with nothing under it collapses at the first push; the actual letters, the parallel text and the verse's own internal evidence do not. Use lookup_original when the answer depends on the Hebrew or Greek. Up to ~800 characters is fine here. Haley's "Alleged Discrepancies of the Bible" (1874) and Torrey's "Difficulties in the Bible" (1907) are your classic references for these: Haley may arrive in grounding, and lookup_difficulty searches both. Cite them BY NAME AND PAGE ("Haley, p. 336"). Treat them as the classic answers and say so in YOUR voice where it matters - never attribute to Haley or Torrey a caveat about their own age that they did not write. Use its mechanism, not just its verdict. Where the honest answer is thinner, say so and still land on Scripture's reliability — never invent a tidy resolution, because a made-up answer that gets taken apart does more damage than an admitted difficulty.
 
 A SCRIBAL ERROR IS THE ORTHODOX ANSWER, NOT A CONCESSION. Inspiration belongs to the original writings; copies can carry slips, and a parallel passage or the manuscript tradition shows what was written. "The transmitted text of 2 Sam 21:19 has an error" states the Christian position. Never follow it with "so the contradiction is real": a copyist's mistake is not a contradiction in Scripture.
 
@@ -338,6 +339,7 @@ When you receive a system message with "The user referenced one or more verses" 
 2b. AND DO NOT SHRINK A SOURCE'S ARGUMENT. The opposite failure is just as real. When the grounding gives the MECHANISM — which words slipped, which letters were confused, what the parallel passage reads, who demonstrated it — that mechanism is the substance, and you use it. Clarke on 2 Sam 21:19 names "oregim" slipping from one line into the other and "beith hallachmi" corrupted from "eth Lachmi", and calls it plain; reducing that to "likely scribal confusion", or calling the mechanism "debated" when your own source calls it plain, throws away the answer you were handed. Brevity is achieved by cutting framing, never by cutting the evidence.
 
 3. NO HALLUCINATED CLAIMS ABOUT WHAT A COMMENTATOR SAID. Before writing "Clarke emphasizes X" or "Augustine highlights Y," verify that X or Y actually appears in the grounding text you were given. If it doesn't, don't claim it. When the grounding is thin, acknowledge it: "Clarke's note here is brief — he just points out that..."
+   THE SAME GOES FOR VERSE REFERENCES. Inside "Torrey argues…", "Haley notes…" or "Clarke says…", cite only verses that appear in THAT source's text. Adding supporting verses of your own is good; attaching them to someone who never cited them is a false citation, and it is the kind that survives a casual check and fails a careful one - a reader who opens Torrey at p. 47 to find Deut 7:1-4 will not find it. Put your own verses in your own voice, outside the attribution.
 
 4. DIRECT QUOTES ONLY FROM THE GROUNDING. If you use a quoted phrase attributed to a commentator, it must appear verbatim (or near-verbatim) in the grounding you were given. Do not fabricate quotes.
 
@@ -532,11 +534,15 @@ async function buildRagContext(userMessage, { carried = false } = {}) {
             ? `${ref.bookName} ${ref.chapter}:${ref.startVerse}-${ref.endVerse}`
             : `${ref.bookName} ${ref.chapter}:${ref.startVerse}`;
 
-        const [verseRows, clarkeRow, fathers, bsbNotes] = await Promise.all([
+        const [verseRows, clarkeRow, fathers, bsbNotes, difficulties] = await Promise.all([
             bibleWrapper.getVerses(ref.bookId, ref.chapter, ref.startVerse, ref.endVerse ?? ref.startVerse).catch(() => []),
             commentaryWrapper.getVerseCommentary('adam-clarke', toOSIS3Codes(ref.bookId), ref.chapter, ref.startVerse).catch(() => null),
             fathersWrapper.getByPassage(toCommentaryVariants(ref.bookName), ref.chapter, ref.startVerse).catch(() => []),
             bsbFootnotesWrapper.getNotes(ref.bookId, ref.chapter, ref.startVerse, ref.endVerse ?? ref.startVerse).catch(() => []),
+            // PRIMARY only: an entry whose title and quoted texts are this
+            // verse. Haley cites ~2,500 verses in passing; grounding on those
+            // would attach a digression about something else to every one.
+            difficultiesWrapper.getForVerse(ref.bookId, ref.chapter, ref.startVerse, { primaryOnly: true, limit: 3 }).catch(() => []),
         ]);
 
         const gathered = [];
@@ -580,6 +586,17 @@ async function buildRagContext(userMessage, { carried = false } = {}) {
             lines.push(`${leadRow.father_name}${sourceAttribution} on ${refLabel}: "${leadRow.txt.slice(0, MAX_RAG_CHARS_PER_SOURCE)}"`);
             gathered.push(leadRow.father_name);
             entry.father = { name: leadRow.father_name, work: leadRow.source_title || null };
+        }
+
+        // Haley (1874) on an alleged discrepancy this verse is part of. Labelled
+        // with its date and page so it is cited as the 19th-century
+        // harmonisation it is, not as a present-day authority.
+        const haley = pickDifficulty(difficulties, userMessage);
+        if (haley) {
+            const excerpt = difficultyExcerpt(haley.body, ref.chapter, ref.startVerse, MAX_RAG_CHARS_PER_SOURCE);
+            lines.push(`${difficultyCitation(haley.source)}, p. ${haley.page ?? '?'}, on the alleged discrepancy "${haley.title}": "${excerpt}"`);
+            gathered.push('Haley');
+            entry.difficulty = { source: haley.source, title: haley.title, page: haley.page };
         }
 
         if (gathered.length > 0) {
@@ -862,6 +879,20 @@ const AI_TOOLS = [
     {
         type: 'function',
         function: {
+            name: 'lookup_difficulty',
+            description: 'Look up an ALLEGED CONTRADICTION or Bible difficulty in two classic works: Haley\'s "Alleged Discrepancies of the Bible" (1874) - ~500 verse-keyed cases (who killed Goliath, how Judas died, Ahaziah\'s age) - and Torrey\'s "Difficulties in the Bible" (1907) - essays on the big objections, MORAL ones included (Cain\'s wife, the slaughter of the Canaanites, Jephthah\'s daughter, the imprecatory psalms, God hardening Pharaoh\'s heart, Joshua\'s long day, Jonah, the genealogies of Jesus, whether Jesus and Paul were mistaken about His return). Pass a REFERENCE ("2 Samuel 21:19") for an exact match, or keywords for a topic. Both wrote in older English, so if keywords miss, try their words ("beasts" not "animals") or a reference.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string', description: 'A verse reference like "Matthew 27:5", or keywords like "Judas death".' },
+                },
+                required: ['query'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'lookup_profile',
             description: 'Fetch a long-form encyclopedic ARTICLE (Tyndale) on a person, group, place, or theme — substantially fuller than lookup_person or lookup_dictionary. Use only when a short entry is not enough, or for GROUPS and movements such as "Pharisees" or "Samaritans", which the person and place datasets do not cover.',
             parameters: {
@@ -904,6 +935,7 @@ const TOOLS_GUIDANCE = `You can look things up before answering:
 - lookup_person(name): who a biblical figure was — relations, tribe, first mention. Use for "who was X". ALWAYS call it before describing a person; never answer a biography from memory. Names are not unique, so if several match, say which one you mean.
 - lookup_place(name): a biblical location — description, coordinates, first mention. Use for "where is X". ALWAYS call it for a location question, including ones that feel like common knowledge.
 - lookup_dictionary(term): Easton's/Smith's definition of an ENGLISH biblical term. Use for "what does propitiation mean". NEVER for a Greek or Hebrew word — that is lookup_original / lookup_strongs.
+- lookup_difficulty(query): Haley's Alleged Discrepancies (1874) and Torrey's Difficulties in the Bible (1907) on a classic contradiction or objection - by reference or keywords. Returns the passage, whose book it is, and the page to cite.
 - lookup_profile(subject): a long-form encyclopedic article. Use when a short entry is not enough, or for GROUPS and movements (Pharisees, Samaritans, Essenes) that the person and place datasets do not cover.
 - search_web(query): searches a curated list of trusted Christian sites. The ONLY tool that leaves the local library, and the slowest. LAST RESORT — use it when the local tools genuinely cannot answer (a ministry's current position, a recent event, a topic with no entry anywhere above), never for scripture, commentary, Fathers, word studies, cross-references or dictionary definitions.
 
@@ -922,9 +954,11 @@ Match your tool use to what the user actually asked for:
 
 - They asked WHO or WHERE ("who was Nicodemus", "where is Patmos", "tell me about Capernaum"): call lookup_person or lookup_place and nothing else. If the subject is a GROUP or movement rather than an individual or a location (Pharisees, Samaritans, Essenes, Levites), those datasets won't have it — call lookup_profile instead.
 
+- They raise an ALLEGED CONTRADICTION or classic Bible difficulty ("who killed Goliath", "how did Judas die", "2 Kings 8:26 says 22 but Chronicles says 42") - INCLUDING a MORAL objection to a biblical story, which is the same kind of question ("how could God command the slaughter of the Canaanites", Jephthah's daughter, the imprecatory psalms, God hardening Pharaoh's heart, lying spirits, Joshua's long day, Jonah and the fish, where Cain got his wife): call lookup_difficulty FIRST, with the reference if they gave one. It is local and fast, and it is the classic harmonisation with a page number. If grounding already carries a Haley entry for the verse, you have it - do not call again. Call search_web only if Haley has nothing.
+
 - They asked what an ENGLISH term MEANS ("what does propitiation mean", "define covenant"): call lookup_dictionary. If the word is GREEK or HEBREW, that is lookup_original / lookup_strongs instead — never use the English dictionary to state what an original-language word means.
 
-- The question needs something OUTSIDE the library — current events, a ministry or denomination's present-day position, a modern controversy, or anything the tools above returned nothing for: call search_web. Try the local tools FIRST; search_web is slower and its sources are secondary literature rather than the primary texts and commentary you already have. When you use it, name the sites you drew on, and say plainly if the trusted sites don't cover the question rather than filling the gap from memory. ALSO call it for a NAMED CLASSIC OBJECTION — a specific passage alleged to be a failed prophecy, a contradiction, a moral difficulty — when the verse grounding you were handed addresses a DIFFERENT point than the objection does. Chrysostom on the worth of the soul does not answer a question about timing, and stretching an off-target source into an argument from silence ("he does not treat it as a failed timetable") is weaker than saying nothing at all.
+- The question needs something OUTSIDE the library — current events, a ministry or denomination's present-day position, a modern controversy, or anything the tools above returned nothing for: call search_web. Try the local tools FIRST; search_web is slower and its sources are secondary literature rather than the primary texts and commentary you already have. When you use it, name the sites you drew on, and say plainly if the trusted sites don't cover the question rather than filling the gap from memory. ALSO call it, AFTER lookup_difficulty has come up empty, for a NAMED CLASSIC OBJECTION — a specific passage alleged to be a failed prophecy, a contradiction, a moral difficulty — when the verse grounding you were handed addresses a DIFFERENT point than the objection does. Chrysostom on the worth of the soul does not answer a question about timing, and stretching an off-target source into an argument from silence ("he does not treat it as a failed timetable") is weaker than saying nothing at all.
 
 Whichever path, prefer what the tools return over your own training.
 
@@ -1362,6 +1396,88 @@ async function toolLookupDictionary({ term }) {
     return `Dictionary lookup "${query}"${caveat} — ${entries.join(' | ')}. Cite the dictionary by name (Easton's or Smith's).`;
 }
 
+const DIFFICULTY_TOOL_CHARS = 900;
+const TORREY_CHAPTER_CHARS = 4500;   // the Cain chapter is ~4,000 in three parts; 3,200 returned only the first
+
+/**
+ * A Torrey chapter as one text: all of it when it fits, otherwise the hit
+ * chunk with its neighbours - the one before (the setup) and the ones after
+ * (the conclusion) - grown outward until the budget is used, and marked where
+ * it was cut so the model does not invent the missing part.
+ */
+export function torreyChapterText(parts, hitId, budget) {
+    if (!parts?.length) return null;
+    const i = Math.max(0, parts.findIndex(p => p.id === hitId));
+    let lo = i, hi = i;
+    let used = parts[i].body.length;
+    let grew = true;
+    while (grew) {
+        grew = false;
+        const next = hi + 1 < parts.length ? parts[hi + 1].body.length : Infinity;
+        const prev = lo > 0 ? parts[lo - 1].body.length : Infinity;
+        // Prefer what comes AFTER: a conclusion missing is worse than a setup missing.
+        if (used + next <= budget) { hi++; used += next; grew = true; } else if (used + prev <= budget) { lo--; used += prev; grew = true; }
+    }
+    const body = parts.slice(lo, hi + 1).map(p => p.body).join(' ');
+    const before = lo > 0 ? '[...earlier part of the chapter not shown...] ' : '';
+    const after = hi < parts.length - 1 ? ' [...the chapter continues; the rest is not shown...]' : '';
+    return `${before}${body}${after}`;
+}
+
+export async function toolLookupDifficulty({ query }) {
+    const q = String(query ?? '').trim();
+    if (!q) return 'Error: a query is required - a reference like "2 Samuel 21:19" or keywords like "Judas death".';
+
+    const versification = await getVersification();
+    const refs = versification.filter(parseScriptureRefs(q));
+    const ref = refs.find(r => r.startVerse != null) ?? refs[0];
+    // A query can carry a reference AND the topic: "Jephthah's daughter
+    // sacrifice Judges 11". Using only the reference threw the topic away -
+    // it missed at first, and once chapter-wide matching was added it found
+    // Haley entries that merely CITE Judges 11 (the Edomites, Heshbon). So when
+    // both are present, both are searched: an entry satisfying both wins, and
+    // failing any overlap the WORDS win, because they name what was asked.
+    const words = ref ? q.replace(ref.raw ?? '', ' ') : q;
+    const hasWords = (words.toLowerCase().match(/[a-z]{4,}/g) ?? []).length > 0;
+    const byRef = ref
+        ? await difficultiesWrapper.getForVerse(ref.bookId, ref.chapter, ref.startVerse, { limit: 10 }).catch(() => [])
+        : [];
+    const byWords = hasWords ? await difficultiesWrapper.search(words, 5).catch(() => []) : [];
+    let rows;
+    if (byRef.length && byWords.length) {
+        const refIds = new Set(byRef.map(r => r.id));
+        const both = byWords.filter(r => refIds.has(r.id));
+        rows = (both.length ? both : byWords).slice(0, 2);
+    } else {
+        rows = (byRef.length ? byRef : byWords).slice(0, 2);
+    }
+
+    if (!rows.length) {
+        return `No entry in Haley's Alleged Discrepancies or Torrey's Difficulties for "${q}". ${ref ? 'Try keywords instead of the reference, or' : 'Try a verse reference or Haley\'s own wording, or'} say the classic sources you have do not treat it - do not answer from memory as though Haley had.`;
+    }
+    // A Torrey hit comes back as its CHAPTER, in order, because his chapters
+    // are single arguments that our chunking split; one chunk of one is an
+    // argument with its conclusion missing. Only the top hit gets this - a
+    // second result is still an excerpt, so two essays never flood the context.
+    const [top] = rows;
+    if (top.source === 'torrey') {
+        const chapter = await difficultiesWrapper.getChapterParts('torrey', top.section).catch(() => []);
+        const text = torreyChapterText(chapter, top.id, TORREY_CHAPTER_CHARS);
+        if (text) {
+            return `${difficultyCitation('torrey')}, chapter "${top.section}" (from p. ${chapter[0]?.page ?? top.page ?? '?'}): ${text} Cite this as Torrey with the page. Summarise HIS argument in order; where the chapter is cut short, say so rather than completing it yourself. Attribute to Torrey ONLY the verses that appear in this text - any verse you add in support is yours, and goes outside "Torrey argues".`;
+        }
+    }
+
+    // Each result names its OWN book: Haley (1874) and Torrey (1907) share
+    // this table, and a Torrey passage cited as Haley is a false citation.
+    const parts = rows.map(r => {
+        const excerpt = difficultyExcerpt(r.body, ref?.chapter, ref?.startVerse, DIFFICULTY_TOOL_CHARS);
+        return `${difficultyCitation(r.source)}, p. ${r.page ?? '?'} - "${r.title}": ${excerpt}`;
+    });
+    const authors = [...new Set(rows.map(r => difficultyAuthor(r.source)))].join(' / ');
+    return `${parts.join(' || ')} Cite each passage by its author (${authors}) and page. Both books are older scholarship: present them as the classic answers, in your own voice, and do not attribute to them any caveat they did not write, or any verse that does not appear in the passage above - verses you add in support are yours, not theirs.`;
+}
+
 async function toolLookupProfile({ subject }) {
     const query = String(subject ?? '').trim();
     if (!query) return 'Error: a subject is required.';
@@ -1452,6 +1568,7 @@ async function executeTool(name, argsJson, webSourceCollector = []) {
             case 'lookup_person': return await toolLookupPerson(args);
             case 'lookup_place': return await toolLookupPlace(args);
             case 'lookup_dictionary': return await toolLookupDictionary(args);
+            case 'lookup_difficulty': return await toolLookupDifficulty(args);
             case 'lookup_profile': return await toolLookupProfile(args);
             case 'search_web': return await toolSearchWeb(args, webSourceCollector);
             default: return `Error: unknown tool "${name}".`;
