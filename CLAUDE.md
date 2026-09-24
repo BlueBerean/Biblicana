@@ -265,6 +265,8 @@ they are ordered because two of them must happen BEFORE the restart.
 
   Verified on the dev bot: Goliath passes all four turns (1.3 run once — watch it); Judas generalises with no mention in the prompt; Quirinius admits the debate and invents nothing. Archer's *Encyclopedia of Bible Difficulties* was considered as a RAG source and set aside pending permission from Zondervan; Haley (1874) and Torrey (1907) are the public-domain alternatives.
 
+  Also `d46dfc2`: **a reference must exist before it becomes a card.** `parseScriptureRefs` validates book NAMES only, so "Romans 17:1" parsed and the 📖 reaction posted a card with no scripture and five study buttons, which a prod user pressed. Only `/find` checked existence; the reaction, passive autopost, the pager and AI answer expansion did not — and "Acts 29", a church network's name, drew unsolicited cards. `src/utils/versification.js` loads every chapter's last verse once (1,189 rows), so the check is synchronous and ack-safe, and **fails open** if it cannot load. Unsolicited paths drop silently; the reaction replies "Romans has 16 chapters". **Any new path that renders a parsed reference must call `getVersification().filter()`** — `tests/versification.test.js` scans the entry points for it. Loose ends (Psalm 151 unreachable from `/lxx` and `lookup_lxx`, the three right-click menus unchecked, message wording) are in `followups.md`.
+
 
 ## References
 
