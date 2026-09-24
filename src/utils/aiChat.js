@@ -459,11 +459,46 @@ function buildSourcePayload({ rag = [], tools = [], web = [] }) {
 // Returns `{ context, sources }` where sources is a compact array describing
 // which refs were grounded with what (BSB text / Clarke / Father name). Used
 // by the caller for observability logging.
-async function buildRagContext(userMessage) {
+// How many earlier USER turns to search for a reference when the current
+// message names none. Two covers "What about 2 Sam 21:19" -> pushback ->
+// further pushback, which is the shape these arguments actually take.
+const RAG_CARRY_LOOKBACK = 2;
+
+/**
+ * Decide which text to ground this turn on. Normally the current message; but
+ * pushback rarely repeats the reference it is pushing back on ("the Septuagint
+ * also says Goliath", a line of Greek), so a message citing nothing would get
+ * NO grounding on exactly the turn under most pressure. Falls back to the most
+ * recent earlier USER turn that does cite one.
+ *
+ * User turns only: the assistant's own replies cite supporting verses (1 Chr
+ * 20:5, 1 Sam 17:50), and grounding on those would swap the verse under
+ * discussion for whichever parallel the model happened to mention.
+ *
+ * Returns { text, carried } — carried is true when the text came from memory.
+ */
+export function ragSourceText(currentText, memory = []) {
+    if (parseScriptureRefs(currentText).length > 0) return { text: currentText, carried: false };
+    let seen = 0;
+    for (let i = memory.length - 1; i >= 0 && seen < RAG_CARRY_LOOKBACK; i--) {
+        const turn = memory[i];
+        if (turn?.role !== 'user' || typeof turn.content !== 'string') continue;
+        seen++;
+        if (parseScriptureRefs(turn.content).length > 0) return { text: turn.content, carried: true };
+    }
+    return { text: currentText, carried: false };
+}
+
+async function buildRagContext(userMessage, { carried = false } = {}) {
     const refs = parseScriptureRefs(userMessage).slice(0, MAX_REFS_FOR_RAG);
     if (refs.length === 0) return { context: null, sources: [], detail: [] };
 
-    const lines = ['The user referenced one or more verses. Relevant source material:'];
+    // A carried reference is labelled as such, so the model knows the
+    // material is about the passage still under discussion rather than
+    // something the latest message named.
+    const lines = [carried
+        ? 'The latest message names no verse, but the conversation is still about the passage below, referenced earlier. Relevant source material:'
+        : 'The user referenced one or more verses. Relevant source material:'];
     const sources = [];
     // Structured mirror of `sources`. `sources` stays the compact log string
     // ("1 John 4:8[BSB+Clarke+Augustine of Hippo]"); `detail` carries the same
@@ -1118,6 +1153,14 @@ async function toolLookupLxx({ reference }) {
     return `${ref} in the Septuagint (${lxxRef}, Brenton's English 1851): ${body}${caveat}`;
 }
 
+// The interlinear's English glosses follow the KJV, INCLUDING the words the KJV
+// supplied in italics — and they are attached to whichever original word sat
+// nearest. In 2 Sam 21:19 the gloss "the brother of Goliath" hangs on the
+// Hebrew word for Goliath alone; there is no word for "brother" in the verse.
+// Read naively, the gloss says the opposite of the Hebrew. Found when the bot
+// asserted a Masoretic reading that does not exist.
+const GLOSS_CAVEAT = 'NOTE: the English glosses follow the KJV and can include words the KJV supplied (printed in italics there) that are NOT in the original. Only the Hebrew/Greek words listed are in the text — a phrase is in the original only if a word for it appears here.';
+
 async function toolLookupOriginal({ reference, word }) {
     const r = parseSingleVerseRef(reference);
     if (typeof r === 'string') return r;
@@ -1158,7 +1201,7 @@ async function toolLookupOriginal({ reference, word }) {
             const translit = lexicon === 'Greek' ? (entry.translit || entry.xlit) : (entry.xlit || entry.translit);
             parts.push(`"${hit.text}" = ${hit.word} (${code}, ${translit || '—'}) — ${(entry.strong_def || entry.kjvdef || 'no definition').trim()}`);
         }
-        return `${ref} (${lexicon}), word(s) matching "${word}": ${parts.join(' | ')}. State the meaning from these lexicon definitions only — do not embellish.`;
+        return `${ref} (${lexicon}), word(s) matching "${word}": ${parts.join(' | ')}. State the meaning from these lexicon definitions only — do not embellish. ${GLOSS_CAVEAT}`;
     }
 
     // Whole-verse list, deduped by Strong's number to avoid alignment repeats.
@@ -1167,7 +1210,7 @@ async function toolLookupOriginal({ reference, word }) {
     const MAX_WORDS = 25;
     const parts = uniq.slice(0, MAX_WORDS).map(it => `${it.word}${it.text ? ` "${it.text}"` : ''} (${it.number.toUpperCase()})`);
     const more = uniq.length > MAX_WORDS ? ` …(+${uniq.length - MAX_WORDS} more)` : '';
-    return `${ref} (${lexicon}), word by word: ${parts.join('; ')}${more}. Call lookup_strongs on any number for its definition, or lookup_original with word="<gloss>" for one word's full lexicon entry.`;
+    return `${ref} (${lexicon}), word by word: ${parts.join('; ')}${more}. Call lookup_strongs on any number for its definition, or lookup_original with word="<gloss>" for one word's full lexicon entry. ${GLOSS_CAVEAT}`;
 }
 
 async function toolLookupStrongs({ strongs }) {
@@ -1599,7 +1642,8 @@ export async function handleAiChat(message, database, options = {}) {
         // prompt. Strip line breaks and cap at Discord's own 32-char nick limit.
         const rawName = message.member?.displayName || message.author.globalName || message.author.username || 'User';
         const displayName = rawName.replace(/[\r\n]+/g, ' ').slice(0, 32).trim() || 'User';
-        const { context: ragContext, sources: ragSources, detail: ragDetail } = await buildRagContext(filteredText);
+        const ragInput = ragSourceText(filteredText, memory);
+        const { context: ragContext, sources: ragSources, detail: ragDetail } = await buildRagContext(ragInput.text, { carried: ragInput.carried });
 
         // In shared (multiplayer) mode, we tag the user's content with their
         // display name so the model can distinguish speakers across turns.
@@ -1700,7 +1744,7 @@ export async function handleAiChat(message, database, options = {}) {
         }
 
         // --- Reply + persist memory ---
-        const ragTag = ragSources.length > 0 ? ragSources.join(',') : 'none';
+        const ragTag = ragSources.length > 0 ? `${ragSources.join(',')}${ragInput.carried ? '(carried)' : ''}` : 'none';
         // cache=<cached>/<total> prompt tokens. A healthy steady state is most
         // of the static header (SYSTEM_PROMPT + TOOLS_GUIDANCE + tool defs)
         // coming back cached; a persistent 0 means the prefix is being broken
