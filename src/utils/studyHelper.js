@@ -3,6 +3,7 @@ import path, { dirname } from 'node:path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { toTSKSource, getBookId } from './bookNames.js';
+import logger from './logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +40,21 @@ const commentaryPromise = (async () => {
 const lxxPromise = (async () => {
     const filePath = path.join(__dirname, '../..', 'data', 'lxx.sqlite');
     return open({ filename: filePath, driver: sqlite3.Database, readOnly: true });
+})();
+
+// OPTIONAL, unlike every file above: resolves to null when absent. Footnotes
+// enrich AI grounding; they must never be the reason the bot fails to start,
+// and a data file lands on the droplet by scp, separately from the git pull
+// that ships this code. A rejected promise at import time would be an
+// unhandled rejection, which kills a Node 18 process.
+const bsbFootnotesPromise = (async () => {
+    const filePath = path.join(__dirname, '../..', 'data', 'bsb_footnotes.sqlite');
+    try {
+        return await open({ filename: filePath, driver: sqlite3.Database, mode: sqlite3.OPEN_READONLY });
+    } catch (err) {
+        logger.warn(`[BsbFootnotes] data/bsb_footnotes.sqlite unavailable (${err.message}) - grounding will omit BSB footnotes`);
+        return null;
+    }
 })();
 
 export const COMMENTATORS = [
@@ -717,6 +733,28 @@ class LxxWrapper {
 }
 
 export const lxxWrapper = new LxxWrapper();
+
+/**
+ * The BSB's translator footnotes ("Hebrew does not include the brother of"),
+ * which bible.db's plain verse text omits. Built by src/buildBsbFootnotes.js.
+ * Returns [] when the file is absent, so callers never branch on it.
+ */
+class BsbFootnotesWrapper {
+    constructor() { this.db = bsbFootnotesPromise; }
+
+    async getNotes(bookId, chapter, startVerse, endVerse = startVerse) {
+        const db = await this.db;
+        if (!db) return [];
+        return db.all(
+            `SELECT verse, text FROM bsb_footnotes
+             WHERE book_id = ? AND chapter = ? AND verse BETWEEN ? AND ?
+             ORDER BY verse, seq`,
+            [bookId, chapter, startVerse, endVerse]
+        );
+    }
+}
+
+export const bsbFootnotesWrapper = new BsbFootnotesWrapper();
 export const fathersWrapper = new FathersWrapper();
 export const personsWrapper = new PersonsWrapper();
 export const placesWrapper = new PlacesWrapper();

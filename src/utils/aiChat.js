@@ -10,6 +10,7 @@ import { bibleWrapper, strongsWrapper } from './bibleHelper.js';
 import { toOSIS3Codes, toCommentaryVariants, getBookId, numbersToBook } from './bookNames.js';
 import {
     commentaryWrapper, fathersWrapper, pickMarqueeFather, categoriesWrapper, crossRefWrapper, COMMENTATORS,
+    bsbFootnotesWrapper,
     personsWrapper, placesWrapper, dictionaryWrapper, displayName, classifyFather,
     extractVerseSlice, lxxWrapper,
 } from './studyHelper.js';
@@ -513,19 +514,28 @@ async function buildRagContext(userMessage, { carried = false } = {}) {
             ? `${ref.bookName} ${ref.chapter}:${ref.startVerse}-${ref.endVerse}`
             : `${ref.bookName} ${ref.chapter}:${ref.startVerse}`;
 
-        const [verseRows, clarkeRow, fathers] = await Promise.all([
+        const [verseRows, clarkeRow, fathers, bsbNotes] = await Promise.all([
             bibleWrapper.getVerses(ref.bookId, ref.chapter, ref.startVerse, ref.endVerse ?? ref.startVerse).catch(() => []),
             commentaryWrapper.getVerseCommentary('adam-clarke', toOSIS3Codes(ref.bookId), ref.chapter, ref.startVerse).catch(() => null),
             fathersWrapper.getByPassage(toCommentaryVariants(ref.bookName), ref.chapter, ref.startVerse).catch(() => []),
+            bsbFootnotesWrapper.getNotes(ref.bookId, ref.chapter, ref.startVerse, ref.endVerse ?? ref.startVerse).catch(() => []),
         ]);
 
         const gathered = [];
         const entry = { reference: refLabel };
         const verseText = verseRows.map(r => r.BSB || r.KJV).filter(Boolean).join(' ');
         if (verseText) {
-            lines.push(`\n${refLabel} (BSB): ${verseText.slice(0, 300)}`);
+            lines.push(`\n${refLabel} (BSB, an English translation — it may supply words not in the Hebrew or Greek; lookup_original shows what the original contains): ${verseText.slice(0, 300)}`);
             gathered.push('BSB');
             entry.translation = 'Berean Standard Bible';
+            // The BSB's own translator notes. These are what let the model
+            // answer "the BSB tampered with this verse" with a fact — the note
+            // disclosing what was supplied — instead of guessing either way.
+            if (bsbNotes.length > 0) {
+                const notes = bsbNotes.map(n => `v${n.verse}: ${n.text}`).join(' | ');
+                lines.push(`BSB footnotes (printed with the translation): ${notes.slice(0, 600)}`);
+                gathered.push('BSBnotes');
+            }
         }
         if (clarkeRow?.text) {
             // No source_title in the commentary schema — Clarke's text blob is
