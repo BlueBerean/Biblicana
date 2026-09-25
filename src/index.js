@@ -3,17 +3,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client, Collection, Events, GatewayIntentBits, Partials } from 'discord.js';
+import * as Sentry from '@sentry/node';
 import { postgresConfig } from './config.js';
 import DatabaseHandler from './database/redisPGHandler.js';
 import logger from './utils/logger.js';
 import { startTopggPoster } from './utils/topggStats.js';
 import setupAxiosInterceptors from './utils/axiosInterceptors.js';
 import { startDailyVerseScheduler } from './utils/dailyVerseScheduler.js';
+import { startHeartbeat } from './utils/heartbeat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startBot() {
+    // Sentry is initialised by src/instrument.js via `node --import`, never
+    // here (see that file for why). A DSN without the preload means someone
+    // started the bot the old way — say so, or the Sentry project just sits
+    // empty and reads as a bot with no errors.
+    if (process.env.SENTRYDSN && !Sentry.isInitialized()) {
+        logger.warn('[Sentry] SENTRYDSN is set but Sentry is not initialised — start with `node --import ./src/instrument.js src/index.js` (see package.json "start").');
+    }
+
     // Helper to dynamically load modules (commands, events, buttons) via ESM import().
     // Each module file is expected to `export default { ... }`; we unwrap `.default` after import.
     async function loadModules(client, directory, requiredProperties, registerModule, database = null) {
@@ -167,6 +177,9 @@ async function startBot() {
         if (topggHandle) {
             try { clearInterval(topggHandle); } catch { /* noop */ }
         }
+        if (heartbeatHandle) {
+            try { clearInterval(heartbeatHandle); } catch { /* noop */ }
+        }
         try {
             client.destroy();
         } catch (err) {
@@ -177,6 +190,12 @@ async function startBot() {
         } catch (err) {
             logger.error(`[Bot] Error during database.close(): ${err.message}`);
         }
+        // Sentry sends in the background; exiting without a flush drops
+        // anything captured in the last moment — often the error that caused
+        // the restart. Bounded so a Sentry outage cannot hold up a restart.
+        try {
+            await Sentry.flush(2000);
+        } catch { /* noop */ }
         process.exit(0);
     };
     process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -186,6 +205,14 @@ async function startBot() {
     // Node process (Node 18+), which under PM2 means a restart cycle hitting all
     // ~512 servers at once. A single transient DB/Discord blip in any handler
     // that forgot a catch shouldn't take the bot down — log it and stay up.
+    //
+    // Not captured to Sentry here on purpose: instrument.js registers Sentry's
+    // onUnhandledRejectionIntegration in 'warn' mode, which reports each one
+    // through its own listener. Calling captureException here as well would
+    // file every rejection twice. Likewise there is no uncaughtException
+    // handler: Sentry's default integration reports it and then exits, as Node
+    // would — a handler of our own would suppress that exit and leave the bot
+    // running in an unknown state.
     process.on('unhandledRejection', (reason) => {
         logger.error(`[Bot] Unhandled promise rejection: ${reason instanceof Error ? reason.stack : reason}`);
     });
@@ -205,11 +232,15 @@ async function startBot() {
     // after Discord sends the READY packet with the guild list.
     let dailyVerseHandle = null;
     let topggHandle = null;
+    let heartbeatHandle = null;
     client.once(Events.ClientReady, () => {
         dailyVerseHandle = startDailyVerseScheduler(client, database);
         // Same hook for the same reason: the guild count is read from the
         // cache, which is only populated once READY has delivered the list.
         topggHandle = startTopggPoster(client);
+        // Started on READY so a bot that never connects never pings — which
+        // is the alert firing, as intended.
+        heartbeatHandle = startHeartbeat(client);
     });
 
     // Gateway lifecycle. Previously NOTHING logged these, which made one class

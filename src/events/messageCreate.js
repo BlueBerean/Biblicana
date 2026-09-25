@@ -1,5 +1,7 @@
 import { Events, MessageFlags } from 'discord.js';
+import * as Sentry from '@sentry/node';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { handleMessageForPassiveDetection } from '../utils/passiveDetection.js';
 import { handleAiChat } from '../utils/aiChat.js';
 import { readAiEnabled, readAiChannels, readAiDeniedRoles, readAiRequiredRoles, isAiAllowedForMember } from '../utils/aiConfig.js';
@@ -113,7 +115,14 @@ export default {
                 : false;
 
             if (aiTriggered) {
-                await handleAiChat(message, database);
+                // Traced as its own root span. Deliberately NOT the whole
+                // listener: it runs on every message in every server, and even
+                // sampled at 10% that would spend the span quota on messages
+                // that do nothing. Passive detection stays untraced likewise.
+                await Sentry.startSpan(
+                    { name: 'ai-chat', op: 'discord.aichat' },
+                    () => handleAiChat(message, database)
+                );
                 return;
             }
 
@@ -141,6 +150,7 @@ export default {
             await handleMessageForPassiveDetection(message, mode, database);
         } catch (err) {
             logger.error(`[MessageCreate] Unhandled: ${err.message}`);
+            reportError(err, { area: 'message', handler: 'messageCreate', guildId: message.guild?.id });
         }
     },
 };

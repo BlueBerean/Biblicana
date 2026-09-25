@@ -2,6 +2,10 @@ node_modules
 backups
 config_old.json
 .env
+# Variants hold secrets too: prod's .env.prod (docs/ops/host-migration-2026-09.md)
+# and the .env.bak-* copies the release checklist makes. Only the example is tracked.
+.env.*
+!.env.example
 data/bible.db
 data/strongs.db
 data/books.json

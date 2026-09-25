@@ -20,6 +20,7 @@ import { readAiMemoryScope } from './aiConfig.js';
 import { checkAckStatus, buildAckDisclosurePayload } from './aiAck.js';
 import swearWordFilter, { stripModelMarkup, trimToLastCompleteSentence } from './filter.js';
 import logger from './logger.js';
+import { reportError } from './errorReporting.js';
 
 const MODEL = 'gpt-5.6-luna';
 
@@ -1544,6 +1545,7 @@ async function toolSearchWeb({ query }, webSourceCollector) {
         // from the local library, and a partial answer beats an error message.
         const detail = err.response?.data?.error?.message || err.message;
         logger.error(`[AiChat tool] search_web failed: ${detail}`);
+        reportError(err, { area: 'aichat-tool', handler: 'search_web' });
         return `The web search failed. Answer from the local library if you can, or tell the user you couldn't reach the web just now.`;
     }
 }
@@ -1575,6 +1577,7 @@ async function executeTool(name, argsJson, webSourceCollector = []) {
         }
     } catch (err) {
         logger.error(`[AiChat tool] ${name} threw: ${err.message}`);
+        reportError(err, { area: 'aichat-tool', handler: name });
         return `Error running ${name}: ${err.message}`;
     }
 }
@@ -1883,6 +1886,7 @@ export async function handleAiChat(message, database, options = {}) {
             cachedTokens = completion.cachedTokens;
         } catch (err) {
             logger.error(`[AiChat] OpenAI call failed for user=${message.author.id}: ${err.message}`);
+            reportError(err, { area: 'aichat', handler: 'openai', guildId: message.guild?.id });
             await message.reply({
                 content: `Sorry — I'm having trouble thinking clearly right now. Try the slash commands (\`/bible\`, \`/commentary\`, \`/fathers\`) or give it another shot in a minute.`,
                 allowedMentions: { repliedUser: false },
@@ -1961,5 +1965,6 @@ export async function handleAiChat(message, database, options = {}) {
         );
     } catch (err) {
         logger.error(`[AiChat] Unhandled: ${err.message}`);
+        reportError(err, { area: 'aichat', handler: 'handleAiChat', guildId: message.guild?.id });
     }
 }

@@ -1,5 +1,7 @@
 import { Events, MessageFlags } from 'discord.js';
+import * as Sentry from '@sentry/node';
 import logger from '../utils/logger.js';
+import { reportError, componentName } from '../utils/errorReporting.js';
 
 const MAX_OPT_VALUE_LEN = 60;
 
@@ -44,10 +46,18 @@ export default {
             );
 
             try {
-                await command.execute(interaction, database);
+                // One root span per command: there is no inbound HTTP request
+                // for Sentry to start a trace from, so without this the pg,
+                // ioredis and outbound-HTTP spans would have no parent and no
+                // name saying which command they belonged to.
+                await Sentry.startSpan(
+                    { name: `/${interaction.commandName}`, op: 'discord.command' },
+                    () => command.execute(interaction, database)
+                );
             } catch (error) {
                 logger.error(`[Error] Error executing ${interaction.commandName}`);
                 logger.error(error);
+                reportError(error, { area: 'command', handler: interaction.commandName, guildId: interaction.guildId });
 
                 if (error.code === 10062) {
                     logger.error('[Error] Interaction timed out');
@@ -99,11 +109,16 @@ export default {
                 `[Usage] btn=${interaction.customId} user=${interaction.user.id} guild=${interaction.guildId ?? 'DM'}`
             );
 
+            const buttonName = componentName(interaction.customId);
             try {
-                await button.execute(interaction, database);
+                await Sentry.startSpan(
+                    { name: `button ${buttonName}`, op: 'discord.button' },
+                    () => button.execute(interaction, database)
+                );
             } catch (error) {
                 logger.error(`[Error] Error executing ${interaction.customId}`);
                 logger.error(error);
+                reportError(error, { area: 'button', handler: buttonName, guildId: interaction.guildId });
             }
         } else if (interaction.isAnySelectMenu()) {
             // Covers StringSelect, ChannelSelect, UserSelect, RoleSelect, and
@@ -123,11 +138,16 @@ export default {
                 `[Usage] sel=${interaction.customId} user=${interaction.user.id} guild=${interaction.guildId ?? 'DM'}`
             );
 
+            const selectName = componentName(interaction.customId);
             try {
-                await select.execute(interaction, database);
+                await Sentry.startSpan(
+                    { name: `select ${selectName}`, op: 'discord.select' },
+                    () => select.execute(interaction, database)
+                );
             } catch (error) {
                 logger.error(`[Error] Error executing select ${interaction.customId}`);
                 logger.error(error);
+                reportError(error, { area: 'select', handler: selectName, guildId: interaction.guildId });
             }
         }
     },
