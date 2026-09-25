@@ -6,6 +6,16 @@ Started 2026-09-24 and seeded from the record that existed before it: `CLAUDE.md
 
 ## 2026-09-25
 
+### Every command reports its own errors to Sentry
+
+The failed `/stats` of 04:51 hit 10062 and never reached Sentry: `stats.js` caught it, apologised, and reported nothing. It wasn't alone — **119 catch blocks in 55 files** logged errors that never reached Sentry, because most commands catch and apologise instead of rethrowing to the dispatcher. Now **93 outer catch sites report** (89 added by a scripted edit, dry-run first, every site reviewed by its log message; 4 already did).
+
+- **Rules:** report in the outer catch; not in the 27 nested "couldn't send the apology" catches (they would double every report); not in the 3 that rethrow (the dispatcher reports those); and beside the `logger.error`, so existing `isExpiredInteractionError` guards keep expired-menu noise out.
+- **Interaction scope:** `withReportingScope` in `interactionCreate` gives each interaction a Sentry scope with guild/area/handler. Verified first against the real SDK that tags survive awaits and stay isolated between concurrent interactions. The 10062 fingerprint now reads the inherited handler too.
+- **Tests (373 total):** `tests/errorReporting.test.js` runs the real Sentry SDK with a recording transport — including `/stats` end to end, and "reported once even when the apology also fails". `tests/catchReporting.test.js` scans all four directories and asserts a lower bound on what it found, so a blind scanner can't pass. Mutation-checked three ways (remove the /stats report, double-report in the nested catch, drop the command scope); each caught.
+- **Left, deliberately:** 33 catches in `src/utils/` and `src/database/`. The 2026-07-19 Neon outage logged 171,238 errors in a day; per-query reporting would burn the monthly quota in hours. Needs rate-limited reporting first.
+- Also fixed: `errorReporting.js` pointed readers at `docs/10062-diagnostic.md`, which is about a different bot.
+
 ### Prod moved to the new droplet — cutover 04:35:43 -> 04:35:57 UTC (~14 s down)
 
 Ran `docs/ops/host-migration-2026-09.md` the same night, Kenneth approving each gate. New host `biblicana-bot-prod-2` (Ubuntu 24.04, 1 vCPU / 2 GB, NYC3), tailnet name `biblicana`, `tag:prod`.
