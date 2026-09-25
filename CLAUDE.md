@@ -10,7 +10,7 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 
 ## Tech stack
 
-- **Runtime**: Node.js 18 (prod uses v18.13.0; local dev uses v18.20.8 via nvm)
+- **Runtime**: **Node.js 22 on `refactor` since 2026-09-24** (`engines` `>=22 <23` in `package.json` is the tracked pin; `.nvmrc` is excluded per machine via `.git/info/exclude`, so set it to 22 locally; local dev v22.23.3 via nvm). **Prod is still on v18.13.0 until the host runbook's Node step runs**, and the current `refactor` must NOT be pulled onto it before then: `@sentry/node` 11 declares `>=20.19 || >=22.12` and is unsupported on 18 (it happened to import on 18.20 locally; that is not a guarantee on 18.13). The upgrade and the pull are one maintenance window, with a rollback to 18.
 - **Discord library**: discord.js 14.14.1 + @discordjs/builders 1.7.0
 - **State**: ioredis 5.x (local Redis on the same host as the bot) + pg 8.x (Neon serverless Postgres)
 - **Bible data**: SQLite — all gitignored.
@@ -22,11 +22,14 @@ Repo owner: `BlueBerean` (brand GitHub account). Kenneth/`Nazareneism` is also a
 - **Package manager**: prod uses `npm`; local dev uses `pnpm@10`. Note `pnpm-lock.yaml` IS tracked in git, while prod's `package-lock.json` is **untracked and stale (v1.4.0)** — so `git pull` never touches it, and `npm ci` should be skipped unless dependencies actually changed.
 - **Process manager (prod)**: PM2 v5 (`pm2 list`, `pm2 logs index`, `pm2 restart index`)
 - **External APIs**: OpenAI only for AI features — `/find`, the `/web` intent check, `/web` search itself, and AI chat. **Tavily was removed in v1.5.1**; `/web` now uses OpenAI's built-in `web_search` tool restricted to a domain allowlist in `src/utils/webSearch.js` (shared with AI chat's `search_web` tool). RapidAPI still used by `/audio`, `/bookinfo`, `/originaltext`, `/parallel`, `/semantics`, `/topic`; `/dictionary`, `/crossref`, `/topicalindex`, `/commentary` are local SQLite.
+- **Observability**: **Sentry** (`@sentry/node` + `@sentry/profiling-node` 11, project `lionmark/biblicana`, Team plan) for errors, tracing and profiling, plus a **Sentry Cron Monitor heartbeat** (`biblicana-gateway`). Initialised by `src/instrument.js`, which must be preloaded with `node --import` — that is what `pnpm start` does. See "Sentry and the heartbeat" below.
 
 ## Repository layout
 
 ```
 src/
+  instrument.js           # Sentry init, preloaded via `node --import` BEFORE index.js (see
+                          #   "Sentry and the heartbeat"); started without it, Sentry is off
   index.js                # Bot entry; wires up Discord client, loads commands/events/buttons
   config.js               # (refactor) Centralized Postgres config object
   commands/               # Slash commands — one file per command (34 on refactor: 33 global
@@ -50,6 +53,10 @@ src/
     filter.js             # Text filtering / sanitization
     splitString.js        # String chunking for Discord's embed description limit
     axiosInterceptors.js  # (refactor) HTTP request/response interceptors
+    sentryConfig.js       # Sentry options as a pure function of env (SENTRYDSN etc.)
+    sentryScrub.js        # beforeSend / beforeBreadcrumb / beforeSendSpan privacy hooks
+    errorReporting.js     # reportError(): one-line capture with area/handler/guild tags
+    heartbeat.js          # Cron Monitor check-ins, gated on every shard being Ready
   deploy.js               # One-shot script to register slash commands with Discord
 
 data/                     # All files gitignored
@@ -104,6 +111,33 @@ All env var names are UPPERCASE, **no underscores**. Examples: `DISCORDTOKEN`, `
 
 `TOPGGTOKEN` is **optional** and prod-only: it posts the guild count to top.gg, which does NOT read that number from Discord — a bot that never posts shows no server count at all, which is why Biblicana's listing was blank while it sat in 500+ servers. Absent token is a normal state (the test bot has no listing), so `startTopggPoster` returns null and logs once at debug rather than warning every 30 minutes. Token comes from `top.gg/bot/<BOT_ID>/webhooks`, and top.gg wants it **bare** in the `Authorization` header — a `Bearer` prefix is rejected, and the only symptom is a listing that silently never updates.
 
+The Sentry vars, all optional (read in `src/utils/sentryConfig.js`):
+
+| Var | Default | Notes |
+|---|---|---|
+| `SENTRYDSN` | unset = Sentry off | **No underscore.** `SENTRY_DSN` is Sentry's documented name and was typed on the first setup; the bot warns at startup if it finds that instead. The SDK also reads `SENTRY_DSN` by itself when init is called without a DSN — keeping ours different means the scrubbed path is the only way Sentry turns on. |
+| `SENTRYENVIRONMENT` | from `NODE_ENV` | `production` when `NODE_ENV=production`, else `development`. **Prod must resolve to `production`** or the heartbeat never starts (next section). |
+| `SENTRYTRACESRATE` | `1` | Share of commands / AI chats traced. 100% because measured volume is tiny: 5-22 slash commands and 7-40 buttons a day across ~570 servers (prod logs, week to 2026-09-24), ~30k spans a month against 5M included. An earlier default of 0.1 was a guess that would have left prod with one or two traces a day. |
+| `SENTRYPROFILERATE` | `1` | Rolled once per process: an on/off switch. Profiling is billed per hour from the Sentry pay-as-you-go budget ($20 cap). |
+| `LOGLEVEL` | from `NODE_ENV` | `trace`/`debug`/`info`/`warn`/`error`/`silent`. Default `info` in production, `debug` elsewhere. Exists because `NODE_ENV=production` (needed by Sentry and the heartbeat) would otherwise drop debug-only trails such as the AI role-gate suppression line. Not a Sentry var, listed here because it came with them. |
+
+### Sentry and the heartbeat
+
+**Why `instrument.js` is separate.** Tracing hooks `pg`, `ioredis` and the HTTP client as they load. Under ESM every static import in `index.js` resolves before a line of it runs, so `Sentry.init()` there is too late. `node --import ./src/instrument.js src/index.js` runs it first. **PM2 on prod must use that command** — started the old way the bot runs with Sentry off, and `index.js` warns if `SENTRYDSN` is set.
+
+**Privacy.** AI chat carries user text across ~570 servers, and `sendDefaultPii: false` knows nothing about Discord. The biggest leak was not an event we build: Sentry's Console integration attaches recent `console.*` calls as breadcrumbs, and `loglevel` writes through console, so every error would have carried recent log lines. `sentryScrub.js` drops console breadcrumbs, redacts text and name keys (`content`, `message`, `prompt`, `username`, `headers`, …) at any depth, and strips outbound query strings. **Discord also puts credentials in URL PATHS** — `/interactions/<id>/<token>/callback` and `/webhooks/<app_id>/<token>/…` — and the first live trace carried them in every HTTP span's name and `url.full`; `redactUrl` removes them, pattern-matched across every string attribute rather than a key list (the key list is what missed `url.path`). An interaction token is good for 15 minutes; a channel webhook's never expires. User and guild IDs are kept. Verified end to end on 2026-09-24: five planted secrets, none stored by Sentry; the same test with the hooks off leaked all five. "Prevent Storing of IP Addresses" is on for the project — Sentry otherwise derives `user.geo` from the sending IP server-side, which no hook can prevent.
+
+**Sentry 11 streams spans** (`traceLifecycle: 'stream'`) and silently ignores `beforeSendTransaction`. Span scrubbing is `beforeSendSpan`, against `{ name, attributes }`. Setting `beforeSendTransaction` looks like protection and does nothing; `tests/sentry.test.js` asserts it is unset.
+
+**Coverage gap.** `reportError` runs in the four shared handler catches and AI chat's four internal catches. Many individual commands still catch their own errors and reply with an apology without rethrowing — those never reach Sentry until each is given a `reportError` call. Likewise **inline collectors** (pagers, `/commentary`'s switcher — the customIds `interactionCreate` deliberately ignores) run outside any root span, so their Discord calls surface as orphan traces named `POST discord.com` / `PATCH discord.com` rather than under the command that created them.
+
+**The heartbeat** checks in every 5 minutes; two misses in a row open an issue (monitor config is sent as an upsert with each check-in, so it lives in code, and edits made in the Sentry UI are overwritten). Two rules, both silent-failure traps:
+
+- **Production only.** A heartbeat treats silence as the alarm, so a dev bot stopped for the night would page. Consequence: if prod resolves to `development`, the monitor is never created and can never alert — indistinguishable from healthy.
+- **"Healthy" means every shard is Ready, not `client.isReady()`.** discord.js 14 sets the manager's status to Ready once and never resets it; a dropped socket moves only `shard.status`. `isReady() && ws.status === Ready` stays true through the exact failure this exists to catch. `tests/heartbeat.test.js` builds that state.
+
+Chosen over Healthchecks.io for one account and one dashboard. The trade is shared fate: during a Sentry outage there are no heartbeat alerts. The plan includes one cron monitor; each further one is $0.78/month.
+
 ### Slash command deployment
 
 Never run `src/deploy.js` with the `--global` flag for development. The `deploy` npm script registers commands to a single guild (instant); `deployg` registers globally (up to an hour propagation across all ~570 servers). The test bot has its own `CLIENTID` and is deployed to a test guild only.
@@ -144,14 +178,14 @@ Each `/config ai` select handler re-renders the **whole** panel after saving its
 
 See `/Users/kenneth/Development/lionmark/discord-bot/BIBLICANA_OPS.md` for the full replayable steps. Abbreviated:
 
-1. `nvm use` (reads `.nvmrc`, sets Node 18)
+1. `nvm use 22` (or `echo 22 > .nvmrc` once, then `nvm use`; `.nvmrc` is excluded from git per machine)
 2. `pnpm install` (installs 264 deps; `pnpm.onlyBuiltDependencies: ["sqlite3"]` in package.json allows the native binding to build)
 3. Populate `data/` with the runtime SQLite files (all gitignored):
    - `books.json`, `bible.db`, `strongs.db` — scp from prod droplet
    - You also need: `extrabiblical_data.sqlite`, `clean_commentary.db`, `person_places.db`, `dictionary.sqlite`, `cross-references.sqlite`, `categories.sqlite`. These **are on prod** (since v1.5.0), so scp them from the droplet like the others, or source from Kenneth's local `data/new_data/` archive. See `BIBLICANA_OPS.md`.
 4. `.env` with test bot credentials + Neon dev-branch credentials (dev branch is isolated from prod data)
 5. Run `pnpm run deploy` to register slash commands with the test guild
-6. `node src/index.js` to start the bot
+6. `pnpm start` to start the bot (`node --import ./src/instrument.js src/index.js`; plain `node src/index.js` runs with Sentry off)
 
 ### Testing changes
 
@@ -163,7 +197,7 @@ Prod lives on `biblicana-bot-prod` droplet (`159.65.241.215`). Deployment flow:
 1. Push changes to `BlueBerean/Biblicana` on GitHub
 2. SSH into the droplet (`ssh root@159.65.241.215`)
 3. `cd /root/dev/biblicana && git pull`
-4. `npm ci` if `package-lock.json` changed (prod uses npm, not pnpm)
+4. `npm ci` if `package-lock.json` changed (prod uses npm, not pnpm). **The first deploy after 2026-09-24 is not ordinary** — it needs Node 22, a regenerated lockfile, a `sqlite3` rebuild and the `--import` start command; follow the host runbook, not these steps.
 5. `pm2 restart index`
 6. `pm2 logs index --lines 30` to verify clean startup
 
@@ -193,7 +227,9 @@ they are ordered because two of them must happen BEFORE the restart.
 5. **Run the tests on the droplet before restarting.** Node 18.13's TAP lexer is
    stricter than local 18.20, and reports per FILE — check subtest counts
    (`node --test tests/x.test.js | grep -cE "^\s+ok"`), not the file total, or a
-   file that died mid-parse still shows green.
+   file that died mid-parse still shows green. (Node 22 still emits TAP when
+   piped, so the grep keeps working after the upgrade; it prints the
+   human-readable reporter only on an interactive terminal.)
 6. Restart, then verify with a real query against prod's own data — not just a
    clean log. A script that imports a module in isolation does NOT load `.env`
    (only `index.js` does), so anything reading config needs `import
@@ -207,13 +243,13 @@ they are ordered because two of them must happen BEFORE the restart.
 - **`@discordjs/builders` must be a direct dep under pnpm.** The bot's code imports it directly (e.g., `require('@discordjs/builders')` in command files), even though it's technically a transitive dep of `discord.js`. npm flattens everything so this works there; pnpm's strict mode doesn't. On `refactor`, it's been added to `package.json` dependencies explicitly.
 - **`sqlite3` native build needs explicit approval under pnpm 10.** `package.json` must include `"pnpm": { "onlyBuiltDependencies": ["sqlite3"] }` or install will skip the postinstall script and leave you with a missing `.node` binding.
 - **`.DS_Store` files are tracked in the repo** at the root and `src/`. macOS regenerates them constantly, causing noisy diffs. If you modify the repo from a Mac, expect `.DS_Store` to show up as a local modification; don't commit changes to it.
-- **Node version mismatch risk**: prod runs Node v18.13.0 (EOL'd April 2025). When the eventual 24.04 migration happens, we'll move to Node 20 or 22 LTS. Native modules like `sqlite3` will need rebuilding against the new ABI.
+- **Local is Node 22, prod is Node 18.13 until the runbook runs.** `refactor` moved to 22 on 2026-09-24 for Sentry, which does not support 18. Pulling it onto the 18.13 droplet is unsupported; the Node step and the pull go together. `sqlite3` needs rebuilding against the new ABI (`pnpm rebuild sqlite3` locally, `npm ci` on prod). `@sentry/profiling-node` ships prebuilt binaries for darwin-arm64 and linux-x64-glibc on ABI 127, so nothing compiles; pnpm's "ignored build scripts" warning for `@sentry/node-cpu-profiler` is expected and harmless — its script only compiles when no prebuilt matches.
 - **Never pipe `scp` output** (e.g., `| tail -5`) when copying data files from prod — scp can see the pipe fill and truncate the transfer silently with a clean exit code, producing corrupted files. Run scp without any pipe.
 - **Postgres auth failures are logged but not fatal** — `redisPGHandler` continues even if the DB connection fails (`[Database ERR] ... Error creating tables: ...`). This means a broken local `.env` can produce a bot that "looks up" but silently fails every DB-dependent command. Check for `[Database ERR]` lines at startup.
 - **`GUILDID` drifts, and `pnpm run deploy` silently targets the wrong server.** The deploy script registers to whatever guild `GUILDID` names, so if it points at a server you are not testing in, the deploy "succeeds" and the command still never appears. This has cost time twice: once at v1.6.0 when `/lxx` seemed missing, and again on 2026-09-06 when `GUILDID` was `1167893380341178418` (Biblicana2) while testing happened in `1494355279515746455` (Sola Lab). **Check `GUILDID` against the server you are actually in before deploying**, and remember a guild keeps whatever set it was last given — Sola Lab sat on 33 commands registered before `/lxx` existed, so it was stale rather than empty. Verify with `GET /applications/<CLIENTID>/guilds/<GUILDID>/commands` rather than trusting the deploy's exit code.
 - **`/ping` command does not log anything** — it's a pure latency check, no console.log. Don't use it to verify the bot received a command in log-based tests; use `/randomverse` or `/bible` instead.
 - **The "Church Fathers" DB is not all Church Fathers.** `extrabiblical_data.sqlite` holds 334 authors: 285 patristic, plus 49 medieval, Reformation-era and modern writers (Aquinas, C.S. Lewis, Tolkien, at least one living author). Anything surfacing these rows must classify by `default_year` — `classifyFather` for model-facing text, `fatherEraBadge` for UI, both in `studyHelper.js`. Presenting a 1963 author as "the early church" is a factual error, and the two helpers are tested to never disagree.
-- **Test names must be ASCII.** Prod's Node 18.13 TAP lexer dies on a non-ASCII character in a `test()` description and reports the whole FILE as 0 passed, naming nothing. Local Node 18.20 parses it fine, so it only shows up on the droplet. Em-dashes are fine in comments, assertions and log lines — just not in test titles.
+- **Test names must be ASCII.** Prod's Node 18.13 TAP lexer dies on a non-ASCII character in a `test()` description and reports the whole FILE as 0 passed, naming nothing. Local Node 18.20 parses it fine, so it only shows up on the droplet. Em-dashes are fine in comments, assertions and log lines — just not in test titles. Keep the rule after the move to Node 22: it costs nothing, and prod stays on 18.13 until the runbook runs.
 - **The droplet has 1 vCPU and 952 MB of RAM, against ~700 MB of SQLite.** SQLite has no buffer pool of its own and leans entirely on the kernel page cache, so when free memory is squeezed every query becomes a real disk read. On 2026-09-05 that put load at 13 with CPU near idle and `ps` hanging for 100+ seconds, while `pm2 list` still reported the bot healthy and `online` — there were no OOM kills, because the bot was starved, not killed. Diagnose with `free -m` (watch `available` and `buff/cache`) and load-vs-CPU divergence, NOT the bot's logs. A 2 GB swapfile and a masked `fwupd` bought the headroom back. Weigh an eighth data file against that budget before adding one.
 - **`readOnly: true` does nothing.** Every wrapper in `studyHelper.js` except `bsbFootnotesWrapper` and `difficultiesWrapper` opens its SQLite with `open({ ..., readOnly: true })`, but the `sqlite` package reads only `mode`. They actually open READ-WRITE with CREATE, so a missing data file is not an error at startup — it is silently created empty, and the first query fails with "no such table". Use `mode: sqlite3.OPEN_READONLY` in anything new; `tests/bsbFootnotes.test.js` and `tests/difficulties.test.js` pin it for the two that do.
 - **The interlinear's English glosses are the KJV's, supplied italic words included**, attached to the nearest original word. In 2 Sam 21:19 "the brother of Goliath" is glossed onto the Hebrew for Goliath alone — there is no H251 ("brother") in the verse. Anything reading `interlinear.data` must treat the Hebrew/Greek word list as the text and the glosses as a KJV rendering of it; `lookup_original` says so on every success path.
@@ -274,11 +310,14 @@ they are ordered because two of them must happen BEFORE the restart.
   Three lessons, each found by a failing test rather than foreseen. **A verse can sit in two cases** — 2 Kings 8:26 is both "Ahaziah's age, 22 or 42" and "his grandfather, Omri or Ahab" — and nothing about the verse can choose; `pickDifficulty` chooses by the user's own words, converting Haley's "twenty-two" to "22". **Returning one chunk of an essay invites the model to finish it**: given the first third of Torrey on Cain, cut just before "Cain doubtless had his wife before going to the Land of Nod", it inverted the order of Genesis 4 to supply the conclusion — hence chapters in order, and truncation MARKED so the model says what it has not seen (it now does: "I can't responsibly summarize his argument about Paul beyond that point"). And **a real verse attached to the wrong source** is the most durable kind of false citation: the bot credited Torrey with Deut 9:4-5, Gen 15:16, Deut 7:1-4, Judg 2:2-3 and Gen 12:3, all relevant, none cited by him — it survives a casual check and fails a careful one. Grounding rule 3 now covers verse references as well as claims; the fix MOVED the model's supporting verses into its own voice rather than deleting them.
 
   A query mixing a reference into a topic ("Jephthah's daughter sacrifice Judges 11" — exactly how a model writes a tool call) used to drop the topic words and match two unrelated Haley entries that cite Judges 11. Both are now searched, and failing an overlap the words win. The tests use the verbatim failing queries from the logs, which is how the second half of that bug was found.
+- **2026-09-24, not yet deployed** — Sentry, a gateway heartbeat, and Node 22, from the ops-platform handoff (`../ops-platform/handoffs/biblicana.md`, section B). See "Sentry and the heartbeat" above and `project_log.md`. Three things the handoff had wrong, each caught against the real library rather than its docs: its health check (`isReady()` plus `ws.status`) latches Ready and would never have fired; Sentry 11 ignores `beforeSendTransaction`; and most errors never reach a shared catch at all. Node 22 is a hard prerequisite for deploying it, not an ordering preference. 352 tests.
 
 
 ## References
 
 - **BIBLICANA_OPS.md** (at `../BIBLICANA_OPS.md`, outside this repo) — private ops doc covering DigitalOcean droplets, Neon setup, credentials, SSH access, and the session history of how the environment was bootstrapped. Start here if you need to recover infrastructure state.
+- **`project_log.md`** — reverse-chronological log of changes, incidents and decisions, started 2026-09-24 and seeded back to v1.4.0. Add an entry after significant work.
+- **Sentry**: https://lionmark.sentry.io — project `biblicana` (issues, traces, the `biblicana-gateway` cron monitor)
 - **Upstream**: https://github.com/BlueBerean/Biblicana
 - **Discord dev portal**: https://discord.com/developers/applications (both prod and test bot apps owned by Kenneth)
 - **Neon console**: https://console.neon.tech — `Biblicana` project holds the live Postgres; `dev-local` branch is the dev sandbox
