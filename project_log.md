@@ -15,6 +15,7 @@ The failed `/stats` of 04:51 hit 10062 and never reached Sentry: `stats.js` caug
 - **Tests (373 total):** `tests/errorReporting.test.js` runs the real Sentry SDK with a recording transport — including `/stats` end to end, and "reported once even when the apology also fails". `tests/catchReporting.test.js` scans all four directories and asserts a lower bound on what it found, so a blind scanner can't pass. Mutation-checked three ways (remove the /stats report, double-report in the nested catch, drop the command scope); each caught.
 - **Left, deliberately:** 33 catches in `src/utils/` and `src/database/`. The 2026-07-19 Neon outage logged 171,238 errors in a day; per-query reporting would burn the monthly quota in hours. Needs rate-limited reporting first.
 - Also fixed: `errorReporting.js` pointed readers at `docs/10062-diagnostic.md`, which is about a different bot.
+- **Deployed 06:19 UTC** (`e788ef8`): 373/373 tests on the prod droplet first, ~9 s restart, `environment=production`, heartbeat check-in from the new process the same second, 0 errors.
 
 ### Prod moved to the new droplet — cutover 04:35:43 -> 04:35:57 UTC (~14 s down)
 
