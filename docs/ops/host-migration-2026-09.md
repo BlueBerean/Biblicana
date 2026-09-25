@@ -93,7 +93,7 @@ ssh kenneth@biblicana 'sudo rsync -a /tmp/biblicana-data/ /srv/biblicana/data/ &
 - **Check: checksums match on both ends,** not just the exit code:
   ```bash
   ssh root@<OLD public IP> 'cd /root/dev/biblicana/data && md5sum * | sort -k2' > /tmp/md5-old.txt
-  ssh kenneth@biblicana 'cd /srv/biblicana/data && sudo md5sum * | sort -k2' > /tmp/md5-new.txt
+  ssh kenneth@biblicana "sudo bash -c 'cd /srv/biblicana/data && md5sum * | sort -k2'" > /tmp/md5-new.txt   # /srv/biblicana is 750 biblicana: the cd needs sudo too
   diff /tmp/md5-old.txt /tmp/md5-new.txt && echo "data identical"
   ```
 - Then run the tests on the new host (they read `bible.db`): `ssh kenneth@biblicana 'sudo -iu biblicana bash -c "cd /srv/biblicana && node --test tests/*.test.js 2>&1 | tail -8"'`. Expect 358/358.

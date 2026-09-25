@@ -6,6 +6,18 @@ Started 2026-09-24 and seeded from the record that existed before it: `CLAUDE.md
 
 ## 2026-09-25
 
+### Prod moved to the new droplet — cutover 04:35:43 -> 04:35:57 UTC (~14 s down)
+
+Ran `docs/ops/host-migration-2026-09.md` the same night, Kenneth approving each gate. New host `biblicana-bot-prod-2` (Ubuntu 24.04, 1 vCPU / 2 GB, NYC3), tailnet name `biblicana`, `tag:prod`.
+
+- **Build:** bootstrap waited out cloud-init (it held the apt lock, and `do-agent` only went active after it); Tailscale joined as a tagged device (no key expiry); public SSH closed only after tailnet SSH was proven, then verified three ways: tailnet login works, root refused, public :22 silent.
+- **App and data:** cloned `refactor` at `ae31899`, pnpm from the tracked lockfile; `sqlite3` and the profiler load on Node 22. Data pulled from prod and pushed over the tailnet: **md5-identical on both hosts, 14 files**. 358/358 tests on the host against it. The runbook's md5 command was wrong (the `cd` into the 750 directory needed `sudo` too): fixed.
+- **`.env`:** prod's copied host to host without touching the Mac's disk, verified by key counts only; `NODE_ENV=production` added; `SENTRYDSN` piped in by Kenneth (Claude is barred from reading local `.env`, and kept it that way). Smoke file = the local test-bot `.env` minus the dev flags, plus `SENTRYENVIRONMENT=staging`; the two files' Discord tokens compared by hash to prove they differ.
+- **Smoke test** on the test bot: every command, button and AI chat worked, logs timestamped, traces in Sentry `staging`. **Reboot test:** booted 9 s after the command, bot back and logged in 29 s after boot, unattended — the old host never could.
+- **Cutover:** `environment=production`, the PROD bot (`Biblicana#7650`) logged in, `biblicana-gateway` was created by its first check-in in the same second, top.gg got `server_count=592` (572 on 2026-09-06), a real `/bible` in a prod server. 0 errors.
+
+Old droplet: bot stopped and saved, nothing else touched: the rollback, until snapshot and destroy (~7 days). `CLAUDE.md`, the ops knowledge pack and Claude's memory now describe the new host. Still open: the DO cloud firewall and alert policies (Kenneth), `opsreader` and Beszel (with lionmark-ops).
+
 ### Prod SSH: password authentication turned off (ops, on Kenneth's go)
 
 Checking the droplet for the ops handoff found root with a password and `sshd -T` reporting `passwordauthentication yes`, with no firewall and no fail2ban: ~100k failed guesses in 12 days (~8,500 a day). The config files disagreed, and sshd keeps the FIRST value it reads: `50-cloud-init.conf` (yes) comes before `60-cloudimg-settings.conf` (no). Every successful login in the retained auth logs (~5 weeks) was by key, one key (this Mac's), from two Comcast addresses; the second matched the 2026-09-24 21:47 deploy to the minute. Turned off in `50-cloud-init.conf` (backup beside it), validated with `sshd -t`, reloaded; verified a new key login works and a password attempt is refused `(publickey)`. Root login by key remains until the migration.
