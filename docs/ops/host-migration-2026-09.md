@@ -27,7 +27,7 @@ Move Biblicana from the current droplet to a **new 2 GB Ubuntu 24.04 droplet**, 
 | 7 | **Cutover** | both | ~1 min down |
 | 8 | `06-opsreader.sh`, `07-beszel-agent.sh`, DO cloud firewall and alerts | new host, DO console | none |
 | 9 | Swap the docs (Appendix A) | repo, memory | none |
-| 10 | After 7 stable days: snapshot and destroy the old droplet | DO console | none |
+| 10 | Snapshot and destroy the old droplet (done 2026-09-25, same night) | DO console | none |
 
 ---
 
@@ -175,9 +175,16 @@ Settings live in Neon and are shared, so nothing diverges; each host's Redis is 
 
 Apply Appendix A. The old deploy commands (`root@<old IP>`, `/root/dev/biblicana`, `npm ci`) are wrong from step 7 on.
 
-### 10. Decommission the old droplet (after 7 stable days)
+### 10. Decommission the old droplet
 
-DO console: take a **snapshot** of `biblicana-bot-prod` (a cheap safety net), then **destroy** the droplet. The snapshot can be deleted after a further month.
+Planned for after 7 stable days; **done the same night (2026-09-25)** on Kenneth's call: the new host
+had passed every check above, and the old one was an unpatched, internet-facing box holding a
+full copy of prod's `.env`. DO console: **Snapshots > Take Live Snapshot** (`biblicana-bot-prod-final-2026-09-25`), wait
+for it to finish, then **Destroy**, making sure the destroy dialog does NOT include the snapshot.
+Confirm the snapshot under Images > Snapshots afterwards. Remove the old IP from
+`~/.ssh/known_hosts` (`ssh-keygen -R <old IP>`) so a recycled address can't pass for it.
+
+The snapshot (well under $1/mo) can be deleted after a month of stable running.
 
 ---
 
