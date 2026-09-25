@@ -7,6 +7,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import splitString from '../utils/splitString.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
@@ -84,6 +85,7 @@ export default {
                 const response = await fetchIQBible('GetSemanticRelations', { word }, { timeoutMs: API_TIMEOUT_MS });
                 apiResponseData = response.data;
             } catch (apiError) {
+                reportError(apiError, { area: 'command', handler: 'semantics' });
                 logger.error(`[Semantics Command] API request failed for "${word}": ${apiError.message}`);
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
@@ -143,6 +145,7 @@ export default {
                     buildSemanticsPage({ chunks, pageIdx, totalPages, rawWord, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'semantics' });
             logger.error(`[Semantics Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

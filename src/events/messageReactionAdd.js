@@ -18,6 +18,7 @@ import { fathersWrapper, crossRefWrapper, commentaryWrapper, pickMarqueeFather }
 import { accentColor, footerLine } from '../utils/theme.js';
 import { autopostLimitFor, passageCustomId } from '../utils/passiveDetection.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 
 const MARKER_EMOJI = '📖';
 
@@ -377,6 +378,7 @@ export default {
                 allowedMentions: { repliedUser: false },
             });
         } catch (err) {
+            reportError(err, { area: 'event', handler: 'messageReactionAdd' });
             logger.error(`[PassiveReaction] Unhandled: ${err.message}`);
         }
     },

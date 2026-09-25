@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { accentColor } from '../utils/theme.js';
 import 'dotenv/config';
 
@@ -58,6 +59,7 @@ export default {
 
             await interaction.reply({ embeds: [embed] });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'stats' });
             logger.error(`[Stats Command] Error: ${error.message}`, error.stack);
             try {
                 await interaction.reply({

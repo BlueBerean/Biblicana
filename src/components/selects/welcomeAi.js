@@ -2,6 +2,7 @@ import { PermissionFlagsBits, MessageFlags } from 'discord.js';
 import { buildWelcomeCard } from '../../utils/welcomeCard.js';
 import { saveAiEnabled, AI_OPTIONS } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Welcome-card AI toggle. customId: "welcome:ai". Admin-gated, same as
 // the passive selector. When saved, re-renders the full welcome card with
@@ -66,6 +67,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'welcomeAi' });
             logger.error(`[Welcome AI Select] Update/followUp failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

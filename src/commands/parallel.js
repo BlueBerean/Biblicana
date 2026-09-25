@@ -15,6 +15,7 @@ import {
     setupParallelPagination
 } from '../utils/parallelRenderer.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
@@ -77,6 +78,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) primaryTranslation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'parallel' });
                 logger.error(`[Parallel Command] Failed to get user preference: ${dbError}`);
             }
             const rawPick = interaction.options.getString('translation') || primaryTranslation;
@@ -104,6 +106,7 @@ export default {
 
             await setupParallelPagination({ interaction, data, pages, flags });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'parallel' });
             logger.error(`[Parallel Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

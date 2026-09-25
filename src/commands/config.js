@@ -8,6 +8,7 @@ import { buildConfigView, readPassiveMode, readPassiveChannels, readPassivePagin
 import { buildAiConfigView, readAiEnabled, readAiMemoryScope, readAiChannels, readAiDeniedRoles, readAiRequiredRoles } from '../utils/aiConfig.js';
 import { buildDailyVerseConfigView, readDailyVerseConfig } from '../utils/dailyVerseConfig.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 
 // /config — admin-only per-guild settings. Uses a subcommand group so future
 // additions (/config notifications, /config daily-verse, etc.) slot in
@@ -88,6 +89,7 @@ export default {
                 components: [new TextDisplayBuilder().setContent(`Unknown subcommand: ${sub}`)],
             });
         } catch (err) {
+            reportError(err, { area: 'command', handler: 'config' });
             logger.error(`[Config Command] Failed to render ${sub} panel: ${err.message}`);
             try {
                 await interaction.editReply({

@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import 'dotenv/config';
 
@@ -77,6 +78,7 @@ export default {
             });
             logger.info(`[SetVersion Command] Successfully set default translation for ${userName} (${userId}) to ${translation}`);
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'setversion' });
             logger.error(`[SetVersion Command] Error setting translation for ${userName} (${userId}) to ${translation}: ${error.message}`, error.stack);
             try {
                 // The reply was deferred with IsComponentsV2, which locks the

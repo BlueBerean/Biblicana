@@ -1,6 +1,7 @@
 import { PermissionFlagsBits, MessageFlags } from 'discord.js';
 import { saveAiEnabled, readAiMemoryScope, readAiChannels, readAiDeniedRoles, readAiRequiredRoles, buildAiConfigView, AI_OPTIONS } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Select-menu handler for the compact /config ai panel. customId:
 // "config:ai". Same persistence as welcomeAi, different render target —
@@ -66,6 +67,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configAi' });
             logger.error(`[Config AI Select] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

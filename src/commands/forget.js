@@ -6,6 +6,7 @@ import {
 } from 'discord.js';
 import { readAiMemoryScope } from '../utils/aiConfig.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 
 // /forget — wipe the AI conversation memory for the current scope.
 // Scope resolution mirrors aiChat.js exactly so /forget always targets the
@@ -63,6 +64,7 @@ export default {
                 });
             }
         } catch (err) {
+            reportError(err, { area: 'command', handler: 'forget' });
             logger.error(`[Forget] Failed for user=${interaction.user.id}: ${err.message}`);
             try {
                 await interaction.editReply({

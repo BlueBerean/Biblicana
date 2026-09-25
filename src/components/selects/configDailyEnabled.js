@@ -6,6 +6,7 @@ import {
     DAILY_ENABLED_OPTIONS,
 } from '../../utils/dailyVerseConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 export default {
     id: 'config:daily:enabled',
@@ -61,6 +62,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configDailyEnabled' });
             logger.error(`[ConfigDaily Enabled] Update failed for ${interaction.guildId}: ${err.message}`);
         }
     },

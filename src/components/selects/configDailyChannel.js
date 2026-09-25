@@ -5,6 +5,7 @@ import {
     buildDailyVerseConfigView,
 } from '../../utils/dailyVerseConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Handles the ChannelSelectMenu for daily-verse channel picking.
 // interaction.values contains one channel ID (we set maxValues=1).
@@ -88,6 +89,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configDailyChannel' });
             logger.error(`[ConfigDaily Channel] Update failed for ${interaction.guildId}: ${err.message}`);
         }
     },

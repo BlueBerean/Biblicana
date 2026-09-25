@@ -9,6 +9,7 @@ import {
     PASSIVE_PAGER_OPTIONS,
 } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Select-menu handler for pager privacy. customId "config:passive:pager".
 // Chooses whether the page buttons move the public post for everyone or hand
@@ -87,6 +88,7 @@ export default {
                 : `✅ Paging set to **${pickedLabel}** — ◀ ▶ move the post itself for everyone in the channel.${inert}`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configPassivePager' });
             logger.error(`[Config Passive Pager] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

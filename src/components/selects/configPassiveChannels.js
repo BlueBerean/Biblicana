@@ -8,6 +8,7 @@ import {
     buildConfigView,
 } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Handles the ChannelSelectMenu that limits WHERE passive scripture detection
 // scans. customId "config:passive:channels". interaction.values is the
@@ -80,6 +81,7 @@ export default {
                 : `✅ Passive detection now runs only in: ${channelIds.map(id => `<#${id}>`).join(' ')}. Other channels are ignored entirely. Slash commands still work everywhere.${stillSilent}`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configPassiveChannels' });
             logger.error(`[Config Passive Channels] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

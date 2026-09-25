@@ -10,6 +10,7 @@ import { dictionaryWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
@@ -116,6 +117,7 @@ export default {
                     buildDictionaryPage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawWord, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'dictionary' });
             logger.error(`[Dictionary Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

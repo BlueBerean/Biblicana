@@ -15,6 +15,7 @@ import { toOSIS3Codes } from '../utils/bookNames.js';
 import { commentaryWrapper, COMMENTATORS } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 
 const PREVIEW_LIMIT = 3500;
 const DEFAULT_COMMENTATOR = 'adam-clarke';
@@ -101,6 +102,7 @@ export default {
                 components: [container, actionRow],
             });
         } catch (err) {
+            reportError(err, { area: 'command', handler: 'ctxShowCommentary' });
             logger.error(`[CtxCommentary] Failed: ${err.message}`);
             try {
                 // Must stay a V2 components edit. The reply was deferred with

@@ -16,6 +16,7 @@ import { crossRefWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import 'dotenv/config';
 
 export const REFS_PER_PAGE = 8;
@@ -191,6 +192,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'crossref' });
                 logger.error(`[Crossref Command] Failed to get user preference: ${dbError}`);
             }
             translation = coerceTranslation(
@@ -248,6 +250,7 @@ export default {
                     buildCrossrefPage({ data, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'crossref' });
             logger.error(`[Crossref Command] Error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

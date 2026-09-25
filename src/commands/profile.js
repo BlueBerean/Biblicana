@@ -10,6 +10,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import splitString from '../utils/splitString.js';
 import swearWordFilter from '../utils/filter.js';
 import { numbersToBook, fromOSIS3Code } from '../utils/bookNames.js';
@@ -175,6 +176,7 @@ export default {
                     buildProfilePage({ page: pages[pageIdx], pageIdx, totalPages, matchType, rawTopic, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'profile' });
             logger.error(`[Profile Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

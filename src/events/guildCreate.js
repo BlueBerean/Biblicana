@@ -1,5 +1,6 @@
 import { Events, PermissionFlagsBits, ChannelType, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { buildWelcomeCard } from '../utils/welcomeCard.js';
 
 // Known BibleBot application IDs. The primary is Kerygma Digital's BibleBot —
@@ -102,6 +103,7 @@ export default {
         try {
             await database.setGuildValue(guild.id, { id: guild.id, passiveMode: defaultMode });
         } catch (err) {
+            reportError(err, { area: 'event', handler: 'guildCreate' });
             logger.error(`[GuildCreate] Failed to seed guild record for ${guild.id}: ${err.message}`);
         }
 
@@ -123,6 +125,7 @@ export default {
             });
             logger.info(`[GuildCreate] Welcome card posted in #${channel.name} (${channel.id}) of ${guild.id}`);
         } catch (err) {
+            reportError(err, { area: 'event', handler: 'guildCreate' });
             logger.error(`[GuildCreate] Failed to send welcome card in ${guild.id}: ${err.message} — trying owner DM fallback`);
             await notifyOwnerFallback(guild, `channel send failed: ${err.code ?? err.message}`);
         }

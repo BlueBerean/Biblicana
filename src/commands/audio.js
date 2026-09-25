@@ -13,6 +13,7 @@ import axios from 'axios';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
 import { accentColor } from '../utils/theme.js';
@@ -133,6 +134,7 @@ export default {
             try {
                 new URL(audioUrl);
             } catch (urlError) {
+                reportError(urlError, { area: 'command', handler: 'audio' });
                 logger.error(`[Audio Command] Invalid audio URL: ${audioUrl}`);
                 return interaction.editReply({
                     content: `❌ Received an invalid audio link from the source.`
@@ -155,6 +157,7 @@ export default {
                 audioBuffer = Buffer.from(audioResponse.data);
                 logger.info(`[Audio Command] Downloaded ${bookName} ${chapter}: ${audioBuffer.length} bytes`);
             } catch (downloadError) {
+                reportError(downloadError, { area: 'command', handler: 'audio' });
                 logger.error(`[Audio Command] Download failed for ${bookName} ${chapter}: ${downloadError.message}`);
                 return interaction.editReply({
                     content: `❌ The audio source was reachable but the MP3 download failed. The external audio server may be having issues — try again in a moment.`
@@ -177,6 +180,7 @@ export default {
         } catch (error) {
             const bookDisplay = bookName || rawBookInput || 'the specified book';
             const chapterDisplay = chapter || chapterInput || 'the specified chapter';
+            reportError(error, { area: 'command', handler: 'audio' });
             logger.error(`[Audio Command] Error for ${bookDisplay} ${chapterDisplay}: ${error.message}`, error.stack);
 
             let userErrorMessage = 'Sorry, there was an error processing your request. Please try again later.';

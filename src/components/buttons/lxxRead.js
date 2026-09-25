@@ -4,6 +4,7 @@ import { lxxWrapper } from '../../utils/studyHelper.js';
 import { numbersToBook } from '../../utils/bookNames.js';
 import { accentColor } from '../../utils/theme.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Full-passage reader for the Septuagint. customId:
 //
@@ -90,6 +91,7 @@ export default {
                 }),
             });
         } catch (err) {
+            reportError(err, { area: 'button', handler: 'lxxRead' });
             logger.error(`[LxxRead] Failed for ${interaction.customId}: ${err.message}`);
             return this.fail(interaction, 'Something went wrong reading the Septuagint.');
         }

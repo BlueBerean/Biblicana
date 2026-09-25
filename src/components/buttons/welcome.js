@@ -15,6 +15,7 @@ import { buildFindPage, VERSES_PER_PAGE } from '../../commands/find.js';
 import { fetchCrossrefData, buildCrossrefPage, REFS_PER_PAGE } from '../../commands/crossref.js';
 import { buildHelpPage } from '../../commands/help.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 const EPHEMERAL_V2 = MessageFlags.Ephemeral | MessageFlags.IsComponentsV2;
 const DEMO_TRUNCATE = 1200;
@@ -238,6 +239,7 @@ async function handleHelp(interaction) {
             await i.editReply({ flags, components: buildHelpPage(currentId) });
         } catch (err) {
             if (!isExpiredInteractionError(err)) {
+                reportError(err, { area: 'button', handler: 'welcome' });
                 logger.error(`[Welcome Help] Collector error: ${err.message}`);
             }
         }
@@ -266,6 +268,7 @@ export default {
                     return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
             }
         } catch (err) {
+            reportError(err, { area: 'button', handler: 'welcome' });
             logger.error(`[Welcome Button] ${action} failed: ${err.message}`);
             if (!interaction.replied && !interaction.deferred) {
                 try {

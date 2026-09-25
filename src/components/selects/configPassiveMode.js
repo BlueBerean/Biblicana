@@ -3,6 +3,7 @@ import { PASSIVE_MODES } from '../../database/schemas/guild.js';
 import { PASSIVE_MODE_OPTIONS } from '../../utils/welcomeCard.js';
 import { savePassiveMode, readPassiveChannels, readPassivePaginate, readPassivePagerPrivate, readPassiveDetail, buildConfigView } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Select-menu handler for the compact /config passive panel. customId:
 // "config:passive". Same save path as the welcome card, different render
@@ -69,6 +70,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configPassiveMode' });
             logger.error(`[Config Select] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

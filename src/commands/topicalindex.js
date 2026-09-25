@@ -10,6 +10,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { bibleWrapper, coerceTranslation } from '../utils/bibleHelper.js';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import { categoriesWrapper } from '../utils/studyHelper.js';
@@ -222,6 +223,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'topicalindex' });
                 logger.error(`[TopicalIndex Command] Failed to get user preference: ${dbError}`);
             }
             translation = coerceTranslation(
@@ -275,6 +277,7 @@ export default {
                     })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'topicalindex' });
             logger.error(`[TopicalIndex Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

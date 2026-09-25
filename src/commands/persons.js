@@ -13,6 +13,7 @@ import { personsWrapper, displayName } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
@@ -172,6 +173,7 @@ export default {
                     buildPersonPage({ person: results[pageIdx], pageIdx, totalPages, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'persons' });
             logger.error(`[Persons Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

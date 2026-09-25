@@ -3,6 +3,7 @@ import { PASSIVE_MODES } from '../../database/schemas/guild.js';
 import { buildWelcomeCard, PASSIVE_MODE_OPTIONS } from '../../utils/welcomeCard.js';
 import { savePassiveMode } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Welcome-card passive-mode selector. customId: "welcome:passive".
 // Dispatched by src/events/interactionCreate.js via the selects registry.
@@ -72,6 +73,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'welcomePassiveMode' });
             logger.error(`[Welcome Select] Update/followUp failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

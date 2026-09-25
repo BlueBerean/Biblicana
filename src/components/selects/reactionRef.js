@@ -4,6 +4,7 @@ import { coerceTranslation } from '../../utils/bibleHelper.js';
 import { numbersToBook } from '../../utils/bookNames.js';
 import { accentColor } from '../../utils/theme.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // "Jump to a reference" on a book-emoji reaction card. customId is the static
 // string "reactionref"; the chosen reference rides in the option VALUE as
@@ -67,6 +68,7 @@ export default {
                 components: reply.components,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'reactionRef' });
             logger.error(`[ReactionRef] Failed for "${value}": ${err.message}`);
             // The defer already fixed the shape, so this must be an editReply
             // with V2 components - an empty array would be rejected outright.

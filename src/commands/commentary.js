@@ -11,6 +11,7 @@ import {
     InteractionContextType
 } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import splitString from '../utils/splitString.js';
 import { getBookId, numbersToBook, toOSIS3Codes } from '../utils/bookNames.js';
 import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
@@ -310,6 +311,7 @@ export default {
                         })
                     });
                 } catch (err) {
+                    reportError(err, { area: 'command', handler: 'commentary' });
                     logger.error(`[Commentary Command] Collector error: ${err.message}`);
                 }
             });
@@ -328,11 +330,13 @@ export default {
                     });
                 } catch (err) {
                     if (!isExpiredInteractionError(err)) {
+                        reportError(err, { area: 'command', handler: 'commentary' });
                         logger.error(`[Commentary Command] End error: ${err.message}`);
                     }
                 }
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'commentary' });
             logger.error(`[Commentary Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

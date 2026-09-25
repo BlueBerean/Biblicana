@@ -8,6 +8,7 @@ import {
     buildAiConfigView,
 } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Handles the RoleSelectMenu that RESTRICTS the AI conversation to specific
 // roles. customId "config:ai:reqroles". interaction.values is the (possibly
@@ -78,6 +79,7 @@ export default {
                 : `✅ AI chat now limited to: ${roleIds.map(id => `<@&${id}>`).join(' ')}. Everyone else gets no response when they mention or reply to Biblicana. Admins with Manage Server are exempt.${overlapNote}`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configAiRequiredRoles' });
             logger.error(`[Config AI Required Roles] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

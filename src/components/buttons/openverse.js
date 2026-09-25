@@ -20,6 +20,7 @@ import { accentColor, footerLine } from '../../utils/theme.js';
 import { attachPageCollector, buildPageNavRow, isExpiredInteractionError } from '../../utils/paginationHelper.js';
 import splitString from '../../utils/splitString.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 import 'dotenv/config';
 
 const COMMENTARY_MAX_CHARS = 3800;
@@ -44,6 +45,7 @@ async function userTranslation(database, userId) {
         const userPref = await database.getUserValue(userId);
         if (userPref?.translation) return userPref.translation;
     } catch (dbError) {
+        reportError(dbError, { area: 'button', handler: 'openverse' });
         logger.error(`[OpenVerse Button] Failed to get user preference: ${dbError.message}`);
     }
     return 'BSB';
@@ -189,6 +191,7 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
 
                 await i.editReply({ embeds: [renderEmbed()], components: renderComponents() });
             } catch (err) {
+                reportError(err, { area: 'button', handler: 'openverse' });
                 logger.error(`[OpenVerse ChapterCommentary] Collector error: ${err.message}`);
             }
         });
@@ -198,11 +201,13 @@ async function handleChapterCommentary({ interaction, bookId, bookCodes, chapter
                 await interaction.editReply({ components: renderComponents({ disabled: true }) });
             } catch (err) {
                 if (!isExpiredInteractionError(err)) {
+                    reportError(err, { area: 'button', handler: 'openverse' });
                     logger.error(`[OpenVerse ChapterCommentary] End error: ${err.message}`);
                 }
             }
         });
     } catch (err) {
+        reportError(err, { area: 'button', handler: 'openverse' });
         logger.error(`[OpenVerse ChapterCommentary] Setup error: ${err.message}`);
     }
 }
@@ -360,6 +365,7 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
 
                 await i.editReply({ embeds: [renderEmbed()], components: renderComponents() });
             } catch (err) {
+                reportError(err, { area: 'button', handler: 'openverse' });
                 logger.error(`[OpenVerse Commentary] Collector error: ${err.message}`);
             }
         });
@@ -369,11 +375,13 @@ async function handleCommentary({ interaction, bookId, chapter, verse, bookName 
                 await interaction.editReply({ components: renderComponents({ disabled: true }) });
             } catch (err) {
                 if (!isExpiredInteractionError(err)) {
+                    reportError(err, { area: 'button', handler: 'openverse' });
                     logger.error(`[OpenVerse Commentary] End error: ${err.message}`);
                 }
             }
         });
     } catch (err) {
+        reportError(err, { area: 'button', handler: 'openverse' });
         logger.error(`[OpenVerse Commentary] Setup error: ${err.message}`);
     }
 }
@@ -675,6 +683,7 @@ async function handleFathers({ interaction, chapter, verse, bookName }) {
                 components: renderView(),
             });
         } catch (err) {
+            reportError(err, { area: 'button', handler: 'openverse' });
             logger.error(`[OpenVerse Fathers] Collector error: ${err.message}`);
         }
     });
@@ -689,6 +698,7 @@ async function handleFathers({ interaction, chapter, verse, bookName }) {
             });
         } catch (err) {
             if (!isExpiredInteractionError(err)) {
+                reportError(err, { area: 'button', handler: 'openverse' });
                 logger.error(`[OpenVerse Fathers] End error: ${err.message}`);
             }
         }
@@ -760,6 +770,7 @@ export default {
                     return interaction.reply({ content: `Unknown action: ${action}`, flags: MessageFlags.Ephemeral });
             }
         } catch (error) {
+            reportError(error, { area: 'button', handler: 'openverse' });
             logger.error(`[OpenVerse Button] Error handling ${action} for ${bookName} ${chapter}:${startVerse}: ${error.message}`, error.stack);
             try {
                 if (!interaction.replied && !interaction.deferred) {

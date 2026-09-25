@@ -8,6 +8,7 @@ import {
     buildAiConfigView,
 } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Handles the ChannelSelectMenu that restricts where AI chat may respond.
 // customId "config:ai:channels". interaction.values is the (possibly empty)
@@ -68,6 +69,7 @@ export default {
                 : `✅ The AI conversation is now limited to: ${channelIds.map(id => `<#${id}>`).join(' ')}. It stays silent in other channels. Slash commands still work everywhere.`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configAiChannels' });
             logger.error(`[Config AI Channels] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

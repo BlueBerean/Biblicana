@@ -10,6 +10,7 @@ import { getBookId } from '../utils/bookNames.js';
 import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { fetchRandomVerseData, buildRandomVerseComponents } from '../utils/randomVerseRenderer.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
@@ -77,6 +78,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) preferredTranslation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'randomverse' });
                 logger.error(`[RandomVerse Command] Failed to get user preference: ${dbError}`);
             }
             preferredTranslation = coerceTranslation(
@@ -98,6 +100,7 @@ export default {
                 components: buildRandomVerseComponents({ data, filterBookId, filterChapter })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'randomverse' });
             logger.error(`[RandomVerse Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

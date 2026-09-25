@@ -15,6 +15,7 @@ import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { lxxWrapper } from '../utils/studyHelper.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import 'dotenv/config';
 
 // Discord's plain V2 TextDisplay ceiling is 4000; leave room for headings,
@@ -199,6 +200,7 @@ export default {
 
             return interaction.editReply({ flags: MessageFlags.IsComponentsV2, components });
         } catch (err) {
+            reportError(err, { area: 'command', handler: 'lxx' });
             logger.error(`[LXX Command] Failed for "${bookInput} ${chapterInput}": ${err.message}`);
             return this.fail(interaction, 'Something went wrong reading the Septuagint. Try again in a moment.');
         }

@@ -14,6 +14,7 @@ import { bibleWrapper, coerceTranslation } from '../utils/bibleHelper.js';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
@@ -212,6 +213,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'originaltext' });
                 logger.error(`[OriginalText Command] Failed to get user preference: ${dbError}`);
             }
             translation = coerceTranslation(
@@ -255,6 +257,7 @@ export default {
                     throw new Error('Parsed data is not a non-empty array.');
                 }
             } catch (parseError) {
+                reportError(parseError, { area: 'command', handler: 'originaltext' });
                 logger.error(`[OriginalText Command] Parse error: ${parseError.message}`);
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
@@ -298,6 +301,7 @@ export default {
                     })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'originaltext' });
             logger.error(`[OriginalText Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

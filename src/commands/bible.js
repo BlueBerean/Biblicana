@@ -10,6 +10,7 @@ import { getBookId } from '../utils/bookNames.js';
 import { resolveSingleChapterRef } from '../utils/scriptureRefs.js';
 import { fetchBibleVerseData, buildBibleComponents } from '../utils/bibleRenderer.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -90,6 +91,7 @@ export default {
                 components: buildBibleComponents({ data, includeActionRow: true })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'bible' });
             logger.error(`[Bible Command] Error processing request: ${error.message}`, error.stack);
             try {
                 return interaction.editReply({

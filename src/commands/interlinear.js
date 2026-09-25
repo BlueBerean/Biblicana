@@ -14,6 +14,7 @@ import {
     setupInterlinearPagination
 } from '../utils/interlinearRenderer.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter from '../utils/filter.js';
 import 'dotenv/config';
 
@@ -88,6 +89,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'interlinear' });
                 logger.error(`[Interlinear Command] Failed to get user preference: ${dbError}`);
             }
             translation = coerceTranslation(
@@ -109,6 +111,7 @@ export default {
 
             await setupInterlinearPagination({ interaction, data, totalPages, wordsPerPage, flags });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'interlinear' });
             logger.error(`[Interlinear Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

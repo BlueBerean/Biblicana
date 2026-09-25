@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import 'dotenv/config';
 
 export default {
@@ -37,6 +38,7 @@ export default {
 
             await interaction.editReply({ content: null, embeds: [embed] });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'ping' });
             logger.error(`[Ping Command] Error: ${error.message}`);
             try {
                 if (interaction.replied || interaction.deferred) {

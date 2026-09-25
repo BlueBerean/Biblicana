@@ -5,6 +5,7 @@ import {
 } from 'discord.js';
 import { buildWelcomeCard } from '../utils/welcomeCard.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 
 // Dev-only: re-posts the welcome card in the current channel. Lets you iterate
 // on the card's visual layout in a real Discord context without having to kick
@@ -62,6 +63,7 @@ export default {
             });
             await interaction.editReply('✅ Welcome card posted in this channel.');
         } catch (err) {
+            reportError(err, { area: 'command', handler: 'testwelcome' });
             logger.error(`[TestWelcome] Send failed: ${err.message}`);
             await interaction.editReply(`❌ Could not post: ${err.message}`);
         }

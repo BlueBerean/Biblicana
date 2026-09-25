@@ -3,6 +3,7 @@ import { buildPassagePages, buildPassageReaderComponents, DEFAULT_TRANSLATION } 
 import { coerceTranslation } from '../../utils/bibleHelper.js';
 import { numbersToBook } from '../../utils/bookNames.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // The full-passage reader. customId:
 //
@@ -90,6 +91,7 @@ export default {
                 components: buildPassageReaderComponents(ref, translation, pages, page),
             });
         } catch (err) {
+            reportError(err, { area: 'button', handler: 'passageRead' });
             logger.error(`[PassageRead] Failed for ${interaction.customId}: ${err.message}`);
             // The defer already fixed the shape, so this must be an editReply.
             return interaction.editReply({

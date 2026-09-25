@@ -1,6 +1,7 @@
 import { MessageFlags } from 'discord.js';
 import { fetchRandomVerseData, buildRandomVerseComponents } from '../../utils/randomVerseRenderer.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 export default {
     id: 'randomverse',
@@ -20,6 +21,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) preferredTranslation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'button', handler: 'randomverse' });
                 logger.error(`[RandomVerse Button] Failed to get user preference: ${dbError}`);
             }
 
@@ -35,6 +37,7 @@ export default {
                 components: buildRandomVerseComponents({ data, filterBookId, filterChapter })
             });
         } catch (err) {
+            reportError(err, { area: 'button', handler: 'randomverse' });
             logger.error(`[RandomVerse Button] Error: ${err.message}`, err.stack);
         }
     }

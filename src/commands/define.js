@@ -14,6 +14,7 @@ import { strongsWrapper } from '../utils/bibleHelper.js';
 import { footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import 'dotenv/config';
 
 const ITEMS_PER_PAGE_NO_NAV = 9;
@@ -126,6 +127,7 @@ export default {
                     items = await strongsWrapper.getStrongsEnglish(lexiconId, word) || [];
                 }
             } catch (fetchError) {
+                reportError(fetchError, { area: 'command', handler: 'define' });
                 logger.error(`[Define Command] Fetch error: ${fetchError.message}`);
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
@@ -163,6 +165,7 @@ export default {
                     buildDefinePage({ items, pageIdx, itemsPerPage, totalPages, lexiconId, rawWord, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'define' });
             logger.error(`[Define Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

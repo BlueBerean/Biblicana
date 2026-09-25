@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { getBookId } from '../utils/bookNames.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
@@ -218,6 +219,7 @@ export default {
             if (!Array.isArray(prophecies)) throw new Error('Prophecies data is not an array.');
             logger.info(`[PropheciesOfJesus Command] Loaded ${prophecies.length} prophecies.`);
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'propheciesofjesus' });
             logger.error(`[PropheciesOfJesus Command] Load error: ${error.message}`);
             return interaction.editReply({
                 flags: MessageFlags.IsComponentsV2,
@@ -254,6 +256,7 @@ export default {
                     buildProphecyPage({ pages, totalProphecyCount, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'propheciesofjesus' });
             logger.error(`[PropheciesOfJesus Command] Unhandled error: ${error.message}`, error.stack);
         }
     }

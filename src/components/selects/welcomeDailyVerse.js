@@ -5,6 +5,7 @@ import {
     readDailyVerseConfig,
 } from '../../utils/dailyVerseConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 const DEFAULT_HOUR_UTC = 13;  // 8am CDT / 9am EDT / 6am PDT — morning in US
 
@@ -104,6 +105,7 @@ export default {
             });
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'welcomeDailyVerse' });
             logger.error(`[Welcome Daily Select] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

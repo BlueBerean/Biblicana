@@ -13,6 +13,7 @@ import {
 import axios from 'axios';
 import swearWordFilter from '../utils/filter.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { getBookId } from '../utils/bookNames.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector } from '../utils/paginationHelper.js';
@@ -173,6 +174,7 @@ export default {
                 clearTimeout(timeoutId);
                 apiResponseData = response.data;
             } catch (apiError) {
+                reportError(apiError, { area: 'command', handler: 'topic' });
                 logger.error(`[Topic Command] API request failed: ${apiError.message}`);
                 return interaction.editReply({
                     flags: MessageFlags.IsComponentsV2,
@@ -224,6 +226,7 @@ export default {
                     buildTopicPage({ results, pageIdx, totalPages, rawTopic, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'topic' });
             logger.error(`[Topic Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

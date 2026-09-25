@@ -17,6 +17,7 @@ import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow, isExpiredInteractionError } from '../utils/paginationHelper.js';
 import splitString from '../utils/splitString.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import swearWordFilter, { escapeMarkdown } from '../utils/filter.js';
 import 'dotenv/config';
 
@@ -153,6 +154,7 @@ export default {
                         buildFathersListPage({ fathers, pageIdx, totalPages, disableNav })
                 });
             } catch (err) {
+                reportError(err, { area: 'command', handler: 'fathers' });
                 logger.error(`[Fathers Command] List error: ${err.message}`);
                 try {
                     await interaction.editReply({
@@ -392,6 +394,7 @@ export default {
                         components: renderView(),
                     });
                 } catch (err) {
+                    reportError(err, { area: 'command', handler: 'fathers' });
                     logger.error(`[Fathers Command] Collector error: ${err.message}`);
                 }
             });
@@ -404,11 +407,13 @@ export default {
                     });
                 } catch (err) {
                     if (!isExpiredInteractionError(err)) {
+                        reportError(err, { area: 'command', handler: 'fathers' });
                         logger.error(`[Fathers Command] End error: ${err.message}`);
                     }
                 }
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'fathers' });
             logger.error(`[Fathers Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

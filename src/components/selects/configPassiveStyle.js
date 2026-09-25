@@ -9,6 +9,7 @@ import {
     PASSIVE_STYLE_OPTIONS,
 } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Select-menu handler for the auto-post layout choice. customId
 // "config:passive:style". Chooses between separate cards (the default, capped
@@ -77,6 +78,7 @@ export default {
                 : `✅ Auto-post layout set to **${pickedLabel}** — up to 3 references per message, each with its own card.${notAutopost}`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configPassiveStyle' });
             logger.error(`[Config Passive Style] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

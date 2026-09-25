@@ -11,6 +11,7 @@ import {
 } from 'discord.js';
 import axios from 'axios';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import splitString from '../utils/splitString.js';
 import { accentColor, footerLine } from '../utils/theme.js';
 import { attachPageCollector, buildPageNavRow } from '../utils/paginationHelper.js';
@@ -186,6 +187,7 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                 shouldAnswer = intentResponse === 'true';
                 intentVerified = true;
             } catch (intentError) {
+                reportError(intentError, { area: 'command', handler: 'web' });
                 logger.error(`[Web Command] Intent check failed: ${intentError.message}`);
             }
 
@@ -294,6 +296,7 @@ Err on the side of "true" for sincere questions, even if challenging. Respond ON
                     buildWebAnswerPage({ query, chunks, pageIdx, totalPages, usedSources, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'web' });
             logger.error(`[Web Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

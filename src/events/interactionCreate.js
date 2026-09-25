@@ -1,7 +1,7 @@
 import { Events, MessageFlags } from 'discord.js';
 import * as Sentry from '@sentry/node';
 import logger from '../utils/logger.js';
-import { reportError, componentName } from '../utils/errorReporting.js';
+import { reportError, componentName, withReportingScope } from '../utils/errorReporting.js';
 
 const MAX_OPT_VALUE_LEN = 60;
 
@@ -50,9 +50,16 @@ export default {
                 // for Sentry to start a trace from, so without this the pg,
                 // ioredis and outbound-HTTP spans would have no parent and no
                 // name saying which command they belonged to.
-                await Sentry.startSpan(
-                    { name: `/${interaction.commandName}`, op: 'discord.command' },
-                    () => command.execute(interaction, database)
+                //
+                // withReportingScope tags everything the command does with its
+                // guild/area/handler, so a reportError() inside the command's own
+                // catch blocks is attributable without being handed `interaction`.
+                await withReportingScope(
+                    { area: 'command', handler: interaction.commandName, guildId: interaction.guildId },
+                    () => Sentry.startSpan(
+                        { name: `/${interaction.commandName}`, op: 'discord.command' },
+                        () => command.execute(interaction, database)
+                    )
                 );
             } catch (error) {
                 logger.error(`[Error] Error executing ${interaction.commandName}`);
@@ -111,9 +118,12 @@ export default {
 
             const buttonName = componentName(interaction.customId);
             try {
-                await Sentry.startSpan(
-                    { name: `button ${buttonName}`, op: 'discord.button' },
-                    () => button.execute(interaction, database)
+                await withReportingScope(
+                    { area: 'button', handler: buttonName, guildId: interaction.guildId },
+                    () => Sentry.startSpan(
+                        { name: `button ${buttonName}`, op: 'discord.button' },
+                        () => button.execute(interaction, database)
+                    )
                 );
             } catch (error) {
                 logger.error(`[Error] Error executing ${interaction.customId}`);
@@ -140,9 +150,12 @@ export default {
 
             const selectName = componentName(interaction.customId);
             try {
-                await Sentry.startSpan(
-                    { name: `select ${selectName}`, op: 'discord.select' },
-                    () => select.execute(interaction, database)
+                await withReportingScope(
+                    { area: 'select', handler: selectName, guildId: interaction.guildId },
+                    () => Sentry.startSpan(
+                        { name: `select ${selectName}`, op: 'discord.select' },
+                        () => select.execute(interaction, database)
+                    )
                 );
             } catch (error) {
                 logger.error(`[Error] Error executing select ${interaction.customId}`);

@@ -1,6 +1,7 @@
 import { EmbedBuilder, MessageFlags } from 'discord.js';
 import { strongsWrapper } from '../../utils/bibleHelper.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 import 'dotenv/config';
 
 const HEBREW_COLOR = 0x3498DB;
@@ -61,6 +62,7 @@ export default {
 
             await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         } catch (error) {
+            reportError(error, { area: 'button', handler: 'strongs' });
             logger.error(`[Strongs Button] Error fetching ${lexicon}/${strongsId}: ${error.message}`);
             try {
                 await interaction.reply({

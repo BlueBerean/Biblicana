@@ -11,6 +11,7 @@ import {
 } from 'discord.js';
 import { getBookId, numbersToBook } from '../utils/bookNames.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import splitString from '../utils/splitString.js';
 import { fetchIQBible } from '../utils/rapidApi.js';
 import { accentColor, footerLine } from '../utils/theme.js';
@@ -259,6 +260,7 @@ export default {
                     buildBookInfoPage({ bookName, pages, pageIdx, totalPages, disableNav })
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'bookinfo' });
             logger.error(`[BookInfo Command] Error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

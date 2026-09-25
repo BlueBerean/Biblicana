@@ -8,6 +8,7 @@ import {
     buildAiConfigView,
 } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Handles the RoleSelectMenu that blocks roles from the AI conversation.
 // customId "config:ai:roles". interaction.values is the (possibly empty) list of
@@ -89,6 +90,7 @@ export default {
                 : `✅ Blocked from AI chat: ${roleIds.map(id => `<@&${id}>`).join(' ')}. Members with those roles get no response when they mention or reply to Biblicana. Admins with Manage Server are still exempt.${overlapNote}\n\n-# Slash commands like \`/find\` and \`/web\` are not affected — restrict those via **Server Settings → Integrations → Biblicana**.`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configAiRoles' });
             logger.error(`[Config AI Roles] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

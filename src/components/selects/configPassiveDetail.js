@@ -9,6 +9,7 @@ import {
     PASSIVE_DETAIL_OPTIONS,
 } from '../../utils/passiveConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Select-menu handler for how much of a passage an auto-post card shows.
 // customId "config:passive:detail".
@@ -87,6 +88,7 @@ export default {
                 : `✅ Verse detail set to **${pickedLabel}** — shorter excerpts, so long quotes don't push conversation off screen. A **Read full** button still opens the whole passage privately.${notAutopost}`;
             await interaction.followUp({ content: confirmation, flags: MessageFlags.Ephemeral });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configPassiveDetail' });
             logger.error(`[Config Passive Detail] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },

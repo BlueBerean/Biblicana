@@ -5,6 +5,7 @@ import {
     buildDailyVerseConfigView,
 } from '../../utils/dailyVerseConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 export default {
     id: 'config:daily:hour',
@@ -98,6 +99,7 @@ export default {
             // Logs the FAILING STEP and the error code, which the previous
             // catch discarded — a bare message hid whether this was 10062
             // (too slow), 40060 (double ack), or a payload rejection.
+            reportError(err, { area: 'select', handler: 'configDailyHour' });
             logger.error(
                 `[ConfigDaily Hour] FAILED at step=${step} code=${err?.code ?? 'none'} status=${err?.status ?? 'none'} `
                 + `msg=${err.message} | age=${t.age}ms defer=${t.defer ?? '-'}ms save=${t.save ?? '-'}ms `

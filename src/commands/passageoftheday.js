@@ -7,6 +7,7 @@ import {
 } from 'discord.js';
 import { renderVerseOfTheDay } from '../utils/dailyVerseRenderer.js';
 import logger from '../utils/logger.js';
+import { reportError } from '../utils/errorReporting.js';
 import { coerceTranslation } from '../utils/bibleHelper.js';
 import 'dotenv/config';
 
@@ -35,6 +36,7 @@ export default {
                 const userPref = await database.getUserValue(interaction.user.id);
                 if (userPref?.translation) translation = userPref.translation;
             } catch (dbError) {
+                reportError(dbError, { area: 'command', handler: 'passageoftheday' });
                 logger.error(`[PassageOfTheDay Command] Failed to get user preference: ${dbError}`);
             }
             translation = coerceTranslation(
@@ -56,6 +58,7 @@ export default {
                 components,
             });
         } catch (error) {
+            reportError(error, { area: 'command', handler: 'passageoftheday' });
             logger.error(`[PassageOfTheDay Command] Unhandled error: ${error.message}`, error.stack);
             try {
                 await interaction.editReply({

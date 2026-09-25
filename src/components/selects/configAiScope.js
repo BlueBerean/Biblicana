@@ -10,6 +10,7 @@ import {
     AI_MEMORY_SCOPE_OPTIONS,
 } from '../../utils/aiConfig.js';
 import logger from '../../utils/logger.js';
+import { reportError } from '../../utils/errorReporting.js';
 
 // Select-menu handler for /config ai's memory-scope dropdown.
 // customId: "config:aiscope". Paired with configAi.js (the on/off toggle).
@@ -71,6 +72,7 @@ export default {
                 flags: MessageFlags.Ephemeral,
             });
         } catch (err) {
+            reportError(err, { area: 'select', handler: 'configAiScope' });
             logger.error(`[Config AIScope Select] Update failed for guild ${interaction.guildId}: ${err.message}`);
         }
     },
